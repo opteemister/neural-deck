@@ -1,0 +1,21 @@
+[Unit]
+Description=LLM Studio local model dashboard
+After=network.target
+
+[Service]
+Type=simple
+User=__SERVICE_USER__
+Group=__SERVICE_USER__
+WorkingDirectory=__INSTALL_DIR__/backend
+EnvironmentFile=/etc/__SERVICE_NAME__/llm-studio.env
+ExecStart=__INSTALL_DIR__/backend/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/llm-studio /var/log/llm-studio
+
+[Install]
+WantedBy=multi-user.target

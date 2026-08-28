@@ -1,0 +1,35 @@
+# Mandatory quality mechanism (tech-defaults): catches junk before it gets committed.
+# Setup: uv run pre-commit install
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.12.5
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.17.1
+    hooks:
+      - id: mypy
+        args: [--strict]
+
+  - repo: local
+    hooks:
+      # Remove this hook for intentionally compact projects (1-2 files) — see AGENTS.md.
+      # Splitting must be structural (into modules), never by cramming code to fit the limit.
+      - id: max-500-lines
+        name: file must not exceed 500 lines (constitution IV.8)
+        entry: bash -c 'fail=0; for f in "$@"; do n=$(wc -l < "$f"); if [ "$n" -gt 500 ]; then echo "$f: $n lines (> 500) — split into modules"; fail=1; fi; done; exit $fail' --
+        language: system
+        types: [text]
+        exclude: '(^|/)(uv\.lock|pnpm-lock\.yaml|.*\.svg|.*\.json)$'

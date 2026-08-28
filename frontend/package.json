@@ -4,6 +4,10 @@
   "version": "0.1.0",
   "type": "module",
   "packageManager": "pnpm@11.4.0",
+  "engines": {
+    "node": ">=22.13.0",
+    "pnpm": ">=11.4.0 <12"
+  },
   "scripts": {
     "build": "tsc -b && vite build",
     "build:watch": "vite build --watch",

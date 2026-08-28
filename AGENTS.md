@@ -15,7 +15,7 @@ The project is intended for an operator running the service on a remote Linux ma
 - Frontend quality: ESLint flat config, Vitest, React Testing Library
 - Persistence: SQLite in a dedicated data directory
 - Package managers: uv / pnpm
-- Local runtime: one Docker Compose application container containing the backend and frontend development processes
+- Local runtime: one Docker Compose application container where FastAPI serves the frontend build and Vite rebuilds it in watch mode
 - Production runtime: native Linux systemd service serving the built SPA from the backend
 
 ### Deviations from tech-defaults
@@ -55,7 +55,7 @@ docker compose -f docker/docker-compose.yml up --build
 sudo ./scripts/install_systemd_service.sh
 ```
 
-The local application is available at `http://127.0.0.1:5173`; the backend API is at `http://127.0.0.1:8000`.
+The local application and backend API are available at `http://127.0.0.1:3000`.
 
 ## Verification rules
 
@@ -88,7 +88,7 @@ Project documentation is written in English for GitHub publication. Code, commen
 - `.env.example` is the tracked variable contract; `.env.local` is used by local Compose; `deploy/llm-studio.env.example` is the tracked production template. The populated production file lives only at `/etc/llm-studio/llm-studio.env`.
 - Any variable addition or rename updates `.env.example`, `.env.local`, and `deploy/llm-studio.env.example` together.
 - Technical secrets belong in environment files; business or integration secrets belong in the appropriate secret store, never in source control.
-- Local Compose bind-mounts the source tree and `./data` into one application container. The backend runs on port 8000 and Vite runs on port 5173 in that container.
+- Local Compose bind-mounts the source tree and `./data` into one application container. Vite rebuilds the SPA in watch mode, and FastAPI serves it together with the API on port 3000.
 - Production builds `frontend/dist`, runs Alembic before starting systemd, and serves the SPA through FastAPI. The production service owns `/var/lib/llm-studio` for SQLite and `/var/log/llm-studio` for model logs.
 
 ## Detail-resolution decisions

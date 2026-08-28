@@ -1,4 +1,4 @@
-# LOCAL mode: one container with backend and frontend development processes.
+# LOCAL mode: one container where FastAPI serves the frontend build.
 # The source tree and SQLite data are bind-mounted for local development.
 services:
   app:
@@ -14,8 +14,7 @@ services:
       - frontend_node_modules:/workspace/frontend/node_modules
       - ../data:/workspace/data
     ports:
-      - "127.0.0.1:8000:8000"
-      - "127.0.0.1:5173:5173"
+      - "127.0.0.1:3000:3000"
     command: ["bash", "/workspace/scripts/start_local.sh"]
 
 volumes:

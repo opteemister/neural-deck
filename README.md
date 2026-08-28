@@ -4,13 +4,13 @@ LLM Studio is a self-hosted Linux web service for launching and managing local L
 
 ## Development
 
-The local development runtime uses one Docker Compose container for the backend and frontend processes. SQLite data is persisted in the repository's ignored `data/` directory.
+The local development runtime uses one Docker Compose container. Vite rebuilds the frontend in watch mode, while FastAPI serves the generated SPA and API from one port. SQLite data is persisted in the repository's ignored `data/` directory.
 
 ```bash
 docker compose -f docker/docker-compose.yml up --build
 ```
 
-Open <http://127.0.0.1:5173> in a browser. The API health check is available at <http://127.0.0.1:8000/api/health/live>.
+Open <http://127.0.0.1:3000> in a browser. The API health check is available at <http://127.0.0.1:3000/api/health/live>.
 
 ## Production
 

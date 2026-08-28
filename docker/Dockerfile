@@ -25,5 +25,5 @@ COPY scripts ./scripts
 
 RUN chmod +x scripts/*.sh
 
-EXPOSE 8000 5173
+EXPOSE 3000
 CMD ["bash", "/workspace/scripts/start_local.sh"]

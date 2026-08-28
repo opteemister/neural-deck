@@ -85,8 +85,8 @@ Project documentation is written in English for GitHub publication. Code, commen
 
 ## Runtime and deployment
 
-- `.env.example` is the tracked variable contract; `.env.local` is used by local Compose; `.env.proxy` is the ignored production variable file copied to the host's service environment directory.
-- Any variable addition or rename updates all three env files together.
+- `.env.example` is the tracked variable contract; `.env.local` is used by local Compose; `deploy/llm-studio.env.example` is the tracked production template. The populated production file lives only at `/etc/llm-studio/llm-studio.env`.
+- Any variable addition or rename updates `.env.example`, `.env.local`, and `deploy/llm-studio.env.example` together.
 - Technical secrets belong in environment files; business or integration secrets belong in the appropriate secret store, never in source control.
 - Local Compose bind-mounts the source tree and `./data` into one application container. The backend runs on port 8000 and Vite runs on port 5173 in that container.
 - Production builds `frontend/dist`, runs Alembic before starting systemd, and serves the SPA through FastAPI. The production service owns `/var/lib/llm-studio` for SQLite and `/var/log/llm-studio` for model logs.

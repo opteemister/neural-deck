@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     model_log_dir: Path
 
     model_config = SettingsConfigDict(
-        env_file=(".env.local", "../.env.local", ".env.proxy"),
+        env_file=(".env.local", "../.env.local"),
         env_prefix="",
         extra="ignore",
     )

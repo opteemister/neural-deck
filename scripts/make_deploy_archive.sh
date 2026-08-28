@@ -28,7 +28,6 @@ tar -czf "$ARCHIVE" \
   --exclude='./data/*' \
   --exclude='./.env' \
   --exclude='./.env.local' \
-  --exclude='./.env.proxy' \
   --exclude='*/__pycache__' \
   --exclude='./.mypy_cache' \
   --exclude='./.ruff_cache' \

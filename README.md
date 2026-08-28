@@ -19,7 +19,8 @@ Production runs as a native systemd service on Linux. Build an archive and insta
 ```bash
 ./scripts/make_deploy_archive.sh
 sudo install -d -m 0750 /etc/llm-studio
-sudo install -m 0640 .env.proxy /etc/llm-studio/llm-studio.env
+sudo install -m 0640 deploy/llm-studio.env.example /etc/llm-studio/llm-studio.env
+sudoedit /etc/llm-studio/llm-studio.env
 sudo ./scripts/install_systemd_service.sh
 ```
 

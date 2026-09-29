@@ -1,37 +1,37 @@
 # AGENTS.md
 
-This is the entry document for agents working on LLM Studio. Follow the global
-constitution and technical defaults where applicable. Approved specifications
-will define the implementation.
+Это входной документ проекта для агентов. Применяются глобальные конституция и
+технические правила, если они не противоречат прямым решениям пользователя.
+Согласованная спецификация определяет реализацию. Правила развёртывания описаны
+в `DEPLOYMENT_RULES.md`.
 
-Deployment requirements are recorded in `DEPLOYMENT_RULES.md`.
+## Проект
 
-## Project
+LLM Studio — самостоятельный веб-сервис для запуска локальных языковых моделей
+через разные движки, наблюдения за ними и доступа к ним через общий API.
 
-LLM Studio is planned as a self-hosted web service for launching and managing
-local language models. Its product behavior and technical design are being
-specified from the beginning.
+## Текущее состояние
 
-## Current state
+- Разработка первой версии ведётся в ветке `codex/version-zero`.
+- До утверждения спецификации функциональность приложения не реализуется.
+- Черновики спецификаций находятся в `docs/specs/`.
 
-- `main` contains only project documentation.
-- No application, deployment workflow, verification scripts, or specifications
-  are currently implemented on `main`.
+## Согласованные ограничения
 
-## Agreed constraints for the upcoming specification
+- Обычная разработка и запуск на компьютере разработчика проходят в Docker;
+  установка проектных зависимостей непосредственно в macOS не обязательна.
+- Нативная установка на машине запуска скрипта допустима после явного
+  интерактивного подтверждения `Y/N`.
+- Основная серверная среда — Linux LXC на Proxmox с прямым доступом по SSH.
+  Docker внутри LXC для запуска приложения не требуется.
+- При удалённом развёртывании сборка выполняется на целевой машине, а не на Mac.
+- `.env` задаёт параметры запуска приложения; отдельный файл задаёт параметры
+  подключения и установки. Точные имена и состав переменных определит
+  спецификация.
 
-- Normal development happens on the local computer using Docker, without
-  maintaining project dependencies directly on the macOS host. A native install
-  on the current machine is optional and requires explicit interactive approval.
-- The intended production target is a Proxmox LXC container reachable by SSH.
-  Running Docker inside that LXC is not part of the intended deployment.
-- Remote production builds must not require project dependencies or a build on
-  macOS. Keep the first deployment workflow simple; its exact steps remain to
-  be specified.
+## Работа над проектом
 
-## Process
-
-- Discuss and approve a specification before implementing the new application.
-- Store specifications in `docs/specs/` when they are written.
-- Write project documentation and implementation artifacts in English.
-- Keep secrets and runtime data out of source control.
+- Сначала обсудить и утвердить спецификацию, затем реализовать её этапами.
+- Спецификации и документацию проекта писать на русском. Имена команд,
+  переменных, путей API и идентификаторов сохранять в исходном виде.
+- Секреты и постоянные данные не хранить в Git.

@@ -1,13 +1,12 @@
 # LLM Studio
 
-LLM Studio is a planned self-hosted web service for launching and managing local
-language models.
+LLM Studio — планируемая платформа для поиска локальных движков и моделей,
+управления запусками, наблюдения за метриками и доступа к запущенным моделям
+через общий OpenAI-совместимый API.
 
-The project is being specified from the beginning. There is no runnable
-application yet.
+Проект находится на этапе обсуждения первой версии. Черновик требований:
+[спецификация Version Zero](docs/specs/2026-09-29-version-zero.md).
+Правила локального запуска и развёртывания: [DEPLOYMENT_RULES.md](DEPLOYMENT_RULES.md).
 
-The intended development environment is Docker on the local computer. The
-intended production target is a Proxmox LXC container reachable by SSH. The
-application and deployment workflow will be defined in upcoming specifications.
-Specifications will be stored in `docs/specs/`.
-Current deployment requirements are in `DEPLOYMENT_RULES.md`.
+Обычная разработка будет проходить в Docker на компьютере разработчика.
+Основная серверная среда — Linux LXC на Proxmox с доступом по SSH.

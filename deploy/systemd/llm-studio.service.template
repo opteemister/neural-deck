@@ -1,0 +1,30 @@
+[Unit]
+Description=LLM Studio local model management service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__SERVICE_USER__
+Group=__SERVICE_GROUP__
+WorkingDirectory=__PROJECT_PATH__
+EnvironmentFile=/etc/llm-studio/llm-studio.env
+Environment=LLM_STUDIO_PROJECT_PATH=__PROJECT_PATH__
+Environment=LLM_STUDIO_BACKEND_DIR=__PROJECT_PATH__/backend
+Environment=LLM_STUDIO_APP_MODULE=app.main:app
+Environment=LLM_STUDIO_UV_BIN=__UV_BIN__
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/bin/bash __PROJECT_PATH__/deploy/run-service.sh
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+
+# The service can access model/GPU devices exposed by the target LXC. Build
+# products and the project virtualenv are prepared before startup; at runtime
+# only the configured persistent roots are writable.
+ReadWritePaths=__DATA_ROOT__ __LOG_ROOT__
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

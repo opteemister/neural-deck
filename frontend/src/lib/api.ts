@@ -1,0 +1,230 @@
+import type {
+  ApiErrorResponse,
+  ApiSuccess,
+  EngineData,
+  EnginesData,
+  DownloadRequest,
+  FormatScriptData,
+  HfRepoData,
+  HfSearchData,
+  HealthData,
+  Installation,
+  LocalModelsData,
+  ModelRegistryData,
+  LogsData,
+  MetricsData,
+  OpenAiModel,
+  OpenAiModelsData,
+  Operation,
+  ProfileData,
+  ProfileListData,
+  SettingsData,
+  StatusData,
+  SystemData,
+  TokenStatsData,
+} from '@/types/api'
+
+const apiBase = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, '') ?? ''
+
+export class StudioApiError extends Error {
+  readonly status: number
+  readonly code: string
+  readonly retryable: boolean
+  readonly requestId: string | null
+  readonly details: Record<string, unknown>
+
+  constructor(message: string, options: { status: number; code?: string; retryable?: boolean; requestId?: string | null; details?: Record<string, unknown> }) {
+    super(message)
+    this.name = 'StudioApiError'
+    this.status = options.status
+    this.code = options.code ?? 'request_failed'
+    this.retryable = options.retryable ?? false
+    this.requestId = options.requestId ?? null
+    this.details = options.details ?? {}
+  }
+}
+
+async function readError(response: Response): Promise<StudioApiError> {
+  try {
+    const body = (await response.json()) as Partial<ApiErrorResponse>
+    if (body.error) {
+      return new StudioApiError(body.error.message, {
+        status: response.status,
+        code: body.error.code,
+        retryable: body.error.retryable,
+        requestId: body.error.request_id,
+        details: body.error.details,
+      })
+    }
+  } catch {
+    // The response can be empty or non-JSON; the HTTP status remains useful.
+  }
+  return new StudioApiError(`Запрос не выполнен (${response.status})`, { status: response.status })
+}
+
+export async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers)
+  if (init?.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
+  const response = await fetch(`${apiBase}${path}`, { ...init, headers })
+  if (!response.ok) throw await readError(response)
+
+  const body = (await response.json()) as ApiSuccess<T>
+  if (!body || typeof body !== 'object' || !('data' in body)) {
+    throw new StudioApiError('Ответ API имеет неверный формат', { status: response.status, code: 'invalid_response' })
+  }
+  return body.data
+}
+
+async function openAiRequest<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers)
+  if (init?.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
+  const response = await fetch(`${apiBase}${path}`, { ...init, headers })
+  if (!response.ok) throw await readError(response)
+  return (await response.json()) as T
+}
+
+function assertOpenAiError(response: Response): void {
+  throw new StudioApiError(`Запрос не выполнен (${response.status})`, { status: response.status })
+}
+
+export type ChatStreamChunk = { content: string; done: boolean }
+
+/** Read the standard OpenAI SSE response and the JSON fallback used by small servers. */
+export async function streamChat(
+  body: { model: string; messages: Array<{ role: 'user' | 'assistant'; content: string }>; stream?: boolean },
+  onChunk: (chunk: ChatStreamChunk) => void,
+): Promise<void> {
+  const headers = new Headers({ 'Content-Type': 'application/json', Accept: 'text/event-stream, application/json' })
+  const response = await fetch(`${apiBase}/v1/chat/completions`, { method: 'POST', headers, body: JSON.stringify({ ...body, stream: true }) })
+  if (!response.ok) {
+    try {
+      const payload = (await response.json()) as ApiErrorResponse
+      if (payload.error) throw new StudioApiError(payload.error.message, { status: response.status, code: payload.error.code, retryable: payload.error.retryable, requestId: payload.error.request_id })
+    } catch (error) {
+      if (error instanceof StudioApiError) throw error
+    }
+    assertOpenAiError(response)
+  }
+
+  const contentType = response.headers.get('content-type') ?? ''
+  if (!contentType.includes('text/event-stream') || !response.body) {
+    const payload = (await response.json()) as import('@/types/api').ChatCompletionResponse
+    onChunk({ content: payload.choices?.[0]?.message?.content ?? '', done: true })
+    return
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let eventData: string[] = []
+  let finished = false
+  const dispatch = (raw: string) => {
+    const value = raw.trim()
+    if (value === '[DONE]') {
+      finished = true
+      onChunk({ content: '', done: true })
+      return
+    }
+    try {
+      const payload = JSON.parse(value) as import('@/types/api').ChatCompletionResponse
+      const choice = payload.choices?.[0]
+      const content = choice?.delta?.content ?? choice?.message?.content ?? ''
+      if (content) onChunk({ content, done: false })
+    } catch {
+      // Keep-alives and partial events are harmless; the next event completes them.
+    }
+  }
+  const consumeLine = (line: string) => {
+    const value = line.replace(/\r$/, '')
+    if (value === '') {
+      if (eventData.length > 0) {
+        dispatch(eventData.join('\n'))
+        eventData = []
+      }
+      return
+    }
+    if (value.startsWith('data:')) eventData.push(value.slice(5).replace(/^ /, ''))
+  }
+  while (!finished) {
+    const { done, value } = await reader.read()
+    buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done })
+    const lines = buffer.split(/\r?\n/)
+    buffer = lines.pop() ?? ''
+    lines.forEach(consumeLine)
+    if (done) break
+  }
+  if (!finished) {
+    if (buffer) consumeLine(buffer)
+    if (eventData.length > 0) dispatch(eventData.join('\n'))
+    onChunk({ content: '', done: true })
+  }
+}
+
+const json = (body: unknown): RequestInit => ({ method: 'POST', body: JSON.stringify(body) })
+
+export const api = {
+  getSystem: () => request<SystemData>('/api/v1/system'),
+  getStatus: () => request<StatusData>('/api/v1/status'),
+  getHealth: () => request<HealthData>('/api/v1/health'),
+  getSettings: () => request<SettingsData>('/api/v1/settings'),
+  updateSettings: (body: { models_root: string }) => request<SettingsData>('/api/v1/settings', { method: 'PATCH', body: JSON.stringify(body) }),
+  getEngines: () => request<EnginesData>('/api/v1/engines'),
+  getEngine: (id: string) => request<EngineData>(`/api/v1/engines/${encodeURIComponent(id)}`),
+  scanEngines: () => request<EnginesData>('/api/v1/engines/scan', json(undefined)),
+  getInstallations: () => request<{ items: Installation[] }>('/api/v1/installations'),
+  getInstallation: (id: string) => request<Installation>(`/api/v1/installations/${encodeURIComponent(id)}`),
+  createInstallation: (engineId: string, body: { kind: 'python_venv'; venv_name: string } | { kind: 'binary'; path: string }) => request<Operation>(`/api/v1/engines/${encodeURIComponent(engineId)}/installations`, json(body)),
+  updateInstallation: (id: string) => request<Operation>(`/api/v1/installations/${encodeURIComponent(id)}/update`, json(undefined)),
+  maintenance: (id: string, command: string) => request<Operation>(`/api/v1/installations/${encodeURIComponent(id)}/maintenance`, json({ command })),
+  getOperation: (id: string) => request<Operation>(`/api/v1/operations/${encodeURIComponent(id)}`),
+  /** Current model registry served by observed instances. */
+  getModels: () => request<ModelRegistryData>('/api/v1/models'),
+  getLocalModels: () => request<LocalModelsData>('/api/v1/models/local'),
+  scanLocalModels: () => request<LocalModelsData>('/api/v1/models/local/scan', json(undefined)),
+  searchHf: (query: string) => request<HfSearchData>(`/api/v1/models/hf/search?q=${encodeURIComponent(query)}`),
+  getHfRepo: (namespace: string, name: string, revision?: string) => request<HfRepoData>(`/api/v1/models/hf/repos/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}${revision ? `?revision=${encodeURIComponent(revision)}` : ''}`),
+  getHfFiles: (namespace: string, name: string, revision?: string) => request<HfRepoData>(`/api/v1/models/hf/repos/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/files${revision ? `?revision=${encodeURIComponent(revision)}` : ''}`),
+  downloadModels: (body: DownloadRequest) => request<Operation>('/api/v1/models/downloads', json(body)),
+  getProfiles: () => request<ProfileListData>('/api/v1/profiles'),
+  getProfile: (name: string) => request<ProfileData>(`/api/v1/profiles/${encodeURIComponent(name)}`),
+  createProfile: (body: ProfileData) => request<ProfileData>('/api/v1/profiles', { method: 'POST', body: JSON.stringify(body) }),
+  updateProfile: (name: string, body: ProfileData) => request<ProfileData>(`/api/v1/profiles/${encodeURIComponent(name)}`, { method: 'PUT', body: JSON.stringify(body) }),
+  formatScript: (script: string) => request<FormatScriptData>('/api/v1/profiles/format-script', json({ script })),
+  startProfile: (name: string) => request<import('@/types/api').Instance>(`/api/v1/profiles/${encodeURIComponent(name)}/start`, json(undefined)),
+  getInstances: () => request<{ items: import('@/types/api').Instance[] }>('/api/v1/instances'),
+  stopInstance: (id: string) => request<Operation>(`/api/v1/instances/${encodeURIComponent(id)}/stop`, json(undefined)),
+  getMetrics: (id: string) => request<MetricsData>(`/api/v1/instances/${encodeURIComponent(id)}/metrics`),
+  getLogs: (id: string, tail = 200) => request<LogsData>(`/api/v1/instances/${encodeURIComponent(id)}/logs?tail=${tail}`),
+  getTokenStats: (filters: { profile_name?: string; from?: string; to?: string } = {}) => {
+    const query = new URLSearchParams()
+    if (filters.profile_name) query.set('profile_name', filters.profile_name)
+    if (filters.from) query.set('from', filters.from)
+    if (filters.to) query.set('to', filters.to)
+    const suffix = query.toString() ? `?${query.toString()}` : ''
+    return request<TokenStatsData>(`/api/v1/token-stats${suffix}`)
+  },
+  getOpenAiModels: async (): Promise<OpenAiModelsData> => {
+    const response = await openAiRequest<{ data: OpenAiModel[] }>('/v1/models')
+    return { items: response.data }
+  },
+  completeChat: (body: { model: string; messages: Array<{ role: 'user' | 'assistant'; content: string }>; stream?: boolean }) => openAiRequest<import('@/types/api').ChatCompletionResponse>('/v1/chat/completions', { method: 'POST', body: JSON.stringify(body) }),
+  streamChat,
+}
+
+export const queryKeys = {
+  system: ['system'] as const,
+  status: ['status'] as const,
+  health: ['health'] as const,
+  settings: ['settings'] as const,
+  engines: ['engines'] as const,
+  installations: ['installations'] as const,
+  models: ['models'] as const,
+  localModels: ['local-models'] as const,
+  profiles: ['profiles'] as const,
+  instances: ['instances'] as const,
+  tokens: ['token-stats'] as const,
+  openAiModels: ['openai-models'] as const,
+  operation: (id: string) => ['operation', id] as const,
+  hfSearch: (query: string) => ['hf-search', query] as const,
+  hfRepo: (repoId: string, revision?: string) => ['hf-repo', repoId, revision ?? ''] as const,
+}

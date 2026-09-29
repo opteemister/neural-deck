@@ -1,0 +1,60 @@
+[project]
+name = "llm-studio-backend"
+version = "0.1.0"
+description = "Backend foundation for LLM Studio"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "aiosqlite>=0.20,<1",
+    "alembic>=1.14,<2",
+    "fastapi>=0.115,<1",
+    "mcp==1.27.1",
+    "psutil>=6,<8",
+    "pydantic>=2.9,<3",
+    "pydantic-settings>=2.5,<3",
+    "pyyaml>=6.0,<7",
+    "sqlalchemy[asyncio]>=2.0.36,<3",
+    "uvicorn[standard]>=0.30,<1",
+]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.27,<1",
+    "mypy>=1.13,<2",
+    "pytest>=8.3,<9",
+    "pytest-asyncio>=0.24,<1",
+    "ruff>=0.8,<1",
+    "types-psutil>=7,<8",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = [
+    "version_zero: tests required by the Version Zero specification",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["app", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+plugins = ["pydantic.mypy"]
+files = ["app"]
+exclude = ["alembic"]
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+warn_required_dynamic_aliases = false
+warn_untyped_fields = true
+
+[tool.ruff.lint.per-file-ignores]
+"app/api/*.py" = ["B008"]

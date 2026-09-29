@@ -1,0 +1,51 @@
+# Local application and deployment configuration.
+.env
+.env.local
+.env.*
+deploy.env
+
+# Persistent runtime state. These paths are mounted by Compose and are kept
+# outside the project checkout by the native service.
+/data/
+/models/
+/logs/
+
+# Python and frontend dependencies/build products.
+backend/.venv/
+backend/__pycache__/
+backend/.pytest_cache/
+frontend/node_modules/
+frontend/dist/
+frontend/build/
+frontend/.vite/
+dist/
+build/
+coverage/
+.vite/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local tooling and generated reports.
+.DS_Store
+.coverage
+coverage.xml
+htmlcov/
+*.log
+
+# Keep the tracked configuration contracts visible.
+!.env.example
+!.env.local
+!deploy.env.example
+
+# Keep canonical runtime sources and verification files visible even if a
+# broad ignore rule is added by a local tool in the future.
+!/deploy/
+!/deploy/**
+!/docker/
+!/docker/**
+!/scripts/
+!/scripts/**
+!/verify/
+!/verify/**

@@ -39,7 +39,11 @@ specific deployment tool.
 - Keep configuration, secrets, models, logs, and persistent application data
   outside the copied source tree so an update does not overwrite them.
 - A deployment must report whether the build and service startup succeeded.
-  Verify that the application responds after starting it.
+  After startup, check the service state and verify that the application
+  responds. Report a failed deployment if either check fails.
+- Provide a read-only status command that connects to the server over SSH and
+  reports the current service state and application health independently of a
+  deployment. It must clearly report SSH or health-check failures.
 
 These rules do not require release directories, archived builds, or a
 particular frontend/backend process arrangement.

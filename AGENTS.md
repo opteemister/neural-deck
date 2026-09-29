@@ -13,8 +13,6 @@ specified from the beginning.
 ## Current state
 
 - `main` contains only this document and `README.md`.
-- The previous application shell is preserved on `codex/initial-shell-backup`
-  for reference. It is not an approved implementation baseline.
 - No application, deployment workflow, verification scripts, or specifications
   are currently implemented on `main`.
 
@@ -31,5 +29,6 @@ specified from the beginning.
 ## Process
 
 - Discuss and approve a specification before implementing the new application.
+- Store specifications in `docs/specs/` when they are written.
 - Write project documentation and implementation artifacts in English.
 - Keep secrets and runtime data out of source control.

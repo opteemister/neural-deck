@@ -4,6 +4,8 @@ This is the entry document for agents working on LLM Studio. Follow the global
 constitution and technical defaults where applicable. Approved specifications
 will define the implementation.
 
+Deployment requirements are recorded in `DEPLOYMENT_RULES.md`.
+
 ## Project
 
 LLM Studio is planned as a self-hosted web service for launching and managing
@@ -12,7 +14,7 @@ specified from the beginning.
 
 ## Current state
 
-- `main` contains only this document and `README.md`.
+- `main` contains only project documentation.
 - No application, deployment workflow, verification scripts, or specifications
   are currently implemented on `main`.
 

@@ -20,13 +20,14 @@ specified from the beginning.
 
 ## Agreed constraints for the upcoming specification
 
-- Development happens on the local computer using Docker, without maintaining
-  project dependencies directly on the macOS host.
+- Normal development happens on the local computer using Docker, without
+  maintaining project dependencies directly on the macOS host. A native install
+  on the current machine is optional and requires explicit interactive approval.
 - The intended production target is a Proxmox LXC container reachable by SSH.
   Running Docker inside that LXC is not part of the intended deployment.
-- Production builds must not require project dependencies or a build on macOS.
-  Keep the first deployment workflow simple; its exact steps remain to be
-  specified.
+- Remote production builds must not require project dependencies or a build on
+  macOS. Keep the first deployment workflow simple; its exact steps remain to
+  be specified.
 
 ## Process
 

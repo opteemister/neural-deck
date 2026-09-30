@@ -95,9 +95,18 @@ def create_mcp_server(
 
     try:
         from mcp.server.fastmcp import FastMCP
+        from mcp.server.fastmcp import server as fastmcp_server_module
         from mcp.server.transport_security import TransportSecuritySettings
     except ImportError as exc:  # pragma: no cover - dependency boundary
         raise RuntimeError("официальный пакет MCP SDK не установлен") from exc
+
+    # MCP SDK leaves the generic lifespan annotation unresolved with recent
+    # pydantic-settings releases. Rebuild it with the SDK module namespace
+    # before Settings is instantiated to keep application startup warning-free.
+    fastmcp_server_module.Settings.model_rebuild(
+        force=True,
+        _types_namespace=vars(fastmcp_server_module),
+    )
 
     server = FastMCP(
         "LLM Studio",

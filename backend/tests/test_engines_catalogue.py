@@ -43,7 +43,7 @@ def test_installation_id_is_stable_for_a_canonical_path(tmp_path: Path) -> None:
 
 
 @pytest.mark.version_zero
-def test_catalogue_keeps_unknown_files_and_evaluates_hf_manifest(tmp_path: Path) -> None:
+def test_catalogue_groups_model_directories_and_evaluates_hf_manifest(tmp_path: Path) -> None:
     # spec: version-zero
     root = tmp_path / "models"
     model = root / "Qwen"
@@ -61,13 +61,13 @@ def test_catalogue_keeps_unknown_files_and_evaluates_hf_manifest(tmp_path: Path)
         "    size: 5\n",
         encoding="utf-8",
     )
-    unknown = root / "manual.custom"
-    unknown.parent.mkdir(parents=True, exist_ok=True)
-    unknown.write_bytes(b"manual")
+    (model / "README.md").write_text("model", encoding="utf-8")
     settings = Settings(data_root=tmp_path / "data", host="127.0.0.1", port=8000, models_root=root)
     paths = build_paths(settings)
     prepare_data_dirs(paths)
     items = ModelCatalogue(paths).scan()
     qwen = next(item for item in items if item.path == model)
     assert qwen.hf_match.status == "downloaded"
-    assert any(item.path == unknown and item.format == "unknown" for item in items)
+    assert [item.path for item in items] == [model]
+    assert [item.path for item in qwen.variants] == ["model.safetensors"]
+    assert qwen.supporting_files == 2

@@ -11,6 +11,7 @@ from ..config import Settings
 from ..paths import DataPaths
 from ..schemas.engines import Engine, Installation
 from .adapters import ADAPTER_BY_ID, ADAPTERS, Candidate, read_engine_manifest
+from .templates import LAUNCH_TEMPLATES
 
 
 def installation_id(engine_id: str, kind: str, path: Path) -> str:
@@ -136,6 +137,7 @@ class DiscoveryCoordinator:
             Engine(
                 id=adapter.engine_id,  # type: ignore[arg-type]
                 display_name=adapter.display_name,
+                command_template=LAUNCH_TEMPLATES[adapter.engine_id],
                 installation_kinds=list(adapter.installation_kinds),  # type: ignore[arg-type]
                 installations=by_engine[adapter.engine_id],
             )

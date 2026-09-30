@@ -27,7 +27,7 @@ describe('Profiles workflow', () => {
       if (url.endsWith('/api/v1/profiles/demo')) return Promise.resolve(new Response(envelope(currentProfile), { status: 200 }))
       if (url.endsWith('/api/v1/profiles')) return Promise.resolve(new Response(envelope({ items: [currentProfile], issues: [] }), { status: 200 }))
       if (url.endsWith('/api/v1/engines')) return Promise.resolve(new Response(envelope({ items: [engine] }), { status: 200 }))
-      if (url.endsWith('/api/v1/models/local')) return Promise.resolve(new Response(envelope({ items: [] }), { status: 200 }))
+      if (url.endsWith('/api/v1/models/local')) return Promise.resolve(new Response(envelope({ items: [{ id: 'local_1', path: '/models/space model', kind: 'directory', format: 'transformers', compatibility: 'vllm', size_bytes: null, hf_match: { status: 'unknown' } }] }), { status: 200 }))
       return Promise.resolve(new Response(envelope({ items: [] }), { status: 200 }))
     })
     vi.stubGlobal('fetch', fetchMock)
@@ -37,7 +37,7 @@ describe('Profiles workflow', () => {
     fireEvent.change(screen.getByLabelText('Имя профиля'), { target: { value: 'demo' } })
     fireEvent.change(screen.getByLabelText('Публичное имя модели'), { target: { value: 'public-qwen' } })
     fireEvent.change(screen.getByLabelText('Подтверждённая установка'), { target: { value: 'inst_1' } })
-    fireEvent.change(screen.getByLabelText('Абсолютный путь к модели'), { target: { value: '/models/space model' } })
+    fireEvent.change(screen.getByLabelText('Локальная модель'), { target: { value: '/models/space model' } })
     fireEvent.click(screen.getByRole('button', { name: 'Сохранить профиль' }))
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/v1/profiles', expect.objectContaining({ method: 'POST' })))
     fireEvent.click(await screen.findByRole('button', { name: 'Изменить' }))
@@ -46,7 +46,7 @@ describe('Profiles workflow', () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/v1/profiles/demo', expect.objectContaining({ method: 'PUT' })))
   })
 
-  it('shows the rendered command and requires review before starting', async () => {
+  it('starts a profile when the start button is clicked', async () => {
     const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) => {
       const url = String(input)
       if (url.endsWith('/api/v1/profiles')) return Promise.resolve(new Response(envelope({ items: [profile], issues: [] }), { status: 200 }))
@@ -59,13 +59,6 @@ describe('Profiles workflow', () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     render(<QueryClientProvider client={client}><MemoryRouter initialEntries={['/profiles']}><ProfilesPage /></MemoryRouter></QueryClientProvider>)
     fireEvent.click(await screen.findByRole('button', { name: 'Запустить' }))
-    const command = await screen.findByLabelText('Итоговая команда запуска')
-    expect(command).toHaveTextContent("'/opt/bin/llama server' serve --model '/models/space model'")
-    const confirm = screen.getByRole('button', { name: 'Подтвердить и запустить' })
-    expect(confirm).toBeDisabled()
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Я проверил установку, модель и итоговую команду' }))
-    expect(confirm).toBeEnabled()
-    fireEvent.click(confirm)
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/v1/profiles/demo/start', expect.objectContaining({ method: 'POST' })))
   })
 })

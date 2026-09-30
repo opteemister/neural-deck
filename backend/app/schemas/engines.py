@@ -33,6 +33,7 @@ class Engine(BaseModel):
 
     id: EngineId
     display_name: str
+    command_template: str
     installation_kinds: list[InstallationKind]
     installations: list[Installation]
 
@@ -75,6 +76,16 @@ class MaintenanceRequest(BaseModel):
     command: str = Field(min_length=1, max_length=4096)
 
 
+class OperationProgress(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    files_total: int = Field(ge=0)
+    files_completed: int = Field(ge=0)
+    bytes_total: int = Field(ge=0)
+    bytes_completed: int = Field(ge=0)
+    current_file: str | None = None
+
+
 class Operation(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -82,6 +93,7 @@ class Operation(BaseModel):
     kind: str = Field(min_length=1)
     state: OperationState
     target_id: str = Field(min_length=1)
+    label: str | None = None
     created_at: datetime
     started_at: datetime | None = None
     finished_at: datetime | None = None
@@ -91,6 +103,13 @@ class Operation(BaseModel):
     error: str | None = None
     resolved_packages: dict[str, str] | None = None
     checked_at: datetime | None = None
+    progress: OperationProgress | None = None
+
+
+class OperationList(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[Operation]
 
 
 __all__ = [
@@ -103,5 +122,7 @@ __all__ = [
     "InstallationList",
     "MaintenanceRequest",
     "Operation",
+    "OperationList",
+    "OperationProgress",
     "PythonVenvInstallationCreate",
 ]

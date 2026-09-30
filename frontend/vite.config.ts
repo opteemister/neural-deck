@@ -8,6 +8,4 @@ const root = path.dirname(fileURLToPath(import.meta.url))
 export default defineConfig({
   plugins: [react()],
   resolve: { alias: { '@': path.resolve(root, 'src') } },
-  server: { host: true, port: 5173 },
-  preview: { host: true, port: 4173 },
 })

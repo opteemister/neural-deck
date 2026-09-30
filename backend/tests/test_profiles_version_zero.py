@@ -37,6 +37,11 @@ def test_profile_repository_is_atomic_and_round_trips(tmp_path: Path) -> None:
         repository.create(profile())
     assert error.value.code == "profile_conflict"
 
+    assert repository.delete("demo") == "demo"
+    with pytest.raises(AppError) as error:
+        repository.delete("demo")
+    assert error.value.code == "profile_not_found"
+
 
 def test_profile_list_keeps_valid_files_when_another_yaml_is_broken(tmp_path: Path) -> None:
     repository = ProfileRepository(tmp_path / "profiles")
@@ -63,7 +68,7 @@ def test_profile_placeholder_rules_and_safe_quoting() -> None:
 def test_format_script_is_conservative_for_shell_syntax() -> None:
     formatted, changed, reason = format_script("vllm serve --model foo --port 1901")
     assert changed is True
-    assert "\\\n" in formatted
+    assert formatted == "vllm serve \\\n    --model foo \\\n    --port 1901"
     unchanged, changed, reason = format_script("echo '$HOME'")
     assert (unchanged, changed, reason) == (
         "echo '$HOME'",

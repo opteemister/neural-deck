@@ -7,7 +7,7 @@ import shlex
 
 from ..errors import AppError
 
-PLACEHOLDERS = ("{{engine}}", "{{model}}")
+PLACEHOLDERS = ("{{engine}}", "{{model}}", "{{model_draft}}")
 _SEPARATORS = frozenset(" \t\r\n|;&<>\n()")
 _UNSAFE_FORMAT_CHARS = frozenset(r"'\"`$;|&<>()[\]*!?#")
 
@@ -25,7 +25,7 @@ def _word_end(command: str, index: int) -> bool:
 
 
 def validate_placeholders(command: str) -> None:
-    """Validate the two supported placeholders without executing shell code.
+    """Validate supported placeholders without executing shell code.
 
     The scanner intentionally rejects anything ambiguous: quotes, escaped
     characters, assignments, comments and command substitutions.  A command
@@ -33,7 +33,7 @@ def validate_placeholders(command: str) -> None:
     """
 
     if "`" in command and any(item in command for item in PLACEHOLDERS):
-        raise PlaceholderError("{{engine}} и {{model}} нельзя использовать в command substitution")
+        raise PlaceholderError("заполнители нельзя использовать в command substitution")
     quote: str | None = None
     escaped = False
     command_substitution = 0
@@ -120,11 +120,15 @@ def validate_placeholders(command: str) -> None:
         raise PlaceholderError("незавершённая shell-конструкция в команде")
 
 
-def substitute_placeholders(command: str, *, engine: str, model: str) -> str:
+def substitute_placeholders(command: str, *, engine: str, model: str, model_draft: str | None = None) -> str:
     """Substitute validated words with shell-quoted paths."""
 
     validate_placeholders(command)
+    if "{{model_draft}}" in command and not model_draft:
+        raise AppError("draft_model_missing", "Выберите draft-модель для {{model_draft}}", status_code=422)
     values = {"{{engine}}": shlex.quote(engine), "{{model}}": shlex.quote(model)}
+    if model_draft is not None:
+        values["{{model_draft}}"] = shlex.quote(model_draft)
     for placeholder, replacement in values.items():
         command = command.replace(placeholder, replacement)
     return command
@@ -154,7 +158,15 @@ def format_script(script: str) -> tuple[str, bool, str | None]:
     # the resulting continuation is demonstrably equivalent.
     if any(not re.fullmatch(r"[A-Za-z0-9_./:@%+={}~=-]+", word) for word in words):
         return script, False, "shell_syntax_requires_manual_formatting"
-    formatted = " \\\n    ".join(words)
+    # Keep the executable and positional subcommand together, then place each
+    # option and its value(s) on one continuation line. This stays readable
+    # without expanding every individual shell word into its own line.
+    groups: list[list[str]] = [[]]
+    for word in words:
+        if word.startswith("-") and word != "-" and groups[-1]:
+            groups.append([])
+        groups[-1].append(word)
+    formatted = " \\\n    ".join(" ".join(group) for group in groups)
     return formatted, formatted != script, None
 
 

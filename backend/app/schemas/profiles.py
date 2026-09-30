@@ -5,7 +5,16 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictInt,
+    StrictStr,
+    field_validator,
+    model_validator,
+)
 
 from ..profiles.formatting import validate_placeholders
 
@@ -31,11 +40,12 @@ class ProfileModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     path: Path
+    draft_path: Path | None = None
 
-    @field_validator("path")
+    @field_validator("path", "draft_path")
     @classmethod
-    def absolute_path(cls, value: Path) -> Path:
-        if not value.is_absolute():
+    def absolute_path(cls, value: Path | None) -> Path | None:
+        if value is not None and not value.is_absolute():
             raise ValueError("путь модели должен быть абсолютным")
         return value
 
@@ -57,6 +67,12 @@ class ProfileData(BaseModel):
     command: StrictStr = Field(min_length=1)
     environment: dict[StrictStr, StrictStr] = Field(default_factory=dict)
     autostart: StrictBool = False
+
+    @model_validator(mode="after")
+    def draft_placeholder_has_path(self) -> ProfileData:
+        if "{{model_draft}}" in self.command and self.model.draft_path is None:
+            raise ValueError("для {{model_draft}} необходимо выбрать draft-модель")
+        return self
 
     @field_validator("version")
     @classmethod

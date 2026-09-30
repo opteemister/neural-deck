@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import getpass
 import hashlib
+import logging
 import os
 import signal
 from collections.abc import Awaitable, Callable, Coroutine
@@ -33,6 +34,7 @@ from .discovery import ExternalObservation, discover_external, query_models
 from .registry import ModelRegistry
 
 LOG_LIMIT = 8 * 1024 * 1024
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -73,7 +75,7 @@ class ProcessManager:
         registry: ModelRegistry | None = None,
         external_discovery: Callable[..., Awaitable[list[ExternalObservation]]] | None = None,
     ) -> None:
-        self.log_root = log_root or Path.cwd() / "logs" / "engines"
+        self.log_root = log_root or Path.cwd() / "logs" / "profiles"
         self.log_root.mkdir(parents=True, exist_ok=True)
         self.username = username or getpass.getuser()
         self.http_client = http_client
@@ -114,6 +116,13 @@ class ProcessManager:
         async with self._guard:
             active = self._active_managed()
             active_external = [item.instance for item in self._external.values()]
+            if any(item.instance.profile_name == profile.name for item in active):
+                raise AppError(
+                    "profile_already_running",
+                    "Профиль уже запущен",
+                    status_code=409,
+                    details={"profile_name": profile.name},
+                )
             registry_model = self.registry.get(profile.model_name)
             if any(item.instance.model_name == profile.model_name for item in active) or any(
                 item.model_name == profile.model_name for item in active_external
@@ -137,6 +146,7 @@ class ProcessManager:
                 profile.command,
                 engine=engine_path,
                 model=str(profile.model.path),
+                model_draft=str(profile.model.draft_path) if profile.model.draft_path else None,
             )
             port = _extract_port(command)
             if port is not None and (
@@ -151,6 +161,8 @@ class ProcessManager:
                 )
             profile_dir = self.log_root / _safe_profile_dir(profile.name)
             profile_dir.mkdir(parents=True, exist_ok=True)
+            with contextlib.suppress(OSError):
+                (profile_dir / ".profile-name").write_text(profile.name, encoding="utf-8")
             temporary_log = profile_dir / f"starting-{uuid4().hex}.log"
             env = os.environ.copy()
             env.update(dict(profile.environment))
@@ -228,6 +240,13 @@ class ProcessManager:
             self._track_task(self._wait_process(instance.id))
             self.registry.register_instance(instance)
             self._track_task(self._watch_start(instance.id))
+            logger.info(
+                "Процесс профиля запущен: profile=%s instance_id=%s pid=%s log=%s",
+                profile.name,
+                instance.id,
+                pid,
+                log_path,
+            )
             return instance
 
     def _active_managed(self) -> list[_Managed]:
@@ -251,12 +270,26 @@ class ProcessManager:
         item = self._managed.get(instance_id)
         if item is None:
             return
+        # A process can be observed as finished by both its wait task and a
+        # later explicit refresh.  Finalize it only once so read endpoints do
+        # not repeat state changes or log the same failure on every poll.
+        if item.instance.state in {"exited", "error"}:
+            return
         if item.instance.state == "stopping":
             item.instance.state = "exited"
         elif item.process.returncode == 0:
             item.instance.state = "exited"
         else:
             item.instance.state = "error"
+            logger.error(
+                "Процесс профиля завершился с ошибкой: profile=%s instance_id=%s "
+                "pid=%s returncode=%s log=%s",
+                item.instance.profile_name,
+                instance_id,
+                item.instance.pid,
+                item.process.returncode,
+                item.log_path,
+            )
         item.instance.observed_at = datetime.now(UTC)
         self.registry.clear_instance(instance_id)
 
@@ -286,6 +319,13 @@ class ProcessManager:
         )
 
     async def refresh(self) -> InstanceList:
+        """Reconcile managed and externally discovered processes.
+
+        This is an active observation operation: it may finalize child
+        processes, update the model registry, and run external discovery. It
+        must only be called by explicit process/system refresh paths, never by
+        a liveness or health probe.
+        """
         self.discovery_error = None
         for item in list(self._managed.values()):
             if item.process.returncode is not None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from typing import Any
 
@@ -11,6 +12,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from .schemas.common import ErrorBody, ErrorEnvelope
+
+logger = logging.getLogger(__name__)
 
 
 class AppError(Exception):
@@ -83,6 +86,15 @@ def _is_openai_route(request: Request) -> bool:
 
 
 async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
+    logger.warning(
+        "Ошибка приложения: method=%s path=%s status=%s code=%s message=%s request_id=%s",
+        request.method,
+        request.url.path,
+        exc.status_code,
+        exc.code,
+        exc.message,
+        request_id(request),
+    )
     if _is_openai_route(request):
         return openai_error_response(
             message=exc.message,
@@ -101,6 +113,12 @@ async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
 
 
 async def validation_error_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    logger.warning(
+        "Ошибка валидации запроса: method=%s path=%s request_id=%s",
+        request.method,
+        request.url.path,
+        request_id(request),
+    )
     if _is_openai_route(request):
         return openai_error_response(
             message="Invalid request body",
@@ -120,6 +138,14 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
 async def http_error_handler(request: Request, exc: HTTPException) -> JSONResponse:
     code = "not_found" if exc.status_code == 404 else "http_error"
     message = str(exc.detail) if isinstance(exc.detail, str) else "Ошибка HTTP-запроса"
+    logger.warning(
+        "HTTP-ошибка: method=%s path=%s status=%s message=%s request_id=%s",
+        request.method,
+        request.url.path,
+        exc.status_code,
+        message,
+        request_id(request),
+    )
     if _is_openai_route(request):
         return openai_error_response(
             message=message,
@@ -136,6 +162,12 @@ async def http_error_handler(request: Request, exc: HTTPException) -> JSONRespon
 
 
 async def unhandled_error_handler(request: Request, exc: Exception) -> JSONResponse:
+    logger.exception(
+        "Внутренняя ошибка запроса: method=%s path=%s request_id=%s",
+        request.method,
+        request.url.path,
+        request_id(request),
+    )
     if _is_openai_route(request):
         return openai_error_response(
             message="Internal server error",

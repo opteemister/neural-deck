@@ -6,8 +6,11 @@ It does not duplicate engine lifecycle logic or profile parsing.
 
 from __future__ import annotations
 
+import ast
+import asyncio
 import json
 import logging
+import re
 import time
 from collections.abc import AsyncIterator, Callable, Mapping
 from datetime import UTC, datetime
@@ -61,19 +64,65 @@ class ProxyService:
 
     async def models(self) -> dict[str, Any]:
         await self.process_manager.refresh()
-        result = []
-        for registered in sorted(
+        registered_models = sorted(
             self.process_manager.model_registry().list(), key=lambda item: item.id
-        ):
+        )
+        metadata = await asyncio.gather(
+            *(
+                self._model_metadata(item.instance_id, item.upstream_model)
+                for item in registered_models
+            )
+        )
+        result = []
+        for registered, details in zip(registered_models, metadata, strict=True):
             result.append(
                 {
                     "id": registered.id,
                     "object": "model",
                     "created": int(registered.observed_at.timestamp()),
                     "owned_by": "llm-studio",
+                    "engine_id": registered.engine_id,
+                    **details,
                 }
             )
         return {"object": "list", "data": result}
+
+    async def _model_metadata(self, instance_id: str, upstream_model: str | None) -> dict[str, Any]:
+        """Use the running engine's capacity, never a guessed model-name limit."""
+        details: dict[str, Any] = {}
+        try:
+            instance = await self.process_manager.get(instance_id)
+            if instance.port is None:
+                return {}
+            client = (
+                self.client_factory() if self.client_factory else httpx.AsyncClient(timeout=1.0)
+            )
+            async with client:
+                base = f"http://127.0.0.1:{instance.port}"
+                response = await client.get(f"{base}/v1/models", timeout=1.0)
+                if response.is_success:
+                    items = response.json().get("data", [])
+                    model = next((item for item in items if item.get("id") == upstream_model), None)
+                    if model is None and len(items) == 1:
+                        model = items[0]
+                    if model:
+                        details.update(_reasoning_capabilities(model))
+                        for key in ("max_model_len", "context_length", "max_context_length"):
+                            limit = model.get(key)
+                            if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0:
+                                details["context_length"] = limit
+                                break
+                if instance.engine_id == "llama.cpp":
+                    response = await client.get(f"{base}/props", timeout=1.0)
+                    if response.is_success:
+                        props = response.json()
+                        details.update(_reasoning_capabilities(props))
+                        limit = props.get("default_generation_settings", {}).get("n_ctx")
+                        if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0:
+                            details["context_length"] = limit
+        except (httpx.HTTPError, AppError, ValueError, TypeError, AttributeError):
+            pass
+        return details
 
     async def forward(
         self,
@@ -447,6 +496,37 @@ def _usage_values(usage: Any) -> tuple[int | None, int | None]:
         if total is not None and total >= prompt:
             completion = total - prompt
     return prompt, completion
+
+
+def _reasoning_capabilities(metadata: Mapping[str, Any]) -> dict[str, Any]:
+    """Expose only modes explicitly reported or constrained by the served template."""
+    efforts = metadata.get("supported_reasoning_efforts")
+    parameter = "reasoning_effort"
+    template = metadata.get("chat_template")
+    can_disable = metadata.get("supports_enable_thinking") is True
+    if isinstance(template, str):
+        # Inspect Jinja expressions only, not prose or comments in the template.
+        expressions = " ".join(re.findall(r"{%.*?%}|{{.*?}}", template, re.DOTALL))
+        can_disable = can_disable or bool(re.search(r"\benable_thinking\b", expressions))
+        constraint = re.search(r"\breasoning_effort\s+(?:not\s+)?in\s*(\[[^\]]+\])", expressions)
+        if constraint:
+            try:
+                efforts = ast.literal_eval(constraint.group(1))
+                parameter = "chat_template_kwargs"
+            except (ValueError, SyntaxError):
+                pass
+    allowed = {"none", "minimal", "low", "medium", "high", "xhigh"}
+    efforts = (
+        [item for item in efforts if isinstance(item, str) and item in allowed]
+        if isinstance(efforts, list) else []
+    )
+    if not efforts and not can_disable:
+        return {}
+    return {"reasoning_capabilities": {
+        "efforts": efforts,
+        "effort_parameter": parameter,
+        "can_disable_thinking": can_disable,
+    }}
 
 
 def _nonnegative_int(value: Any) -> int | None:

@@ -27,6 +27,7 @@ class GpuData(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     index: int = Field(ge=0)
+    uuid: str = Field(min_length=1)
     name: str = Field(min_length=1)
     memory_used_bytes: int = Field(ge=0)
     memory_total_bytes: int = Field(ge=0)
@@ -105,6 +106,7 @@ class SettingsData(BaseModel):
     extra_venv_roots: list[Path]
     host: str
     port: int = Field(ge=1, le=65535)
+    openai_port: int = Field(ge=1, le=65535)
 
 
 class SettingsPatch(BaseModel):

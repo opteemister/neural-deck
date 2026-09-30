@@ -189,8 +189,23 @@ export REAL_TAR="$real_tar"
 export FAKE_ROOTFS="$sandbox/fake-rootfs"
 export LLM_STUDIO_SERVICE_USER="$(id -un)"
 
+if grep -Eq 'uv[[:space:]]+sync|pnpm([^[:alnum:]]|.*[[:space:]])install|pnpm.*run[[:space:]]+build' \
+    "$test_root/docker/entrypoint.sh"; then
+    printf 'container startup must not install dependencies or perform the initial frontend build\n' >&2
+    exit 1
+fi
+
+grep -Fq 'ARG VLLM_VERSION=0.11.2' "$root/docker/Dockerfile" \
+    || { printf 'Docker image does not pin vLLM 0.11.2\n' >&2; exit 1; }
+grep -Fq 'ARG LLAMA_CPP_VERSION=b5046' "$root/docker/Dockerfile" \
+    || { printf 'Docker image does not pin llama.cpp b5046\n' >&2; exit 1; }
+grep -Fq '/opt/venvs/vllm' "$root/docker/Dockerfile" \
+    || { printf 'Docker image does not install a discoverable vLLM environment\n' >&2; exit 1; }
+grep -Fq '/usr/local/bin/llama-server' "$root/docker/Dockerfile" \
+    || { printf 'Docker image does not expose llama-server\n' >&2; exit 1; }
+
 # The container entrypoint must reject an unmounted persistence root before it
-# can launch uv, pnpm, or nginx. The temporary host directory deliberately is
+# can launch uv, pnpm, or the application. The temporary host directory deliberately is
 # not a mount target, so this exercises the loud failure path without Docker.
 mkdir -p "$runtime_data_root/models" "$runtime_data_root/logs"
 set +e
@@ -199,6 +214,8 @@ LLM_STUDIO_PERSISTENT_ROOTS="$runtime_data_root" \
 LLM_STUDIO_DATA_ROOT="$runtime_data_root" \
 MODELS_ROOT="$runtime_data_root/models" \
 LOG_ROOT="$runtime_data_root/logs" \
+HOST=0.0.0.0 \
+PORT=3000 \
     /bin/bash "$test_root/docker/entrypoint.sh" >"$sandbox/entrypoint.out" 2>&1
 entrypoint_status=$?
 set -e

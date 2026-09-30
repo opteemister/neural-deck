@@ -173,6 +173,31 @@ class ProfileRepository:
         self._atomic_write(path, profile)
         return self.get(name)
 
+    def delete(self, name: str) -> str:
+        path = self.profile_path(name)
+        if not path.exists():
+            raise AppError("profile_not_found", "Профиль не найден", status_code=404)
+        if path.is_symlink():
+            raise AppError(
+                "profile_invalid", "Символическая ссылка на профиль запрещена", status_code=422
+            )
+        try:
+            path.unlink()
+        except OSError as exc:
+            raise AppError(
+                "profile_delete_failed", f"Не удалось удалить профиль: {exc}", status_code=500
+            ) from exc
+        try:
+            directory_fd = os.open(self.profiles_dir, os.O_DIRECTORY)
+        except OSError:
+            directory_fd = -1
+        if directory_fd >= 0:
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        return name
+
     def _atomic_write(self, path: Path, profile: ProfileData) -> None:
         payload = profile.model_dump(mode="json")
         # model_dump serialises Path values as strings in JSON mode.  Keep the

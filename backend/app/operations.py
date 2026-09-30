@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import logging
 import os
 import re
 import signal
@@ -23,6 +24,7 @@ from uuid import uuid4
 from .errors import AppError
 
 MAX_OUTPUT = 64 * 1024
+logger = logging.getLogger(__name__)
 
 # Commands started from an operation inherit this task-local registry.  It
 # lets cancellation clean up the actual subprocess even when the worker is
@@ -68,8 +70,28 @@ class OperationManager:
                     details={"target_id": target_id},
                     retryable=True,
                 )
-            value: dict[str, Any] = {
+
+            # A retry of a finished operation represents the same task in the
+            # UI. Reuse its row instead of accumulating another entry for the
+            # same target, and discard older terminal duplicates left by prior
+            # retries.
+            reusable: dict[str, Any] | None = None
+            for existing_id, existing in reversed(list(self._operations.items())):
+                if existing["kind"] != kind or existing["target_id"] != target_id:
+                    continue
+                if existing["state"] in {"queued", "running"}:
+                    continue
+                if reusable is None:
+                    reusable = existing
+                else:
+                    del self._operations[existing_id]
+
+            value = reusable or {
                 "id": operation_id(),
+                "kind": kind,
+                "target_id": target_id,
+            }
+            value.update({
                 "kind": kind,
                 "state": "queued",
                 "target_id": target_id,
@@ -82,7 +104,9 @@ class OperationManager:
                 "error": None,
                 "resolved_packages": None,
                 "checked_at": None,
-            }
+                "progress": None,
+            })
+            value.pop("label", None)
             self._operations[value["id"]] = value
             self._active_targets.add(target_id)
             task = asyncio.create_task(self._run(value, lock, worker))
@@ -90,6 +114,12 @@ class OperationManager:
             self._operation_tasks[value["id"]] = task
             task.add_done_callback(self._tasks.discard)
             task.add_done_callback(partial(self._forget_operation_task, operation_id=value["id"]))
+            logger.info(
+                "Изменение запланировано: kind=%s target=%s operation_id=%s",
+                kind,
+                target_id,
+                value["id"],
+            )
             return value
 
     def _forget_operation_task(self, _task: asyncio.Task[None], *, operation_id: str) -> None:
@@ -127,6 +157,12 @@ class OperationManager:
         async with lock:
             operation["state"] = "running"
             operation["started_at"] = utc_now()
+            logger.info(
+                "Операция начата: kind=%s target=%s operation_id=%s",
+                operation["kind"],
+                operation["target_id"],
+                operation["id"],
+            )
             process_token = _CURRENT_PROCESSES.set(set())
             try:
                 await worker(operation)
@@ -150,11 +186,14 @@ class OperationManager:
                 if self._log_dir is not None:
                     try:
                         self._log_dir.mkdir(parents=True, exist_ok=True)
-                        log_path = self._log_dir / f"{operation['id']}.log"
-                        log_path.write_text(
-                            f"stdout:\n{operation['stdout']}\nstderr:\n{operation['stderr']}\n",
-                            encoding="utf-8",
-                        )
+                        log_path = self._log_dir / "operations.log"
+                        with log_path.open("a", encoding="utf-8") as log_file:
+                            log_file.write(
+                                f"\n--- operation_id={operation['id']} "
+                                f"kind={operation['kind']} target={operation['target_id']} ---\n"
+                                f"stdout:\n{operation['stdout']}\n"
+                                f"stderr:\n{operation['stderr']}\n"
+                            )
                     except OSError as exc:
                         diagnostic = f"Не удалось сохранить лог операции: {exc}"
                         operation["state"] = "failed"
@@ -165,6 +204,15 @@ class OperationManager:
                         )[:2000]
                         operation["exit_code"] = operation.get("exit_code") or 1
                 _CURRENT_PROCESSES.reset(process_token)
+                log_method = logger.info if operation["state"] == "succeeded" else logger.warning
+                log_method(
+                    "Операция завершена: kind=%s target=%s operation_id=%s state=%s error=%s",
+                    operation["kind"],
+                    operation["target_id"],
+                    operation["id"],
+                    operation["state"],
+                    operation.get("error") or "-",
+                )
 
     def get(self, value: str) -> dict[str, Any]:
         operation = self._operations.get(value)
@@ -189,6 +237,7 @@ async def run_command(
     cwd: str | None = None,
     env: dict[str, str] | None = None,
     timeout_seconds: float = 3600,
+    on_stdout_line: Callable[[str], None] | None = None,
 ) -> tuple[int, str, str]:
     """Execute a controlled argv command without involving a shell."""
 
@@ -209,8 +258,30 @@ async def run_command(
     if processes is not None:
         processes.add(process)
     completed = False
+    async def collect_output() -> tuple[bytes, bytes]:
+        if on_stdout_line is None:
+            return await process.communicate()
+        async def read_stdout() -> bytes:
+            assert process.stdout is not None
+            output = b""
+            async for line in process.stdout:
+                on_stdout_line(line.decode(errors="replace"))
+                output = (output + line)[-MAX_OUTPUT:]
+            return output
+
+        async def read_stderr() -> bytes:
+            assert process.stderr is not None
+            output = b""
+            while chunk := await process.stderr.read(8192):
+                output = (output + chunk)[-MAX_OUTPUT:]
+            return output
+
+        stdout, stderr = await asyncio.gather(read_stdout(), read_stderr())
+        await process.wait()
+        return stdout, stderr
+
     try:
-        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout_seconds)
+        stdout, stderr = await asyncio.wait_for(collect_output(), timeout=timeout_seconds)
         completed = True
     except TimeoutError:
         await _terminate_process(process)

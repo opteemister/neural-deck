@@ -23,9 +23,9 @@ const icons = {
   incomplete: CircleAlert,
 } as const
 
-export function StatusBadge({ state }: { state: string }) {
+export function StatusBadge({ state, title }: { state: string; title?: string }) {
   const Icon = icons[state as keyof typeof icons] ?? CircleDot
   const isProblem = ['error', 'broken', 'failed'].includes(state)
   const isActive = ['ok', 'ready', 'running', 'succeeded', 'downloaded'].includes(state)
-  return <Badge className={isProblem ? 'border-[#81554c] text-[#d09b87]' : isActive ? 'border-[#6e5b4e] text-[#cf9a78]' : ''}><Icon className="mr-1 size-3" aria-hidden="true" />{stateLabel(state)}</Badge>
+  return <Badge title={title} className={isProblem ? 'border-[#81554c] text-[#d09b87]' : isActive ? 'border-[#6e5b4e] text-[#cf9a78]' : ''}><Icon className="mr-1 size-3" aria-hidden="true" />{stateLabel(state)}</Badge>
 }

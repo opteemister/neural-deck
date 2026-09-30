@@ -1,6 +1,6 @@
 /** Deterministic client preview for the Version Zero profile command contract. */
 
-const PLACEHOLDERS = ['{{engine}}', '{{model}}'] as const
+const PLACEHOLDERS = ['{{engine}}', '{{model}}', '{{model_draft}}'] as const
 
 function isSeparator(value: string | undefined): boolean {
   return value === undefined || ' \t\r\n|;&<>()'.includes(value)
@@ -14,11 +14,12 @@ function shellQuote(value: string): string {
 }
 
 /**
- * Validate and render exactly the two standalone placeholders accepted by
+ * Validate and render the standalone placeholders accepted by
  * backend/app/profiles/formatting.py. The UI must never claim a preview for a
  * command the backend would reject before execution.
  */
-export function previewProfileCommand(command: string, values: { engine: string; model: string }): { ok: true; command: string } | { ok: false; error: string } {
+export function previewProfileCommand(command: string, values: { engine: string; model: string; model_draft?: string | null }): { ok: true; command: string } | { ok: false; error: string } {
+  if (command.includes('{{model_draft}}') && !values.model_draft) return { ok: false, error: 'Выберите draft-модель для {{model_draft}}.' }
   // The backend rejects backtick command substitution whenever a placeholder
   // is present. Keep this guard before scanning so the preview has the same
   // contract even when the backtick is otherwise balanced.
@@ -120,6 +121,12 @@ export function previewProfileCommand(command: string, values: { engine: string;
     ok: true,
     command: command
       .replaceAll('{{engine}}', shellQuote(values.engine))
-      .replaceAll('{{model}}', shellQuote(values.model)),
+      .replaceAll('{{model}}', shellQuote(values.model))
+      .replaceAll('{{model_draft}}', shellQuote(values.model_draft ?? '')),
   }
+}
+
+/** Profile-specific environment shown separately above the launch command. */
+export function previewProfileEnvironment(environment: Record<string, string>): string {
+  return Object.entries(environment).map(([name, value]) => `${name}=${shellQuote(value)}`).join('\n')
 }

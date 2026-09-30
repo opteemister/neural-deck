@@ -20,7 +20,7 @@ def test_prepare_data_dirs_creates_persistent_layout(settings) -> None:
         paths.profiles_dir,
         paths.venvs_dir,
         paths.studio_log_dir,
-        paths.engines_log_dir,
+        paths.profiles_log_dir,
         paths.api_log_dir,
         paths.audit_dir,
     ):

@@ -18,6 +18,7 @@ export interface Installation {
 export interface EngineData {
   id: EngineId
   display_name: string
+  command_template: string
   installation_kinds: InstallationKind[]
   installations: Installation[]
 }
@@ -31,6 +32,7 @@ export interface Operation {
   kind: string
   state: 'queued' | 'running' | 'succeeded' | 'failed'
   target_id: string
+  label?: string | null
   created_at: string
   started_at: string | null
   finished_at: string | null
@@ -40,6 +42,13 @@ export interface Operation {
   error: string | null
   resolved_packages?: Record<string, string> | null
   checked_at?: string | null
+  progress?: {
+    files_total: number
+    files_completed: number
+    bytes_total: number
+    bytes_completed: number
+    current_file: string | null
+  } | null
 }
 
 export interface CpuData {
@@ -53,6 +62,7 @@ export interface RamData {
 }
 
 export interface GpuData {
+  uuid: string
   index: number
   name: string
   memory_used_bytes: number
@@ -112,12 +122,15 @@ export interface SettingsData {
   extra_venv_roots: string[]
   host: string
   port: number
+  openai_port: number
 }
 
 export interface LocalModelArtifact {
   id: string
   path: string
   kind: 'file' | 'directory'
+  vendor?: string
+  model_name?: string
   format: string
   compatibility: string
   size_bytes: number | null
@@ -125,7 +138,35 @@ export interface LocalModelArtifact {
     status: 'downloaded' | 'incomplete' | 'unknown'
     repo_id?: string | null
     revision?: string | null
+    scope?: 'snapshot' | 'selection' | null
+    missing_files?: string[]
+    unverified_files?: string[]
   }
+  variants: Array<{ path: string; format: string; size_bytes: number | null }>
+  auxiliary_files: Array<{ path: string; format: string; size_bytes: number | null }>
+  groups?: Array<{
+    id: string
+    label: string
+    kind: 'variant' | 'auxiliary_block'
+    path: string | null
+    files: Array<{ path: string; format: string; size_bytes: number | null }>
+    file_count: number
+    size_bytes: number | null
+    status: 'complete' | 'incomplete' | 'unknown'
+    deletable: boolean
+  }>
+  auxiliary_blocks?: Array<{
+    id: string
+    label: string
+    kind: 'variant' | 'auxiliary_block'
+    path: string | null
+    files: Array<{ path: string; format: string; size_bytes: number | null }>
+    file_count: number
+    size_bytes: number | null
+    status: 'complete' | 'incomplete' | 'unknown'
+    deletable: boolean
+  }>
+  supporting_files: number
 }
 
 export interface LocalModelsData {
@@ -151,6 +192,13 @@ export interface OpenAiModel {
   object: 'model'
   created?: number
   owned_by?: string
+  context_length?: number
+  engine_id?: string
+  reasoning_capabilities?: {
+    efforts: string[]
+    effort_parameter: 'reasoning_effort' | 'chat_template_kwargs'
+    can_disable_thinking: boolean
+  }
 }
 
 export interface OpenAiModelsData {
@@ -164,6 +212,7 @@ export interface ProfileEngineRef {
 
 export interface ProfileModelRef {
   path: string
+  draft_path?: string | null
 }
 
 export interface ProfileData {
@@ -207,6 +256,35 @@ export interface LogsData {
   truncated: boolean
 }
 
+export type LogKind = 'application' | 'profile' | 'operations'
+
+export interface LogSource {
+  id: string
+  kind: LogKind
+  label: string
+  profile_name: string | null
+  file_count: number
+  updated_at: string | null
+}
+
+export interface LogSourceData {
+  items: LogSource[]
+}
+
+export interface LogLine {
+  number: number
+  text: string
+}
+
+export interface LogData {
+  source: LogSource
+  lines: LogLine[]
+  total_lines: number
+  start_line: number
+  end_line: number
+  has_older: boolean
+}
+
 export interface TokenStatsItem {
   profile_name: string
   requests: number
@@ -233,7 +311,10 @@ export interface HfSearchData {
 export interface HfRepoData {
   repo_id: string
   revision: string
+  description?: string | null
+  readme?: string | null
   files: HfFile[]
+  quantizations?: HfSearchData['items']
 }
 
 export interface FormatScriptData {
@@ -247,17 +328,36 @@ export interface ChatMessage {
   content: string
 }
 
+export interface ChatUsage {
+  prompt_tokens?: number
+  completion_tokens?: number
+  total_tokens?: number
+  completion_tokens_details?: { reasoning_tokens?: number }
+  prompt_tokens_details?: { cached_tokens?: number }
+}
+
+export interface ChatTimings {
+  prompt_n?: number
+  prompt_ms?: number
+  predicted_n?: number
+  predicted_ms?: number
+  predicted_per_second?: number
+}
+
 export interface ChatCompletionResponse {
   id?: string
   object?: string
   model?: string
-  choices: Array<{ message?: { content?: string }; delta?: { content?: string } }>
+  choices: Array<{ message?: { content?: string; reasoning_content?: string; reasoning?: string }; delta?: { content?: string; reasoning_content?: string; reasoning?: string }; finish_reason?: string | null }>
+  usage?: ChatUsage
+  timings?: ChatTimings
 }
 
 export interface DownloadRequest {
   repo_id: string
   revision: string
   files: string[] | null
+  label?: string | null
 }
 
 export interface ApiSuccess<T> {

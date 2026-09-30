@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Annotated, Any
 
-from pydantic import AliasChoices, BaseModel, Field, field_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
@@ -35,6 +35,15 @@ class Settings(BaseSettings):
     data_root: Path = Field(validation_alias=AliasChoices("LLM_STUDIO_DATA_ROOT", "data_root"))
     host: str = Field(validation_alias=AliasChoices("HOST", "host"), min_length=1)
     port: int = Field(validation_alias=AliasChoices("PORT", "port"), ge=1, le=65535)
+    openai_port: int = Field(
+        default=8080, validation_alias=AliasChoices("OPENAI_PORT", "openai_port"), ge=1, le=65535
+    )
+
+    @model_validator(mode="after")
+    def separate_http_ports(self) -> Settings:
+        if self.port == self.openai_port:
+            raise ValueError("PORT and OPENAI_PORT must be different")
+        return self
     models_root: Path | None = Field(
         default=None,
         validation_alias=AliasChoices("MODELS_ROOT", "models_root"),
@@ -85,6 +94,7 @@ class EffectiveSettings(BaseModel):
     extra_venv_roots: list[Path]
     host: str
     port: int
+    openai_port: int
 
 
 def load_settings() -> Settings:

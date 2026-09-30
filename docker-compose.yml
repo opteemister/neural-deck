@@ -1,11 +1,11 @@
 services:
   app:
     build:
-      # Only image-owned files enter the build context.  Application source,
-      # persistent data, and the populated root .env are bind-mounted at run
-      # time and therefore never get sent to the Docker daemon.
-      context: ./docker
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: docker/Dockerfile
+      args:
+        VLLM_VERSION: "0.11.2"
+        LLAMA_CPP_VERSION: "b5046"
     working_dir: /workspace
     env_file:
       # This tracked file makes a fresh checkout predictable for local Docker
@@ -21,15 +21,32 @@ services:
       LLM_STUDIO_WORKSPACE: /workspace
       LLM_STUDIO_BACKEND_DIR: /workspace/backend
       LLM_STUDIO_FRONTEND_DIR: /workspace/frontend
-      LLM_STUDIO_BACKEND_PORT: 8000
-      LLM_STUDIO_FRONTEND_PORT: 5173
+      # Local Compose keeps the image-built frontend and rebuilds it only
+      # after a source change. Production containers leave this disabled.
+      LLM_STUDIO_FRONTEND_WATCH: "1"
+      # Local backend development also reloads the Python application when
+      # files under backend/app change. The command is evaluated inside the
+      # container by docker/entrypoint.sh; the doubled dollar signs keep HOST
+      # and PORT for that shell instead of expanding them in Compose.
+      LLM_STUDIO_BACKEND_DEV_COMMAND: >-
+        exec /workspace/backend/.venv/bin/uvicorn app.main:app
+        --app-dir /workspace/backend
+        --host "$${HOST}"
+        --port "$${PORT}"
+        --reload
+        --reload-dir /workspace/backend/app
       # The entrypoint rejects runtime paths outside these actual persistent
       # mount targets before it starts any application process.
       LLM_STUDIO_PERSISTENT_ROOTS: /var/lib/llm-studio:/var/log/llm-studio
     ports:
       - "127.0.0.1:3000:3000"
+      - "127.0.0.1:${OPENAI_PORT:-8080}:${OPENAI_PORT:-8080}"
     volumes:
-      - .:/workspace
+      # Only live source folders are overlaid. Dependencies and the initial
+      # frontend build are part of the image and never come from macOS.
+      - ./backend/app:/workspace/backend/app
+      - ./backend/alembic:/workspace/backend/alembic
+      - ./frontend/src:/workspace/frontend/src
       # The source variables are Compose-only. Runtime values in .env.local or
       # .env stay absolute paths inside the container and are checked against
       # these targets by docker/entrypoint.sh.

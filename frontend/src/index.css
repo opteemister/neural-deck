@@ -39,6 +39,36 @@ button:disabled, select:disabled { cursor: default; }
 code, pre { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Consolas, monospace; }
 ::selection { background: rgb(197 128 85 / 0.35); }
 
+.chat-markdown > :first-child { margin-top: 0; }
+.chat-markdown > :last-child { margin-bottom: 0; }
+.chat-markdown p { margin: 0 0 1rem; }
+.chat-markdown h1, .chat-markdown h2, .chat-markdown h3,
+.chat-markdown h4, .chat-markdown h5, .chat-markdown h6 { margin: 1.75rem 0 .75rem; font-weight: 600; line-height: 1.4; }
+.chat-markdown h1 { font-size: 1.5rem; }
+.chat-markdown h2 { font-size: 1.25rem; }
+.chat-markdown h3 { font-size: 1.125rem; }
+.chat-markdown ul, .chat-markdown ol { padding-left: 1.5rem; margin: 1rem 0; }
+.chat-markdown ul { list-style: disc; }
+.chat-markdown ol { list-style: decimal; }
+.chat-markdown li { margin: .375rem 0; }
+.chat-markdown li > p { margin-bottom: .375rem; }
+.chat-markdown a { color: #c58055; text-decoration: underline; text-underline-offset: 3px; }
+.chat-markdown blockquote { margin: 1rem 0; padding-left: 1rem; border-left: 2px solid #363638; color: #9d9b96; }
+.chat-markdown :not(pre) > code { padding: .125rem .375rem; border-radius: 3px; background: #242527; font-size: .85em; }
+.chat-markdown hr { margin: 1.5rem 0; border-color: #363638; }
+.chat-markdown table { width: 100%; border-collapse: collapse; font-size: .8125rem; }
+.chat-markdown th, .chat-markdown td { border: 1px solid #363638; padding: .5rem .75rem; text-align: left; }
+.chat-markdown th { background: #242527; font-weight: 500; }
+
 @media (max-width: 700px) {
   body { font-size: 12px; }
+}
+
+@keyframes logs-drawer-enter {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+.logs-drawer { animation: logs-drawer-enter 180ms ease-out; }
+@media (prefers-reduced-motion: reduce) {
+  .logs-drawer { animation: none; }
 }

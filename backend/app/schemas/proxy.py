@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, ConfigDict
 
 
@@ -12,6 +14,9 @@ class OpenAIModel(BaseModel):
     object: str = "model"
     created: int
     owned_by: str = "llm-studio"
+    engine_id: str | None = None
+    context_length: int | None = None
+    reasoning_capabilities: dict[str, Any] | None = None
 
 
 class OpenAIModelList(BaseModel):

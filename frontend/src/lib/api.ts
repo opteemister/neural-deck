@@ -10,6 +10,8 @@ import type {
   HealthData,
   Installation,
   LocalModelsData,
+  LogData,
+  LogSourceData,
   ModelRegistryData,
   LogsData,
   MetricsData,
@@ -25,6 +27,20 @@ import type {
 } from '@/types/api'
 
 const apiBase = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, '') ?? ''
+let modelApiBasePromise: Promise<string> | undefined
+
+async function modelApiBase(): Promise<string> {
+  const configured = import.meta.env.VITE_OPENAI_API_BASE_URL as string | undefined
+  if (configured) return configured.replace(/\/$/, '')
+  if (!modelApiBasePromise) {
+    modelApiBasePromise = request<SettingsData>('/api/v1/settings').then((settings) => {
+      const url = new URL(apiBase || window.location.origin, window.location.origin)
+      url.port = String(settings.openai_port)
+      return url.origin
+    }).catch((error: unknown) => { modelApiBasePromise = undefined; throw error })
+  }
+  return modelApiBasePromise
+}
 
 export class StudioApiError extends Error {
   readonly status: number
@@ -78,7 +94,7 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
 async function openAiRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers)
   if (init?.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
-  const response = await fetch(`${apiBase}${path}`, { ...init, headers })
+  const response = await fetch(`${await modelApiBase()}${path}`, { ...init, headers })
   if (!response.ok) throw await readError(response)
   return (await response.json()) as T
 }
@@ -87,15 +103,16 @@ function assertOpenAiError(response: Response): void {
   throw new StudioApiError(`Запрос не выполнен (${response.status})`, { status: response.status })
 }
 
-export type ChatStreamChunk = { content: string; done: boolean }
+export type ChatStreamChunk = { content: string; done: boolean; reasoning?: string; usage?: import('@/types/api').ChatUsage; timings?: import('@/types/api').ChatTimings; finishReason?: string | null }
 
 /** Read the standard OpenAI SSE response and the JSON fallback used by small servers. */
 export async function streamChat(
-  body: { model: string; messages: Array<{ role: 'user' | 'assistant'; content: string }>; stream?: boolean },
+  body: { model: string; messages: Array<{ role: 'user' | 'assistant'; content: string }>; stream?: boolean; reasoning_effort?: string; chat_template_kwargs?: { enable_thinking?: boolean; reasoning_effort?: string } },
   onChunk: (chunk: ChatStreamChunk) => void,
+  signal?: AbortSignal,
 ): Promise<void> {
   const headers = new Headers({ 'Content-Type': 'application/json', Accept: 'text/event-stream, application/json' })
-  const response = await fetch(`${apiBase}/v1/chat/completions`, { method: 'POST', headers, body: JSON.stringify({ ...body, stream: true }) })
+  const response = await fetch(`${await modelApiBase()}/v1/chat/completions`, { method: 'POST', headers, signal, body: JSON.stringify({ ...body, stream: true, stream_options: { include_usage: true } }) })
   if (!response.ok) {
     try {
       const payload = (await response.json()) as ApiErrorResponse
@@ -109,7 +126,8 @@ export async function streamChat(
   const contentType = response.headers.get('content-type') ?? ''
   if (!contentType.includes('text/event-stream') || !response.body) {
     const payload = (await response.json()) as import('@/types/api').ChatCompletionResponse
-    onChunk({ content: payload.choices?.[0]?.message?.content ?? '', done: true })
+    const message = payload.choices?.[0]?.message
+    onChunk({ content: message?.content ?? '', reasoning: message?.reasoning_content ?? message?.reasoning, usage: payload.usage, timings: payload.timings, finishReason: payload.choices?.[0]?.finish_reason, done: true })
     return
   }
 
@@ -129,7 +147,8 @@ export async function streamChat(
       const payload = JSON.parse(value) as import('@/types/api').ChatCompletionResponse
       const choice = payload.choices?.[0]
       const content = choice?.delta?.content ?? choice?.message?.content ?? ''
-      if (content) onChunk({ content, done: false })
+      const reasoning = choice?.delta?.reasoning_content ?? choice?.delta?.reasoning ?? choice?.message?.reasoning_content ?? choice?.message?.reasoning
+      if (content || reasoning || payload.usage || payload.timings || choice?.finish_reason) onChunk({ content, reasoning, usage: payload.usage, timings: payload.timings, finishReason: choice?.finish_reason, done: false })
     } catch {
       // Keep-alives and partial events are harmless; the next event completes them.
     }
@@ -145,18 +164,23 @@ export async function streamChat(
     }
     if (value.startsWith('data:')) eventData.push(value.slice(5).replace(/^ /, ''))
   }
-  while (!finished) {
-    const { done, value } = await reader.read()
-    buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done })
-    const lines = buffer.split(/\r?\n/)
-    buffer = lines.pop() ?? ''
-    lines.forEach(consumeLine)
-    if (done) break
-  }
-  if (!finished) {
-    if (buffer) consumeLine(buffer)
-    if (eventData.length > 0) dispatch(eventData.join('\n'))
-    onChunk({ content: '', done: true })
+  try {
+    while (!finished) {
+      const { done, value } = await reader.read()
+      buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done })
+      const lines = buffer.split(/\r?\n/)
+      buffer = lines.pop() ?? ''
+      lines.forEach(consumeLine)
+      if (done) break
+    }
+    if (!finished) {
+      if (buffer) consumeLine(buffer)
+      if (eventData.length > 0) dispatch(eventData.join('\n'))
+      onChunk({ content: '', done: true })
+    }
+  } finally {
+    await reader.cancel().catch(() => undefined)
+    reader.releaseLock()
   }
 }
 
@@ -177,24 +201,43 @@ export const api = {
   updateInstallation: (id: string) => request<Operation>(`/api/v1/installations/${encodeURIComponent(id)}/update`, json(undefined)),
   maintenance: (id: string, command: string) => request<Operation>(`/api/v1/installations/${encodeURIComponent(id)}/maintenance`, json({ command })),
   getOperation: (id: string) => request<Operation>(`/api/v1/operations/${encodeURIComponent(id)}`),
+  getDownloads: () => request<{ items: Operation[] }>('/api/v1/operations?kind=download'),
+  cancelOperation: (id: string) => request<Operation>(`/api/v1/operations/${encodeURIComponent(id)}/cancel`, json(undefined)),
   /** Current model registry served by observed instances. */
   getModels: () => request<ModelRegistryData>('/api/v1/models'),
   getLocalModels: () => request<LocalModelsData>('/api/v1/models/local'),
   scanLocalModels: () => request<LocalModelsData>('/api/v1/models/local/scan', json(undefined)),
+  deleteLocalModel: (id: string) => request<LocalModelsData>(`/api/v1/models/local/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  deleteLocalModelGroup: (modelId: string, groupId: string) => request<LocalModelsData>(`/api/v1/models/local/${encodeURIComponent(modelId)}/groups/${encodeURIComponent(groupId)}`, { method: 'DELETE' }),
   searchHf: (query: string) => request<HfSearchData>(`/api/v1/models/hf/search?q=${encodeURIComponent(query)}`),
   getHfRepo: (namespace: string, name: string, revision?: string) => request<HfRepoData>(`/api/v1/models/hf/repos/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}${revision ? `?revision=${encodeURIComponent(revision)}` : ''}`),
+  getHfQuantizations: (namespace: string, name: string) => request<import('@/types/api').HfSearchData>(`/api/v1/models/hf/repos/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/quantizations`),
   getHfFiles: (namespace: string, name: string, revision?: string) => request<HfRepoData>(`/api/v1/models/hf/repos/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/files${revision ? `?revision=${encodeURIComponent(revision)}` : ''}`),
   downloadModels: (body: DownloadRequest) => request<Operation>('/api/v1/models/downloads', json(body)),
   getProfiles: () => request<ProfileListData>('/api/v1/profiles'),
   getProfile: (name: string) => request<ProfileData>(`/api/v1/profiles/${encodeURIComponent(name)}`),
   createProfile: (body: ProfileData) => request<ProfileData>('/api/v1/profiles', { method: 'POST', body: JSON.stringify(body) }),
   updateProfile: (name: string, body: ProfileData) => request<ProfileData>(`/api/v1/profiles/${encodeURIComponent(name)}`, { method: 'PUT', body: JSON.stringify(body) }),
+  deleteProfile: (name: string) => request<{ name: string }>(`/api/v1/profiles/${encodeURIComponent(name)}`, { method: 'DELETE' }),
   formatScript: (script: string) => request<FormatScriptData>('/api/v1/profiles/format-script', json({ script })),
   startProfile: (name: string) => request<import('@/types/api').Instance>(`/api/v1/profiles/${encodeURIComponent(name)}/start`, json(undefined)),
+  startProfileConfiguration: (body: ProfileData) => request<import('@/types/api').Instance>('/api/v1/profiles/start', json(body)),
   getInstances: () => request<{ items: import('@/types/api').Instance[] }>('/api/v1/instances'),
   stopInstance: (id: string) => request<Operation>(`/api/v1/instances/${encodeURIComponent(id)}/stop`, json(undefined)),
   getMetrics: (id: string) => request<MetricsData>(`/api/v1/instances/${encodeURIComponent(id)}/metrics`),
   getLogs: (id: string, tail = 200) => request<LogsData>(`/api/v1/instances/${encodeURIComponent(id)}/logs?tail=${tail}`),
+  getLogSources: () => request<LogSourceData>('/api/v1/logs'),
+  getLog: (id: string, before?: number, limit = 500) => {
+    const query = new URLSearchParams({ limit: String(limit) })
+    if (before !== undefined) query.set('before', String(before))
+    return request<LogData>(`/api/v1/logs/${encodeURIComponent(id)}?${query.toString()}`)
+  },
+  deleteLog: (id: string) => request<{ id: string; deleted_files: number }>(`/api/v1/logs/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  downloadLog: async (id: string): Promise<Blob> => {
+    const response = await fetch(`${apiBase}/api/v1/logs/${encodeURIComponent(id)}/download`)
+    if (!response.ok) throw await readError(response)
+    return response.blob()
+  },
   getTokenStats: (filters: { profile_name?: string; from?: string; to?: string } = {}) => {
     const query = new URLSearchParams()
     if (filters.profile_name) query.set('profile_name', filters.profile_name)
@@ -224,7 +267,11 @@ export const queryKeys = {
   instances: ['instances'] as const,
   tokens: ['token-stats'] as const,
   openAiModels: ['openai-models'] as const,
+  logs: ['logs'] as const,
+  log: (id: string) => ['log', id] as const,
   operation: (id: string) => ['operation', id] as const,
+  downloads: ['operations', 'download'] as const,
   hfSearch: (query: string) => ['hf-search', query] as const,
   hfRepo: (repoId: string, revision?: string) => ['hf-repo', repoId, revision ?? ''] as const,
+  hfQuantizations: (repoId: string) => ['hf-quantizations', repoId] as const,
 }

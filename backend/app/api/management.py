@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import os
 import tempfile
 from pathlib import Path
@@ -27,6 +28,7 @@ from ..schemas.engines import (
     InstallationList,
     MaintenanceRequest,
     Operation,
+    OperationList,
 )
 from ..schemas.models import (
     DownloadRequest,
@@ -49,6 +51,7 @@ from .dependencies import (
 )
 
 router = APIRouter(prefix="/api/v1", tags=["management"])
+logger = logging.getLogger(__name__)
 
 
 def success(
@@ -82,7 +85,7 @@ async def status_endpoint(
     engine: AsyncEngine = Depends(get_engine),
 ) -> JSONResponse:
     runtime = get_runtime(request)
-    model_count = await runtime.refresh_for_status()
+    model_count = runtime.model_count_for_status()
     return success(
         request,
         await collect_status(
@@ -99,7 +102,7 @@ async def status_endpoint(
 @router.get("/healthz", response_model=SuccessEnvelope[HealthData], include_in_schema=False)
 async def health(request: Request, engine: AsyncEngine = Depends(get_engine)) -> JSONResponse:
     runtime = get_runtime(request)
-    model_count = await runtime.refresh_for_status()
+    model_count = runtime.model_count_for_status()
     return success(
         request,
         health_from_status(
@@ -175,6 +178,11 @@ async def patch_settings(
     runtime.replace_paths(updated, catalogue)
     request.app.state.paths = updated
     request.app.state.model_catalogue = catalogue
+    logger.info(
+        "Настройки изменены: models_root=%s request_id=%s",
+        models_root,
+        getattr(request.state, "request_id", "req_unknown"),
+    )
     return success(request, effective_settings(app_settings, updated))
 
 
@@ -290,6 +298,32 @@ async def maintenance(
     return success(request, operation_data(operation), status_code=status.HTTP_202_ACCEPTED)
 
 
+@router.get("/operations", response_model=SuccessEnvelope[OperationList])
+async def operations(
+    request: Request,
+    kind: str | None = None,
+    active: bool = False,
+    service: EngineService = Depends(get_engine_service),
+) -> JSONResponse:
+    values = service.operations.all()
+    if kind is not None:
+        values = [value for value in values if value["kind"] == kind]
+    if active:
+        values = [value for value in values if value["state"] in {"queued", "running"}]
+    values.sort(key=lambda value: value["created_at"], reverse=True)
+    return success(request, {"items": [operation_data(value) for value in values]})
+
+
+@router.post("/operations/{operation_id}/cancel", response_model=SuccessEnvelope[Operation])
+async def cancel_operation(
+    request: Request,
+    operation_id: str,
+    service: EngineService = Depends(get_engine_service),
+) -> JSONResponse:
+    await service.operations.cancel(operation_id)
+    return success(request, operation_data(service.operations.get(operation_id)))
+
+
 @router.get("/operations/{operation_id}", response_model=SuccessEnvelope[Operation])
 async def operation_detail(
     request: Request,
@@ -313,6 +347,41 @@ async def local_models(
     request: Request, catalogue: ModelCatalogue = Depends(get_model_catalogue)
 ) -> JSONResponse:
     return success(request, {"items": await asyncio.to_thread(catalogue.items)})
+
+
+@router.delete("/models/local/{model_id}", response_model=SuccessEnvelope[LocalModelList])
+async def delete_local_model(
+    request: Request,
+    model_id: str,
+    catalogue: ModelCatalogue = Depends(get_model_catalogue),
+) -> JSONResponse:
+    result = await asyncio.to_thread(catalogue.delete, model_id)
+    logger.info(
+        "Локальная модель удалена: model_id=%s request_id=%s",
+        model_id,
+        getattr(request.state, "request_id", "req_unknown"),
+    )
+    return success(request, {"items": result})
+
+
+@router.delete("/models/local/{model_id}/groups/{group_id}", response_model=SuccessEnvelope[LocalModelList])
+async def delete_local_model_group(
+    request: Request,
+    model_id: str,
+    group_id: str,
+    catalogue: ModelCatalogue = Depends(get_model_catalogue),
+) -> JSONResponse:
+    result = await asyncio.to_thread(catalogue.delete_group, model_id, group_id)
+    logger.info(
+        "Вариант локальной модели удалён: model_id=%s group_id=%s request_id=%s",
+        model_id,
+        group_id,
+        getattr(request.state, "request_id", "req_unknown"),
+    )
+    return success(
+        request,
+        {"items": result},
+    )
 
 
 @router.get("/models", response_model=SuccessEnvelope[ModelRegistryData])
@@ -344,7 +413,12 @@ async def models_registry(
 async def scan_local_models(
     request: Request, catalogue: ModelCatalogue = Depends(get_model_catalogue)
 ) -> JSONResponse:
-    return success(request, {"items": await asyncio.to_thread(catalogue.scan)})
+    # An explicit user sync is the expensive, authoritative operation: refresh
+    # Hub metadata and verify every manifest file, including its content hash.
+    return success(
+        request,
+        {"items": await asyncio.to_thread(catalogue.scan, verify_hashes=True)},
+    )
 
 
 @router.get("/models/hf/search", response_model=SuccessEnvelope[HfSearchData])
@@ -363,6 +437,16 @@ async def hf_repo(
     catalogue: ModelCatalogue = Depends(get_model_catalogue),
 ) -> JSONResponse:
     return success(request, await catalogue.hf_repo(f"{namespace}/{name}", revision))
+
+
+@router.get("/models/hf/repos/{namespace}/{name}/quantizations", response_model=SuccessEnvelope[HfSearchData])
+async def hf_repo_quantizations(
+    request: Request,
+    namespace: str,
+    name: str,
+    catalogue: ModelCatalogue = Depends(get_model_catalogue),
+) -> JSONResponse:
+    return success(request, await catalogue.hf_quantizations(f"{namespace}/{name}"))
 
 
 @router.get("/models/hf/repos/{namespace}/{name}/files", response_model=SuccessEnvelope[HfRepoData])
@@ -387,4 +471,12 @@ async def download_models(
     catalogue: ModelCatalogue = Depends(get_model_catalogue),
 ) -> JSONResponse:
     operation = await catalogue.download(payload)
+    logger.info(
+        "Скачивание модели запланировано: repo=%s revision=%s label=%s operation_id=%s request_id=%s",
+        payload.repo_id,
+        payload.revision,
+        payload.label or payload.repo_id,
+        operation.get("id", "unknown"),
+        getattr(request.state, "request_id", "req_unknown"),
+    )
     return success(request, operation_data(operation), status_code=status.HTTP_202_ACCEPTED)

@@ -95,17 +95,14 @@ class AppContainer:
                 result.append({"component": component, "code": code, "message": error})
         return result
 
-    async def refresh_for_status(self) -> int:
-        """Refresh observed processes and return the current route count."""
+    def model_count_for_status(self) -> int:
+        """Read the current registry count without refreshing process state.
 
-        try:
-            await self.process_manager.refresh()
-        except Exception as exc:  # noqa: BLE001 - status must remain honest and available
-            self.add_diagnostic("process_discovery", "scan_failed", str(exc))
-        if self.process_manager.discovery_error:
-            self.add_diagnostic(
-                "process_discovery", "scan_failed", self.process_manager.discovery_error
-            )
+        Health and status probes are intentionally read-only. Process
+        discovery and child-process reconciliation happen at startup or via
+        explicit instance/system refresh endpoints.
+        """
+
         return len(self.model_registry.list())
 
     def replace_paths(self, paths: DataPaths, catalogue: ModelCatalogue) -> None:

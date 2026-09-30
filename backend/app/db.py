@@ -59,6 +59,8 @@ async def migrate_database(settings: Settings, paths: DataPaths) -> None:
 
     def upgrade() -> None:
         config = Config(str(ALEMBIC_CONFIG_PATH))
+        # Embedded migrations must preserve the host application's handlers.
+        config.attributes["configure_logging"] = False
         config.attributes["llm_studio_settings"] = settings
         config.attributes["llm_studio_paths"] = paths
         command.upgrade(config, "head")

@@ -25,12 +25,12 @@ class DataPaths:
     venvs_dir: Path
     log_root: Path
     studio_log_dir: Path
-    engines_log_dir: Path
+    profiles_log_dir: Path
+    operations_log_dir: Path
     api_log_dir: Path
     audit_dir: Path
     sqlite_path: Path
     settings_path: Path
-
 
 @dataclass(frozen=True, slots=True)
 class PathDiagnostic:
@@ -75,7 +75,8 @@ def build_paths(settings: Settings, *, include_saved_settings: bool = True) -> D
         venvs_dir=root / "runtime" / "venvs",
         log_root=log_root,
         studio_log_dir=log_root / "studio",
-        engines_log_dir=log_root / "engines",
+        profiles_log_dir=log_root / "profiles",
+        operations_log_dir=log_root / "operations",
         api_log_dir=log_root / "api",
         audit_dir=root / "audit",
         sqlite_path=root / "data" / "llm-studio.sqlite3",
@@ -96,7 +97,8 @@ def prepare_data_dirs(paths: DataPaths) -> None:
         paths.venvs_dir,
         paths.log_root,
         paths.studio_log_dir,
-        paths.engines_log_dir,
+        paths.profiles_log_dir,
+        paths.operations_log_dir,
         paths.api_log_dir,
         paths.audit_dir,
     )
@@ -151,6 +153,7 @@ def effective_settings(settings: Settings, paths: DataPaths) -> dict[str, object
         "extra_venv_roots": list(settings.extra_venv_roots),
         "host": settings.host,
         "port": settings.port,
+        "openai_port": settings.openai_port,
     }
 
 

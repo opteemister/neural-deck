@@ -18,6 +18,7 @@ from ..paths import DataPaths
 from ..schemas.engines import Engine, Installation, Operation
 from .adapters import ADAPTER_BY_ID, ADAPTERS
 from .discovery import DiscoveryCoordinator, DiscoveryResult
+from .templates import LAUNCH_TEMPLATES
 
 PYTHON_PACKAGES = {
     "vllm": ("vllm", "--torch-backend=auto"),
@@ -38,7 +39,7 @@ class EngineService:
     ) -> None:
         self.settings = settings
         self.paths = paths
-        self.operations = operations or OperationManager(paths.engines_log_dir)
+        self.operations = operations or OperationManager(paths.operations_log_dir)
         self.installation_in_use = installation_in_use
         self._result: DiscoveryResult | None = None
         self.scan_error: str | None = None
@@ -64,6 +65,7 @@ class EngineService:
                 Engine(
                     id=adapter.engine_id,  # type: ignore[arg-type]
                     display_name=adapter.display_name,
+                    command_template=LAUNCH_TEMPLATES[adapter.engine_id],
                     installation_kinds=list(adapter.installation_kinds),  # type: ignore[arg-type]
                     installations=[],
                 )

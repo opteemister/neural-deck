@@ -15,7 +15,7 @@ from .service import ProxyService
 router = APIRouter(prefix="/v1", tags=["openai"])
 
 
-@router.get("/models", response_model=OpenAIModelList)
+@router.get("/models", response_model=OpenAIModelList, response_model_exclude_none=True)
 async def models(service: ProxyService = Depends(get_proxy_service)) -> dict[str, Any]:  # noqa: B008
     return await service.models()
 

@@ -4,9 +4,10 @@ set -euo pipefail
 workspace=${LLM_STUDIO_WORKSPACE:-/workspace}
 backend_dir=${LLM_STUDIO_BACKEND_DIR:-"$workspace/backend"}
 frontend_dir=${LLM_STUDIO_FRONTEND_DIR:-"$workspace/frontend"}
-backend_port=${LLM_STUDIO_BACKEND_PORT:-8000}
-frontend_port=${LLM_STUDIO_FRONTEND_PORT:-5173}
 backend_module=${LLM_STUDIO_APP_MODULE:-app.main:app}
+
+: "${HOST:?HOST is required}"
+: "${PORT:?PORT is required}"
 
 die_runtime() {
     printf 'LLM Studio runtime configuration error: %s\n' "$*" >&2
@@ -90,6 +91,10 @@ if [[ ! -d "$frontend_dir" ]]; then
     printf 'LLM Studio frontend directory is missing: %s\n' "$frontend_dir" >&2
     exit 1
 fi
+if [[ ! -f "$frontend_dir/dist/index.html" ]]; then
+    printf 'LLM Studio frontend build is missing: %s. Rebuild the image.\n' "$frontend_dir/dist/index.html" >&2
+    exit 1
+fi
 
 start_backend() {
     if [[ -n "${LLM_STUDIO_BACKEND_DEV_COMMAND:-}" ]]; then
@@ -97,62 +102,74 @@ start_backend() {
         return
     fi
 
-    if [[ -f "$backend_dir/pyproject.toml" ]]; then
-        # The source is bind-mounted, so the venv and the dependency cache are
-        # created in the container/workspace without any host installation.
-        uv sync --project "$backend_dir" --locked
-        exec uv run --project "$backend_dir" --no-sync \
-            uvicorn "$backend_module" \
-            --host 0.0.0.0 \
-            --port "$backend_port" \
-            --reload \
-            --reload-dir "$backend_dir"
+    if [[ -x "$backend_dir/.venv/bin/uvicorn" ]]; then
+        if [[ "${LLM_STUDIO_FRONTEND_WATCH:-0}" == "1" ]]; then
+            "$backend_dir/.venv/bin/uvicorn" "$backend_module" \
+                --app-dir "$backend_dir" \
+                --host "$HOST" \
+                --port "$PORT"
+        else
+            exec "$backend_dir/.venv/bin/uvicorn" "$backend_module" \
+                --app-dir "$backend_dir" \
+                --host "$HOST" \
+                --port "$PORT"
+        fi
     fi
 
-    printf 'Backend command is not configured and %s is missing. Set LLM_STUDIO_BACKEND_DEV_COMMAND or add pyproject.toml.\n' "$backend_dir/pyproject.toml" >&2
+    printf 'Backend runtime is missing: %s. Rebuild the image.\n' "$backend_dir/.venv/bin/uvicorn" >&2
     return 1
 }
 
-start_frontend() {
-    if [[ -n "${LLM_STUDIO_FRONTEND_DEV_COMMAND:-}" ]]; then
-        bash -lc "$LLM_STUDIO_FRONTEND_DEV_COMMAND"
-        return
-    fi
+watch_frontend() {
+    exec pnpm --dir "$frontend_dir" exec vite build --watch
+}
 
-    if [[ ! -f "$frontend_dir/package.json" ]]; then
-        printf 'Frontend package manifest is missing: %s\n' "$frontend_dir/package.json" >&2
-        return 1
-    fi
+if [[ "${LLM_STUDIO_FRONTEND_WATCH:-0}" == "1" ]]; then
+    frontend_watch_pid=""
+    backend_pid=""
 
-    command -v pnpm >/dev/null 2>&1 || {
-        printf 'pnpm is required to install the frontend dependencies from pnpm-lock.yaml.\n' >&2
-        return 1
+    watch_frontend &
+    frontend_watch_pid=$!
+
+    stop_children() {
+        if [[ -n "${backend_pid:-}" ]]; then
+            kill -TERM "$backend_pid" 2>/dev/null || true
+        fi
+        if [[ -n "${frontend_watch_pid:-}" ]]; then
+            kill -TERM "$frontend_watch_pid" 2>/dev/null || true
+        fi
     }
-    # Run the lockfile check on every start so a stale or partially populated
-    # bind-mounted node_modules directory cannot mask missing dependencies.
-    (cd "$frontend_dir" && pnpm install --frozen-lockfile)
-    exec pnpm --dir "$frontend_dir" run dev --host 0.0.0.0 --port "$frontend_port"
-}
 
-children=()
-cleanup() {
-    local child
-    for child in "${children[@]:-}"; do
-        kill -- "$child" 2>/dev/null || true
-    done
-    wait 2>/dev/null || true
-}
-trap cleanup EXIT INT TERM
+    forward_signal() {
+        stop_children
+    }
 
-start_backend &
-children+=("$!")
-start_frontend &
-children+=("$!")
+    cleanup() {
+        local status=$?
+        trap - EXIT INT TERM
+        stop_children
+        if [[ -n "${backend_pid:-}" ]]; then
+            wait "$backend_pid" 2>/dev/null || true
+        fi
+        if [[ -n "${frontend_watch_pid:-}" ]]; then
+            wait "$frontend_watch_pid" 2>/dev/null || true
+        fi
+        exit "$status"
+    }
 
-# nginx is the single externally exposed process and joins the same lifecycle
-# as the two watch processes above.
-nginx -g 'daemon off;' &
-children+=("$!")
-
-wait -n "${children[@]}"
-exit 1
+    # The shell is PID 1 in the watcher mode. Forward Docker's TERM to both
+    # children so uvicorn can close its lifespan instead of being hard-killed
+    # after Docker's stop timeout.
+    trap forward_signal INT TERM
+    trap cleanup EXIT
+    start_backend &
+    backend_pid=$!
+    if wait "$backend_pid"; then
+        backend_status=0
+    else
+        backend_status=$?
+    fi
+    exit "$backend_status"
+else
+    start_backend
+fi

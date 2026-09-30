@@ -17,14 +17,10 @@ from ..operations import OperationManager, run_command, safe_target_name, utc_no
 from ..paths import DataPaths
 from ..schemas.engines import Engine, Installation, Operation
 from .adapters import ADAPTER_BY_ID, ADAPTERS
-from .discovery import DiscoveryCoordinator, DiscoveryResult
+from .discovery import DiscoveryCoordinator, DiscoveryResult, installation_id
 from .templates import LAUNCH_TEMPLATES
+from .installation_templates import installation_template, frontend_installation_template
 
-PYTHON_PACKAGES = {
-    "vllm": ("vllm", "--torch-backend=auto"),
-    "sglang": ("sglang", "--prerelease", "allow"),
-    "freetoken": ("freetoken[accel]",),
-}
 VERSION_COMMANDS = {"vllm": "vllm", "sglang": "sglang", "freetoken": "ft"}
 
 
@@ -43,13 +39,20 @@ class EngineService:
         self.installation_in_use = installation_in_use
         self._result: DiscoveryResult | None = None
         self.scan_error: str | None = None
+        self._binary_registry = self.paths.data_root / 'config' / 'engine-binaries.yaml'
+        self._binary_paths: dict[str, str] = {}
+        if self._binary_registry.exists():
+            entries = yaml.safe_load(self._binary_registry.read_text(encoding='utf-8'))
+            if not isinstance(entries, dict) or any(not isinstance(path, str) or engine not in ADAPTER_BY_ID or ADAPTER_BY_ID[engine].kind != 'binary' for path, engine in entries.items()):
+                raise ValueError('Неверный реестр бинарных движков')
+            self._binary_paths = entries
 
     async def close(self) -> None:
         await self.operations.close()
 
     def scan(self) -> DiscoveryResult:
         try:
-            self._result = DiscoveryCoordinator(self.settings, self.paths).scan()
+            self._result = DiscoveryCoordinator(self.settings, self.paths).scan(explicit=[(engine, Path(path)) for path, engine in self._binary_paths.items()])
         except Exception as exc:  # noqa: BLE001 - discovery boundary
             self.mark_scan_failed(exc)
             raise
@@ -66,6 +69,8 @@ class EngineService:
                     id=adapter.engine_id,  # type: ignore[arg-type]
                     display_name=adapter.display_name,
                     command_template=LAUNCH_TEMPLATES[adapter.engine_id],
+                    installation_template=frontend_installation_template(adapter.engine_id, self.paths.runtime_dir / 'builds'),
+                    installation_root=str(self.paths.venvs_dir) if adapter.kind == 'python_venv' else '',
                     installation_kinds=list(adapter.installation_kinds),  # type: ignore[arg-type]
                     installations=[],
                 )
@@ -106,89 +111,70 @@ class EngineService:
             raise ValueError(installation.diagnostic or "Установка движка недоступна")
         return installation.executable_path
 
-    async def create_installation(self, engine_id: str, request: Any) -> dict[str, Any]:
+    def installation_target(self, engine_id: str, request: Any) -> Path:
         adapter = ADAPTER_BY_ID.get(engine_id)
         if adapter is None:
             raise AppError("engine_not_found", "Движок не найден", status_code=404)
-        if request.kind == "binary":
-            if adapter.kind != "binary":
-                raise AppError("unsupported_operation", "Для этого движка нужен Python venv")
-            path = request.path.expanduser()
-            if not path.is_absolute():
-                raise AppError(
-                    "invalid_binary_path",
-                    "Путь к бинарнику должен быть абсолютным",
-                    status_code=422,
-                )
-            # Registration is still asynchronous so the caller gets the same
-            # operation contract as managed venv creation.
-            target_id = str(path.resolve(strict=False))
+        if request.kind != adapter.kind:
+            raise AppError("unsupported_operation", "Способ установки не соответствует движку", status_code=422)
+        if request.kind == 'python_venv':
+            return self.paths.venvs_dir / safe_target_name(request.venv_name)
+        path = request.path.expanduser()
+        if not path.is_absolute() or path == Path('/'):
+            raise AppError("invalid_binary_path", "Укажите абсолютный путь к бинарнику", status_code=422)
+        return path.parent.resolve(strict=False) / path.name
 
-            async def register(operation: dict[str, Any]) -> None:
-                result = await asyncio.to_thread(
-                    DiscoveryCoordinator(self.settings, self.paths).scan,
-                    explicit=[(engine_id, path)],
-                )
-                found = [
-                    item
-                    for item in result.installations
-                    if item.root_path == path.resolve(strict=False)
-                ]
-                if not found or not found[0].verified:
-                    raise RuntimeError(
-                        found[0].diagnostic if found else "Бинарник не прошёл проверку"
-                    )
-                operation["stdout"] = "Бинарник зарегистрирован"
-                operation["checked_at"] = utc_now()
-                self._result = result
+    def preview_installation(self, engine_id: str, request: Any) -> dict[str, str]:
+        target = self.installation_target(engine_id, request)
+        return {'command': installation_template(engine_id, target, self.paths.data_root / 'runtime' / 'builds')}
 
-            return await self.operations.create("register_binary", target_id, register)
-        if adapter.kind != "python_venv":
-            raise AppError("unsupported_operation", "Для этого движка нужен бинарник")
-        name = safe_target_name(request.venv_name)
-        target_path = self.paths.venvs_dir / name
-        if target_path.exists():
-            raise AppError(
-                "installation_conflict", "Окружение с таким именем уже существует", status_code=409
-            )
+    async def create_installation(self, engine_id: str, request: Any) -> dict[str, Any]:
+        target = self.installation_target(engine_id, request)
+        command = request.command if request.command is not None else self.preview_installation(engine_id, request)['command']
+        if not command.strip() or '\x00' in command:
+            raise AppError('invalid_command', 'Пустая или недопустимая команда', status_code=422)
+        target_id = installation_id(engine_id, request.kind, target)
+        if self.installation_in_use and self.installation_in_use(target_id):
+            raise AppError('installation_in_use', 'Нельзя менять установку, пока из неё запущена модель', status_code=409)
 
         async def install(operation: dict[str, Any]) -> None:
             try:
-                target_path.mkdir(parents=True, exist_ok=False)
-                python = target_path / "bin" / "python"
+                if self.installation_in_use and self.installation_in_use(target_id):
+                    raise AppError('installation_in_use', 'Установка используется запущенной моделью', status_code=409)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                build_root = self.paths.data_root / 'runtime' / 'builds'
+                build_root.mkdir(parents=True, exist_ok=True)
+                self.operations.append_output(operation, 'stdout', '$ ' + command + '\n')
                 code, out, err = await run_command(
-                    ["uv", "venv", "--python", "3.12", str(target_path)]
+                    ['/bin/bash', '-c', command], cwd=str(build_root), timeout_seconds=14400,
+                    on_stdout_line=lambda line: self.operations.append_output(operation, 'stdout', line),
+                    on_stderr_line=lambda line: self.operations.append_output(operation, 'stderr', line),
                 )
-                operation["stdout"] += out
-                operation["stderr"] += err
+                operation['exit_code'] = code
                 if code:
-                    raise RuntimeError("uv venv не завершился успешно")
-                package = PYTHON_PACKAGES[engine_id]
-                install_command = ["uv", "pip", "install", "--python", str(python), *package]
-                code, out, err = await run_command(install_command, cwd=str(target_path))
-                operation["stdout"] += out
-                operation["stderr"] += err
-                if code:
-                    raise RuntimeError("установка пакета движка завершилась ошибкой")
-                await self._verify_after_install(engine_id, target_path, operation)
-                operation["checked_at"] = utc_now()
-            except asyncio.CancelledError:
-                # Cancellation after the directory/venv exists is still a
-                # failed installation.  Persist that fact before propagating
-                # cancellation so the next scan keeps the environment visible
-                # as a broken candidate.
-                self._write_broken_manifest(target_path, engine_id, "Операция отменена")
-                raise
-            except Exception as exc:
-                if not isinstance(exc, AppError):
-                    self._write_broken_manifest(target_path, engine_id, str(exc))
+                    raise RuntimeError(f'Команда установки завершилась с кодом {code}')
+                if request.kind == 'python_venv':
+                    await self._verify_after_install(engine_id, target, operation)
+                else:
+                    result = await asyncio.to_thread(DiscoveryCoordinator(self.settings, self.paths).scan, explicit=[(engine_id, target)])
+                    found = next((item for item in result.installations if item.engine_id == engine_id and item.executable_path == target.resolve(strict=False)), None)
+                    if found is None or not found.verified:
+                        raise RuntimeError(found.diagnostic if found else 'Бинарник не прошёл проверку')
+                    self._binary_paths[str(target)] = engine_id
+                    self._binary_registry.parent.mkdir(parents=True, exist_ok=True)
+                    temporary = self._binary_registry.with_suffix('.tmp')
+                    temporary.write_text(yaml.safe_dump(self._binary_paths), encoding='utf-8')
+                    temporary.replace(self._binary_registry)
+                operation['checked_at'] = utc_now()
+            except BaseException as exc:
+                if request.kind == 'python_venv' and target.is_dir() and not isinstance(exc, AppError):
+                    self._write_broken_manifest(target, engine_id, str(exc) or 'Операция отменена')
                 raise
             finally:
                 await self._rescan_after_operation()
 
-        # The destination is shared by all engines, so equal venv names must
-        # conflict even when two requests target different engine packages.
-        return await self.operations.create("install", f"venv:{name}", install)
+        operation_target = 'build:llama.cpp' if engine_id == 'llama.cpp' else target_id if request.kind == 'python_venv' else f'binary:{target}'
+        return await self.operations.create('install', operation_target, install)
 
     async def update_installation(self, installation_id: str) -> dict[str, Any]:
         installation = self.get_installation(installation_id)
@@ -214,12 +200,13 @@ class EngineService:
                         status_code=409,
                         details={"installation_id": installation_id},
                     )
-                python = installation.root_path / "bin" / "python"
-                package = PYTHON_PACKAGES[installation.engine_id]
-                command = ["uv", "pip", "install", "-U", "--python", str(python), *package]
-                code, out, err = await run_command(command, cwd=str(installation.root_path))
-                operation["stdout"] = out
-                operation["stderr"] = err
+                command = installation_template(installation.engine_id, installation.root_path, self.paths.runtime_dir / 'builds', update=True)
+                self.operations.append_output(operation, 'stdout', '$ ' + command + '\n')
+                code, out, err = await run_command(
+                    ['/bin/bash', '-c', command], cwd=str(installation.root_path),
+                    on_stdout_line=lambda line: self.operations.append_output(operation, 'stdout', line),
+                    on_stderr_line=lambda line: self.operations.append_output(operation, 'stderr', line),
+                )
                 operation["exit_code"] = code
                 if code:
                     raise RuntimeError("обновление пакета движка завершилось ошибкой")

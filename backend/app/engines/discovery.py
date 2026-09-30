@@ -12,6 +12,7 @@ from ..paths import DataPaths
 from ..schemas.engines import Engine, Installation
 from .adapters import ADAPTER_BY_ID, ADAPTERS, Candidate, read_engine_manifest
 from .templates import LAUNCH_TEMPLATES
+from .installation_templates import frontend_installation_template
 
 
 def installation_id(engine_id: str, kind: str, path: Path) -> str:
@@ -138,6 +139,8 @@ class DiscoveryCoordinator:
                 id=adapter.engine_id,  # type: ignore[arg-type]
                 display_name=adapter.display_name,
                 command_template=LAUNCH_TEMPLATES[adapter.engine_id],
+                installation_template=frontend_installation_template(adapter.engine_id, self.paths.runtime_dir / 'builds'),
+                installation_root=str(self.paths.venvs_dir) if adapter.kind == 'python_venv' else '',
                 installation_kinds=list(adapter.installation_kinds),  # type: ignore[arg-type]
                 installations=by_engine[adapter.engine_id],
             )

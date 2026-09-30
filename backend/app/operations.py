@@ -53,6 +53,17 @@ class OperationManager:
         self._operation_tasks: dict[str, asyncio.Task[None]] = {}
         self._guard = asyncio.Lock()
         self._log_dir = log_dir
+        self._streamed: set[str] = set()
+
+    def append_output(self, operation: dict[str, Any], channel: str, text: str) -> None:
+        """Publish command output immediately to the shared Operations log."""
+        operation[channel] = _limit_output(operation.get(channel, '') + text)
+        if self._log_dir is not None:
+            self._log_dir.mkdir(parents=True, exist_ok=True)
+            with (self._log_dir / 'operations.log').open('a', encoding='utf-8') as output:
+                for line in text.splitlines():
+                    output.write(f"[{operation['id']}] {line}\n")
+            self._streamed.add(operation['id'])
 
     async def create(
         self,
@@ -191,8 +202,8 @@ class OperationManager:
                             log_file.write(
                                 f"\n--- operation_id={operation['id']} "
                                 f"kind={operation['kind']} target={operation['target_id']} ---\n"
-                                f"stdout:\n{operation['stdout']}\n"
-                                f"stderr:\n{operation['stderr']}\n"
+                                + ("" if operation['id'] in self._streamed else f"stdout:\n{operation['stdout']}\nstderr:\n{operation['stderr']}\n")
+                                + f"state={operation['state']} exit_code={operation['exit_code']} error={operation.get('error') or '-'}\n"
                             )
                     except OSError as exc:
                         diagnostic = f"Не удалось сохранить лог операции: {exc}"
@@ -203,6 +214,7 @@ class OperationManager:
                             else diagnostic
                         )[:2000]
                         operation["exit_code"] = operation.get("exit_code") or 1
+                self._streamed.discard(operation['id'])
                 _CURRENT_PROCESSES.reset(process_token)
                 log_method = logger.info if operation["state"] == "succeeded" else logger.warning
                 log_method(
@@ -238,6 +250,7 @@ async def run_command(
     env: dict[str, str] | None = None,
     timeout_seconds: float = 3600,
     on_stdout_line: Callable[[str], None] | None = None,
+    on_stderr_line: Callable[[str], None] | None = None,
 ) -> tuple[int, str, str]:
     """Execute a controlled argv command without involving a shell."""
 
@@ -259,21 +272,27 @@ async def run_command(
         processes.add(process)
     completed = False
     async def collect_output() -> tuple[bytes, bytes]:
-        if on_stdout_line is None:
+        if on_stdout_line is None and on_stderr_line is None:
             return await process.communicate()
         async def read_stdout() -> bytes:
             assert process.stdout is not None
             output = b""
             async for line in process.stdout:
-                on_stdout_line(line.decode(errors="replace"))
+                if on_stdout_line is not None:
+                    on_stdout_line(line.decode(errors="replace"))
                 output = (output + line)[-MAX_OUTPUT:]
             return output
 
         async def read_stderr() -> bytes:
             assert process.stderr is not None
             output = b""
-            while chunk := await process.stderr.read(8192):
-                output = (output + chunk)[-MAX_OUTPUT:]
+            if on_stderr_line is not None:
+                async for line in process.stderr:
+                    on_stderr_line(line.decode(errors="replace"))
+                    output = (output + line)[-MAX_OUTPUT:]
+            else:
+                while chunk := await process.stderr.read(8192):
+                    output = (output + chunk)[-MAX_OUTPUT:]
             return output
 
         stdout, stderr = await asyncio.gather(read_stdout(), read_stderr())
@@ -287,6 +306,10 @@ async def run_command(
         await _terminate_process(process)
         completed = True
         raise RuntimeError("Команда превысила допустимое время выполнения") from None
+    except BaseException:
+        await _terminate_process(process)
+        completed = True
+        raise
     finally:
         # During task cancellation the operation manager still needs this
         # process in its registry to terminate its process group.

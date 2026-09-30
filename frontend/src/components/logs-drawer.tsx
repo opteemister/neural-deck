@@ -3,7 +3,7 @@ import { X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { LogsViewer } from '@/pages/logs'
 
-const LogsDrawerContext = createContext<((profile?: string) => void) | null>(null)
+const LogsDrawerContext = createContext<((profile?: string, source?: string) => void) | null>(null)
 
 export function useLogsDrawer() {
   const open = useContext(LogsDrawerContext)
@@ -18,9 +18,9 @@ export function LogsDrawerProvider({ children }: { children: ReactNode }) {
     const minimum = Math.min(320 / window.innerWidth * 100, 70)
     setWidthPercent(Math.max(minimum, Math.min(100, percent)))
   }
-  const [selection, setSelection] = useState<{ profile?: string; request: number } | null>(null)
-  function open(profile?: string) {
-    setSelection((current) => ({ profile, request: (current?.request ?? 0) + 1 }))
+  const [selection, setSelection] = useState<{ profile?: string; source?: string; request: number } | null>(null)
+  function open(profile?: string, source?: string) {
+    setSelection((current) => ({ profile, source, request: (current?.request ?? 0) + 1 }))
   }
   const visible = selection !== null
   useEffect(() => {
@@ -68,7 +68,7 @@ export function LogsDrawerProvider({ children }: { children: ReactNode }) {
         <Button type="button" variant="ghost" size="sm" iconOnly aria-label="Закрыть логи" onClick={() => setSelection(null)}><X className="size-4" /></Button>
       </div>
       <div className="min-h-0 flex-1 overflow-auto overscroll-contain">
-        <LogsViewer key={selection.request} initialProfile={selection.profile} drawer />
+        <LogsViewer key={selection.request} initialProfile={selection.profile} initialSource={selection.source} drawer />
       </div>
     </aside>}
   </LogsDrawerContext.Provider>

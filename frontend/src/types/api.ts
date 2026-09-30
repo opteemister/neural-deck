@@ -19,6 +19,8 @@ export interface EngineData {
   id: EngineId
   display_name: string
   command_template: string
+  installation_template: string
+  installation_root: string
   installation_kinds: InstallationKind[]
   installations: Installation[]
 }

@@ -34,6 +34,8 @@ class Engine(BaseModel):
     id: EngineId
     display_name: str
     command_template: str
+    installation_template: str
+    installation_root: str
     installation_kinds: list[InstallationKind]
     installations: list[Installation]
 
@@ -55,6 +57,7 @@ class PythonVenvInstallationCreate(BaseModel):
 
     kind: Literal["python_venv"]
     venv_name: str = Field(min_length=1, max_length=128)
+    command: str | None = Field(default=None, min_length=1, max_length=32768)
 
 
 class BinaryInstallationCreate(BaseModel):
@@ -62,6 +65,7 @@ class BinaryInstallationCreate(BaseModel):
 
     kind: Literal["binary"]
     path: Path
+    command: str | None = Field(default=None, min_length=1, max_length=32768)
 
 
 InstallationCreate = Annotated[

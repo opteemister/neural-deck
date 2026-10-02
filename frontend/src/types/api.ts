@@ -4,6 +4,7 @@ export type InstallationKind = 'python_venv' | 'binary'
 export type InstallationStatus = 'ready' | 'broken' | 'candidate'
 
 export interface Installation {
+  registered?: boolean
   id: string
   engine_id: EngineId
   kind: InstallationKind
@@ -71,6 +72,8 @@ export interface GpuData {
   memory_total_bytes: number
   usage_percent: number | null
   temperature_celsius: number | null
+  power_watts?: number | null
+  power_limit_watts?: number | null
 }
 
 export type InstanceState = 'starting' | 'ready' | 'running' | 'stopping' | 'exited' | 'error' | 'unknown'
@@ -115,6 +118,7 @@ export interface StatusData {
 
 export interface HealthData {
   status: 'ok' | 'degraded'
+  uptime_seconds?: number | null
 }
 
 export interface SettingsData {
@@ -226,6 +230,7 @@ export interface ProfileData {
   command: string
   environment: Record<string, string>
   autostart: boolean
+  enable_metrics?: boolean
 }
 
 export interface ProfileIssue {
@@ -256,6 +261,7 @@ export interface LogsData {
   instance_id: string
   lines: string[]
   truncated: boolean
+  available?: boolean
 }
 
 export type LogKind = 'application' | 'profile' | 'operations'

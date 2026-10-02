@@ -7,9 +7,66 @@ import shlex
 
 from ..errors import AppError
 
-PLACEHOLDERS = ("{{engine}}", "{{model}}", "{{model_draft}}")
+PLACEHOLDERS = ("{{engine}}", "{{model}}", "{{model_draft}}", "{{model_name}}")
 _SEPARATORS = frozenset(" \t\r\n|;&<>\n()")
 _UNSAFE_FORMAT_CHARS = frozenset(r"'\"`$;|&<>()[\]*!?#")
+
+METRICS_FLAGS = {"llama.cpp": "--metrics", "sglang": "--enable-metrics"}
+
+
+def enable_command_metrics(command: str, engine_id: str, enabled: bool) -> str:
+    """Add the exporter flag to a single shell command without rewriting it."""
+    flag = METRICS_FLAGS.get(engine_id)
+    if not enabled or flag is None:
+        return command
+    logical = command.replace("\\\n", "").strip()
+    lexer = shlex.shlex(logical, posix=True, punctuation_chars=";&|()<>")
+    lexer.whitespace_split = True
+    words = list(lexer)
+    if flag in words:
+        return command
+    if not words:
+        raise AppError(
+            "metrics_command_requires_manual_flag",
+            "Укажите команду движка для включения метрик",
+            status_code=422,
+        )
+    quote: str | None = None
+    escaped = False
+    insertion = len(command.rstrip())
+    for index, char in enumerate(command[:insertion]):
+        if escaped:
+            escaped = False
+            continue
+        if quote == "'":
+            if char == "'":
+                quote = None
+            continue
+        if char == "\\":
+            escaped = True
+            continue
+        if char == quote:
+            quote = None
+            continue
+        if quote is None and char in "'\"":
+            quote = char
+            continue
+        if quote is None and char == "#" and (index == 0 or command[index - 1].isspace()):
+            # A trailing comment is safe; scripts continuing after it are not.
+            if command[index:].count("\n") and command[index:].split("\n", 1)[1].strip():
+                break
+            insertion = index
+            return command[:insertion].rstrip() + " " + flag + " " + command[insertion:]
+        if char in "`$" or (quote is None and char in ";|&<>()\n\r"):
+            break
+    else:
+        return command[:insertion] + " " + flag + command[insertion:]
+    raise AppError(
+        "metrics_command_requires_manual_flag",
+        f"Для составного shell-скрипта добавьте {flag} к команде движка вручную "
+        "или снимите «Включить метрики»",
+        status_code=422,
+    )
 
 
 class PlaceholderError(ValueError):
@@ -120,18 +177,36 @@ def validate_placeholders(command: str) -> None:
         raise PlaceholderError("незавершённая shell-конструкция в команде")
 
 
-def substitute_placeholders(command: str, *, engine: str, model: str, model_draft: str | None = None) -> str:
-    """Substitute validated words with shell-quoted paths."""
+def substitute_placeholders(
+    command: str,
+    *,
+    engine: str,
+    model: str,
+    model_draft: str | None = None,
+    model_name: str | None = None,
+) -> str:
+    """Substitute validated words with shell-quoted profile values."""
 
     validate_placeholders(command)
     if "{{model_draft}}" in command and not model_draft:
-        raise AppError("draft_model_missing", "Выберите draft-модель для {{model_draft}}", status_code=422)
+        raise AppError(
+            "draft_model_missing", "Выберите draft-модель для {{model_draft}}", status_code=422
+        )
+    if "{{model_name}}" in command and not model_name:
+        raise AppError(
+            "model_name_missing", "Укажите публичное имя модели для {{model_name}}", status_code=422
+        )
     values = {"{{engine}}": shlex.quote(engine), "{{model}}": shlex.quote(model)}
     if model_draft is not None:
         values["{{model_draft}}"] = shlex.quote(model_draft)
-    for placeholder, replacement in values.items():
-        command = command.replace(placeholder, replacement)
-    return command
+    if model_name is not None:
+        values["{{model_name}}"] = shlex.quote(model_name)
+    # Replace only the original placeholders, never placeholder-like text in values.
+    return re.sub(
+        r"\{\{(?:engine|model|model_draft|model_name)\}\}",
+        lambda match: values[match.group()],
+        command,
+    )
 
 
 def format_script(script: str) -> tuple[str, bool, str | None]:
@@ -184,6 +259,7 @@ def validate_command_or_error(command: str) -> None:
 __all__ = [
     "PLACEHOLDERS",
     "PlaceholderError",
+    "enable_command_metrics",
     "format_script",
     "substitute_placeholders",
     "validate_command_or_error",

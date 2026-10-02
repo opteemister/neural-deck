@@ -42,7 +42,7 @@ describe('management API client', () => {
     const chunks: string[] = []
     await streamChat({ model: 'local', messages: [{ role: 'user', content: 'hi' }] }, (chunk) => { if (chunk.content) chunks.push(chunk.content) })
     expect(chunks.join('')).toBe('hello')
-    expect(fetch).toHaveBeenCalledWith('/v1/chat/completions', expect.objectContaining({ method: 'POST' }))
+    expect(fetch).toHaveBeenCalledWith('/api/proxy/chat/completions', expect.objectContaining({ method: 'POST' }))
   })
 
   it('joins multiple data lines belonging to one SSE event', async () => {

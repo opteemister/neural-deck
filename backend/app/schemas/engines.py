@@ -26,6 +26,7 @@ class Installation(BaseModel):
     status: InstallationStatus
     verified: bool
     diagnostic: str | None = None
+    registered: bool = False
 
 
 class Engine(BaseModel):

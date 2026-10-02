@@ -53,6 +53,9 @@ class EngineService:
     def scan(self) -> DiscoveryResult:
         try:
             self._result = DiscoveryCoordinator(self.settings, self.paths).scan(explicit=[(engine, Path(path)) for path, engine in self._binary_paths.items()])
+            registered = {str(Path(path).resolve(strict=False)) for path in self._binary_paths}
+            for item in self._result.installations:
+                item.registered = str(item.executable_path) in registered
         except Exception as exc:  # noqa: BLE001 - discovery boundary
             self.mark_scan_failed(exc)
             raise
@@ -100,6 +103,21 @@ class EngineService:
             if engine.id == value:
                 return engine
         raise AppError("engine_not_found", "Движок не найден", status_code=404)
+
+    def forget_installation(self, value: str) -> None:
+        installation = self.get_installation(value)
+        if self.installation_in_use and self.installation_in_use(value):
+            raise AppError('installation_in_use', 'Установка используется запущенной моделью', status_code=409)
+        paths = [path for path, engine in self._binary_paths.items()
+                 if engine == installation.engine_id and Path(path).resolve(strict=False) == installation.executable_path]
+        if not paths:
+            raise AppError('installation_not_registered', 'Установка найдена автоматически, сохранённой записи нет', status_code=409)
+        updated = {path: engine for path, engine in self._binary_paths.items() if path not in paths}
+        temporary = self._binary_registry.with_suffix('.tmp')
+        temporary.write_text(yaml.safe_dump(updated), encoding='utf-8')
+        temporary.replace(self._binary_registry)
+        self._binary_paths = updated
+        self.scan()
 
     def resolve_installation(self, engine_id: str, installation_id: str) -> Path:
         """Resolve only a currently verified installation for profile starts."""

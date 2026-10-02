@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
 from datetime import UTC, datetime
 
 from ..process.manager import ProcessManager
 from ..schemas.instances import Metric, MetricList
 from ..token_stats import RequestJournalService
+from .performance import PerformanceNormalizer, process_vram
 from .providers import MetricProvider, default_providers
 
 
@@ -22,6 +24,7 @@ class MetricsService:
         self.process_manager = process_manager
         self.providers = dict(providers or default_providers())
         self.journal = journal
+        self.performance = PerformanceNormalizer()
 
     async def close(self) -> None:
         """Close resources owned by metric providers, when they have any."""
@@ -70,18 +73,10 @@ class MetricsService:
                         state="unavailable",
                     )
                 )
-        latency = await self.journal.latest_latency(instance_id) if self.journal else None
-        result.append(
-            Metric(
-                name="api_latency_ms",
-                value=latency,
-                unit="ms",
-                source="openai_proxy_journal",
-                observed_at=now,
-                state="ok" if latency is not None else "unavailable",
-            )
-        )
-        return MetricList(items=result)
+        vram = await asyncio.to_thread(process_vram, instance)
+        if vram is not None:
+            result = [item for item in result if item.name != 'vram_bytes'] + [vram]
+        return MetricList(items=self.performance.collect(instance, result))
 
 
 __all__ = ["MetricsService"]

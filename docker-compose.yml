@@ -8,16 +8,12 @@ services:
         LLAMA_CPP_VERSION: "b5046"
     working_dir: /workspace
     env_file:
-      # This tracked file makes a fresh checkout predictable for local Docker
-      # runs. A populated root `.env`, when present, is an explicit runtime
-      # override and is never copied into the image.
+      # Local Docker uses only local settings. Production .env is excluded.
       - path: .env.local
         required: true
-      - path: .env
-        required: false
     environment:
       # These are container mechanics, not application runtime defaults. The
-      # required application values come from .env.local/.env above.
+      # required application values come from .env.local above.
       LLM_STUDIO_WORKSPACE: /workspace
       LLM_STUDIO_BACKEND_DIR: /workspace/backend
       LLM_STUDIO_FRONTEND_DIR: /workspace/frontend
@@ -40,26 +36,26 @@ services:
       LLM_STUDIO_PERSISTENT_ROOTS: /var/lib/llm-studio:/var/log/llm-studio
     ports:
       - "127.0.0.1:3000:3000"
-      - "127.0.0.1:${OPENAI_PORT:-8080}:${OPENAI_PORT:-8080}"
+      - "127.0.0.1:8080:8080"
     volumes:
       # Only live source folders are overlaid. Dependencies and the initial
       # frontend build are part of the image and never come from macOS.
       - ./backend/app:/workspace/backend/app
       - ./backend/alembic:/workspace/backend/alembic
       - ./frontend/src:/workspace/frontend/src
-      # The source variables are Compose-only. Runtime values in .env.local or
-      # .env stay absolute paths inside the container and are checked against
-      # these targets by docker/entrypoint.sh.
+      # Fixed local bind sources keep production dotenv interpolation from
+      # redirecting Docker mounts. Runtime paths come only from .env.local and
+      # are checked against these targets by docker/entrypoint.sh.
       - type: bind
-        source: ${LLM_STUDIO_COMPOSE_DATA_SOURCE:-./data}
+        source: ./data
         target: /var/lib/llm-studio
       - type: bind
-        source: ${LLM_STUDIO_COMPOSE_MODELS_SOURCE:-./models}
+        source: ./models
         target: /var/lib/llm-studio/models
       - type: bind
-        source: ${LLM_STUDIO_COMPOSE_LOG_SOURCE:-./logs}
+        source: ./logs
         target: /var/lib/llm-studio/logs
       - type: bind
-        source: ${LLM_STUDIO_COMPOSE_LOG_SOURCE:-./logs}
+        source: ./logs
         target: /var/log/llm-studio
     init: true

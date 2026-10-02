@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
@@ -13,11 +14,20 @@ from ..schemas.proxy import OpenAIModelList
 from .service import ProxyService
 
 router = APIRouter(prefix="/v1", tags=["openai"])
+logger = logging.getLogger(__name__)
 
 
 @router.get("/models", response_model=OpenAIModelList, response_model_exclude_none=True)
-async def models(service: ProxyService = Depends(get_proxy_service)) -> dict[str, Any]:  # noqa: B008
-    return await service.models()
+async def models(
+    request: Request, service: ProxyService = Depends(get_proxy_service)  # noqa: B008
+) -> dict[str, Any]:
+    logger.info("GET %s: request_id=%s", request.url.path, request.state.request_id)
+    result = await service.models()
+    logger.info(
+        "GET %s: models=%s request_id=%s",
+        request.url.path, len(result["data"]), request.state.request_id,
+    )
+    return result
 
 
 async def _forward(
@@ -76,4 +86,11 @@ async def embeddings(
     return await _forward(request, "/v1/embeddings", payload, service)
 
 
-__all__ = ["get_proxy_service", "router"]
+internal_router = APIRouter(prefix="/api/proxy", tags=["internal-chat"])
+internal_router.add_api_route(
+    "/models", models, methods=["GET"],
+    response_model=OpenAIModelList, response_model_exclude_none=True,
+)
+internal_router.add_api_route("/chat/completions", chat_completions, methods=["POST"])
+
+__all__ = ["get_proxy_service", "internal_router", "router"]

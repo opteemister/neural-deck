@@ -113,11 +113,18 @@ async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
 
 
 async def validation_error_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    # Report the field and reason, excluding submitted values (commands and
+    # environment variables may contain secrets).
+    errors = [
+        {"loc": error["loc"], "type": error["type"], "msg": error["msg"]}
+        for error in exc.errors()
+    ]
     logger.warning(
-        "Ошибка валидации запроса: method=%s path=%s request_id=%s",
+        "Ошибка валидации запроса: method=%s path=%s request_id=%s errors=%s",
         request.method,
         request.url.path,
         request_id(request),
+        errors,
     )
     if _is_openai_route(request):
         return openai_error_response(
@@ -131,7 +138,7 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
         code="validation_error",
         message="Ошибка проверки входных данных",
         status_code=422,
-        details={"errors": jsonable_encoder(exc.errors())},
+        details={"errors": jsonable_encoder(errors)},
     )
 
 

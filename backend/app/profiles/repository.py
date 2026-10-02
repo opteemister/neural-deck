@@ -18,7 +18,7 @@ from pydantic import ValidationError
 
 from ..errors import AppError
 from ..schemas.profiles import ProfileData, ProfileIssue, ProfileListData
-from .formatting import validate_command_or_error
+from .formatting import enable_command_metrics, validate_command_or_error
 
 
 class DuplicateKeyError(ValueError):
@@ -146,6 +146,13 @@ class ProfileRepository:
         return ProfileListData(items=items, issues=issues)
 
     def create(self, profile: ProfileData) -> ProfileData:
+        profile = profile.model_copy(
+            update={
+                "command": enable_command_metrics(
+                    profile.command, profile.engine.id, profile.enable_metrics
+                )
+            }
+        )
         validate_command_or_error(profile.command)
         path = self.profile_path(profile.name)
         if path.exists():
@@ -170,6 +177,13 @@ class ProfileRepository:
         if not path.exists():
             raise AppError("profile_not_found", "Профиль не найден", status_code=404)
         validate_command_or_error(profile.command)
+        profile = profile.model_copy(
+            update={
+                "command": enable_command_metrics(
+                    profile.command, profile.engine.id, profile.enable_metrics
+                )
+            }
+        )
         self._atomic_write(path, profile)
         return self.get(name)
 

@@ -31,6 +31,7 @@ from ..schemas.instances import (
 )
 from ..schemas.profiles import ProfileData
 from .discovery import ExternalObservation, discover_external, query_models
+from .external_logs import external_logs
 from .registry import ModelRegistry
 
 LOG_LIMIT = 8 * 1024 * 1024
@@ -146,6 +147,7 @@ class ProcessManager:
                 profile.command,
                 engine=engine_path,
                 model=str(profile.model.path),
+                model_name=profile.model_name,
                 model_draft=str(profile.model.draft_path) if profile.model.draft_path else None,
             )
             port = _extract_port(command)
@@ -318,7 +320,7 @@ class ProcessManager:
             item.instance, upstream_models=models or [item.instance.model_name or ""]
         )
 
-    async def refresh(self) -> InstanceList:
+    async def refresh(self, *, probe_models: bool = True) -> InstanceList:
         """Reconcile managed and externally discovered processes.
 
         This is an active observation operation: it may finalize child
@@ -343,6 +345,7 @@ class ProcessManager:
                 excluded_keys=excluded,
                 username=self.username,
                 http_client=self.http_client,
+                probe_models=probe_models,
             )
         except Exception as exc:  # noqa: BLE001 - external process boundary
             self.discovery_error = str(exc)
@@ -351,7 +354,7 @@ class ProcessManager:
         for observation in found:
             # An observation without process identity is still visible to an
             # operator, but must not become a routable model target.
-            if observation.instance.identity_verified:
+            if probe_models and observation.instance.identity_verified:
                 self.registry.register_instance(
                     observation.instance,
                     upstream_models=observation.upstream_models,
@@ -493,18 +496,10 @@ class ProcessManager:
             raise AppError(
                 "invalid_tail", "Параметр tail должен быть от 1 до 10000", status_code=422
             )
-        await self.get(instance_id)
+        instance = await self.get(instance_id)
         item = self._managed.get(instance_id)
         if item is None:
-            # External command output is not captured by Studio.  Returning an
-            # empty successful log would falsely imply that the source was
-            # observed and empty.
-            raise AppError(
-                "logs_unavailable",
-                "Логи внешнего процесса не захватываются Студией",
-                status_code=503,
-                details={"source": "external"},
-            )
+            return await external_logs(instance, tail)
         if not item.log_path.exists():
             raise AppError(
                 "logs_unavailable",

@@ -9,6 +9,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Request, status
 from fastapi.responses import JSONResponse
 
+from ..profiles.formatting import enable_command_metrics
 from ..profiles.service import ProfileService
 from ..schemas.common import SuccessEnvelope
 from ..schemas.instances import Instance
@@ -56,12 +57,21 @@ async def format_profile_script(
     return success(request, service.format_script(payload.script))
 
 
-@router.post("/start", response_model=SuccessEnvelope[Instance], status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/start", response_model=SuccessEnvelope[Instance], status_code=status.HTTP_202_ACCEPTED
+)
 async def start_configuration(
     request: Request,
     profile: ProfileData,
     service: ProfileService = Depends(get_profile_service),
 ) -> JSONResponse:
+    profile = profile.model_copy(
+        update={
+            "command": enable_command_metrics(
+                profile.command, profile.engine.id, profile.enable_metrics
+            )
+        }
+    )
     logger.info(
         "Запуск несохранённой конфигурации профиля: name=%s request_id=%s",
         profile.name,

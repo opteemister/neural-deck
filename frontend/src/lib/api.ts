@@ -26,18 +26,18 @@ import type {
   TokenStatsData,
 } from '@/types/api'
 
+import { openAiEndpoint } from '@/lib/openai-endpoint'
+
 const apiBase = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, '') ?? ''
 let modelApiBasePromise: Promise<string> | undefined
 
-async function modelApiBase(): Promise<string> {
+export async function getOpenAiEndpoint(): Promise<string> {
   const configured = import.meta.env.VITE_OPENAI_API_BASE_URL as string | undefined
-  if (configured) return configured.replace(/\/$/, '')
+  if (configured?.trim()) return openAiEndpoint(configured)
   if (!modelApiBasePromise) {
-    modelApiBasePromise = request<SettingsData>('/api/v1/settings').then((settings) => {
-      const url = new URL(apiBase || window.location.origin, window.location.origin)
-      url.port = String(settings.openai_port)
-      return url.origin
-    }).catch((error: unknown) => { modelApiBasePromise = undefined; throw error })
+    modelApiBasePromise = request<{ url: string }>('/api/v1/openai-endpoint')
+      .then((data) => data.url)
+      .catch((error: unknown) => { modelApiBasePromise = undefined; throw error })
   }
   return modelApiBasePromise
 }
@@ -64,7 +64,17 @@ async function readError(response: Response): Promise<StudioApiError> {
   try {
     const body = (await response.json()) as Partial<ApiErrorResponse>
     if (body.error) {
-      return new StudioApiError(body.error.message, {
+      const errors = body.error.details?.errors
+      const reasons = body.error.code === 'validation_error' && Array.isArray(errors)
+        ? errors.flatMap((error: unknown) => {
+          if (!error || typeof error !== 'object') return []
+          const item = error as { loc?: unknown; msg?: unknown }
+          if (!Array.isArray(item.loc) || typeof item.msg !== 'string') return []
+          const field = item.loc.filter((part) => part !== 'body').join('.')
+          return [`${field || 'Профиль'}: ${item.msg}`]
+        })
+        : []
+      return new StudioApiError(reasons.length ? `${body.error.message}: ${reasons.join('; ')}` : body.error.message, {
         status: response.status,
         code: body.error.code,
         retryable: body.error.retryable,
@@ -94,7 +104,7 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
 async function openAiRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers)
   if (init?.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
-  const response = await fetch(`${await modelApiBase()}${path}`, { ...init, headers })
+  const response = await fetch(`${apiBase}/api/proxy${path}`, { ...init, headers })
   if (!response.ok) throw await readError(response)
   return (await response.json()) as T
 }
@@ -112,7 +122,7 @@ export async function streamChat(
   signal?: AbortSignal,
 ): Promise<void> {
   const headers = new Headers({ 'Content-Type': 'application/json', Accept: 'text/event-stream, application/json' })
-  const response = await fetch(`${await modelApiBase()}/v1/chat/completions`, { method: 'POST', headers, signal, body: JSON.stringify({ ...body, stream: true, stream_options: { include_usage: true } }) })
+  const response = await fetch(`${apiBase}/api/proxy/chat/completions`, { method: 'POST', headers, signal, body: JSON.stringify({ ...body, stream: true, stream_options: { include_usage: true } }) })
   if (!response.ok) {
     try {
       const payload = (await response.json()) as ApiErrorResponse
@@ -195,13 +205,14 @@ export const api = {
   getEngines: () => request<EnginesData>('/api/v1/engines'),
   getEngine: (id: string) => request<EngineData>(`/api/v1/engines/${encodeURIComponent(id)}`),
   scanEngines: () => request<EnginesData>('/api/v1/engines/scan', json(undefined)),
+  forgetInstallation: (id: string) => request<{ id: string }>(`/api/v1/installations/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   getInstallations: () => request<{ items: Installation[] }>('/api/v1/installations'),
   getInstallation: (id: string) => request<Installation>(`/api/v1/installations/${encodeURIComponent(id)}`),
   createInstallation: (engineId: string, body: ({ kind: 'python_venv'; venv_name: string } | { kind: 'binary'; path: string }) & { command?: string }) => request<Operation>(`/api/v1/engines/${encodeURIComponent(engineId)}/installations`, json(body)),
   updateInstallation: (id: string) => request<Operation>(`/api/v1/installations/${encodeURIComponent(id)}/update`, json(undefined)),
   maintenance: (id: string, command: string) => request<Operation>(`/api/v1/installations/${encodeURIComponent(id)}/maintenance`, json({ command })),
   getOperation: (id: string) => request<Operation>(`/api/v1/operations/${encodeURIComponent(id)}`),
-  getDownloads: () => request<{ items: Operation[] }>('/api/v1/operations?kind=download'),
+  getDownloads: () => request<{ items: Operation[] }>('/api/v1/operations?kind=download&active=true'),
   cancelOperation: (id: string) => request<Operation>(`/api/v1/operations/${encodeURIComponent(id)}/cancel`, json(undefined)),
   /** Current model registry served by observed instances. */
   getModels: () => request<ModelRegistryData>('/api/v1/models'),
@@ -247,10 +258,10 @@ export const api = {
     return request<TokenStatsData>(`/api/v1/token-stats${suffix}`)
   },
   getOpenAiModels: async (): Promise<OpenAiModelsData> => {
-    const response = await openAiRequest<{ data: OpenAiModel[] }>('/v1/models')
+    const response = await openAiRequest<{ data: OpenAiModel[] }>('/models')
     return { items: response.data }
   },
-  completeChat: (body: { model: string; messages: Array<{ role: 'user' | 'assistant'; content: string }>; stream?: boolean }) => openAiRequest<import('@/types/api').ChatCompletionResponse>('/v1/chat/completions', { method: 'POST', body: JSON.stringify(body) }),
+  completeChat: (body: { model: string; messages: Array<{ role: 'user' | 'assistant'; content: string }>; stream?: boolean }) => openAiRequest<import('@/types/api').ChatCompletionResponse>('/chat/completions', { method: 'POST', body: JSON.stringify(body) }),
   streamChat,
 }
 

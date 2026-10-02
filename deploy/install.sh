@@ -81,9 +81,125 @@ as_root() {
     fi
 }
 
+export PATH="/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
+
+prepare_system_packages() {
+    local package
+    local missing=()
+    if command -v apt-get >/dev/null 2>&1; then
+        for package in ca-certificates curl tar gzip coreutils git libgomp1 util-linux; do
+            if [[ "$(dpkg-query -W -f='${Status}' "$package" 2>/dev/null || true)" != 'install ok installed' ]]; then
+                missing+=("$package")
+            fi
+        done
+        if (( ${#missing[@]} )); then
+            info "Installing system packages: ${missing[*]}"
+            as_root apt-get update
+            as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${missing[@]}"
+        fi
+    elif command -v dnf >/dev/null 2>&1; then
+        for package in ca-certificates curl tar gzip coreutils git libgomp util-linux; do
+            if ! rpm -q "$package" >/dev/null 2>&1; then
+                missing+=("$package")
+            fi
+        done
+        if (( ${#missing[@]} )); then
+            info "Installing system packages: ${missing[*]}"
+            as_root dnf install -y "${missing[@]}"
+        fi
+    else
+        die "automatic dependency installation requires apt-get or dnf on a Linux system with systemd"
+    fi
+}
+
+prepare_uv() (
+    if command -v uv >/dev/null 2>&1; then
+        # Keep uv available to systemd even if the operator uses ~/.local/bin.
+        if [[ "$(command -v uv)" != /usr/local/bin/uv ]]; then
+            as_root install -m 0755 "$(command -v uv)" /usr/local/bin/uv
+        fi
+        return
+    fi
+    info "Installing uv into /usr/local/bin"
+    uv_installer=$(mktemp)
+    trap 'rm -f -- "$uv_installer"' EXIT
+    curl --fail --silent --show-error --location \
+        https://astral.sh/uv/install.sh -o "$uv_installer"
+    as_root env UV_UNMANAGED_INSTALL=/usr/local/bin sh "$uv_installer"
+)
+
+prepare_node() (
+    if command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1 \
+        && node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 20 ? 0 : 1)'; then
+        return
+    fi
+    case "$(uname -m)" in
+        x86_64) node_arch=x64 ;;
+        aarch64|arm64) node_arch=arm64 ;;
+        *) die "unsupported architecture for automatic Node.js installation: $(uname -m)" ;;
+    esac
+    node_version=v22.23.3
+    node_archive="node-${node_version}-linux-${node_arch}.tar.gz"
+    node_url="https://nodejs.org/dist/${node_version}"
+    node_tmp=$(mktemp -d)
+    trap 'rm -rf -- "$node_tmp"' EXIT
+    info "Installing Node.js ${node_version} and npm into /usr/local"
+    curl --fail --silent --show-error --location \
+        "$node_url/$node_archive" -o "$node_tmp/$node_archive"
+    curl --fail --silent --show-error --location \
+        "$node_url/SHASUMS256.txt" -o "$node_tmp/SHASUMS256.txt"
+    awk -v archive="$node_archive" '$2 == archive { print }' \
+        "$node_tmp/SHASUMS256.txt" > "$node_tmp/checksum"
+    [[ -s "$node_tmp/checksum" ]] || die "Node.js archive checksum is missing"
+    (cd "$node_tmp" && sha256sum --check checksum)
+    as_root tar --extract --gzip --file "$node_tmp/$node_archive" \
+        --directory /usr/local --strip-components=1 --no-same-owner
+)
+
+as_service() {
+    if [[ "$(id -un)" == "$service_user" ]]; then
+        "$@"
+    else
+        as_root runuser -u "$service_user" -- env PATH="$PATH" "$@"
+    fi
+}
+
 info "Installing LLM Studio at ${project_root} for ${service_user}:${service_group}"
 info "Persistent data: ${data_root}"
 info "Persistent logs: ${log_root}"
+
+[[ -f "$project_root/backend/pyproject.toml" && -f "$project_root/backend/uv.lock" ]] \
+    || die "backend pyproject.toml and uv.lock are required"
+[[ -f "$project_root/frontend/package.json" && -f "$project_root/frontend/pnpm-lock.yaml" ]] \
+    || die "frontend package.json and pnpm-lock.yaml are required"
+if [[ $EUID -ne 0 ]]; then
+    command -v sudo >/dev/null 2>&1 || die "run the installer as root or install sudo"
+    sudo -v
+fi
+prepare_system_packages
+prepare_uv
+prepare_node
+if ! command -v pnpm >/dev/null 2>&1 \
+    || [[ "$(pnpm --version)" != 9.15.9 ]]; then
+    info "Installing pnpm 9.15.9 into /usr/local"
+    as_root env PATH="$PATH" npm install --global --prefix /usr/local pnpm@9.15.9
+fi
+hash -r
+
+# Earlier macOS archives may have left binary AppleDouble files such as
+# alembic/versions/._0001_initial.py. Alembic treats them as Python migrations.
+# Excluding metadata from new archives does not remove those existing files.
+for source_dir in \
+    "$project_root/backend/app" \
+    "$project_root/backend/alembic" \
+    "$project_root/frontend/src" \
+    "$project_root/frontend/public"; do
+    if [[ -d "$source_dir" ]]; then
+        info "Removing leftover macOS metadata from ${source_dir}"
+        as_root find "$source_dir" -type f \
+            \( -name '._*' -o -name '.DS_Store' \) -print -delete
+    fi
+done
 
 as_root install -d -m 0750 -o "$service_user" -g "$service_group" \
     /etc/llm-studio \
@@ -97,45 +213,25 @@ as_root install -d -m 0750 -o "$service_user" -g "$service_group" \
     "$models_root" \
     "$log_root" \
     "$log_root/studio" \
-    "$log_root/engines" \
+    "$log_root/profiles" \
     "$log_root/api"
 
-if [[ -f "$project_root/backend/pyproject.toml" ]]; then
-    command -v uv >/dev/null 2>&1 \
-        || die "uv is required to install backend dependencies on the target"
-    uv sync --project "$project_root/backend" --no-dev --locked
-elif [[ -f "$project_root/backend/requirements.txt" ]]; then
-    command -v python3 >/dev/null 2>&1 \
-        || die "python3 is required to install backend dependencies"
-    if [[ ! -x "$project_root/backend/.venv/bin/python" ]]; then
-        python3 -m venv "$project_root/backend/.venv"
-    fi
-    "$project_root/backend/.venv/bin/python" -m pip install \
-        --disable-pip-version-check -r "$project_root/backend/requirements.txt"
-else
-    die "backend dependency manifest not found under ${project_root}/backend"
-fi
-
-if [[ -f "$project_root/frontend/package.json" ]]; then
-    command -v pnpm >/dev/null 2>&1 \
-        || die "pnpm is required to build the frontend from pnpm-lock.yaml on the target"
-    [[ -f "$project_root/frontend/pnpm-lock.yaml" ]] \
-        || die "frontend lockfile not found: ${project_root}/frontend/pnpm-lock.yaml"
-    (cd "$project_root/frontend" && pnpm install --frozen-lockfile)
-    pnpm --dir "$project_root/frontend" run build
-else
-    die "frontend package manifest not found: ${project_root}/frontend/package.json"
-fi
+as_root chown -R "$service_user:$service_group" "$project_root/backend" "$project_root/frontend"
+info "Preparing Python 3.12 and backend dependencies for ${service_user}"
+as_service uv sync --project "$project_root/backend" --python 3.12 --no-dev --locked
+info "Installing frontend dependencies and building frontend"
+as_service pnpm --dir "$project_root/frontend" install --frozen-lockfile
+as_service pnpm --dir "$project_root/frontend" run build
 
 if [[ -f "$project_root/backend/alembic.ini" ]]; then
     if [[ -x "$project_root/backend/.venv/bin/alembic" ]]; then
-        (cd "$project_root/backend" && .venv/bin/alembic upgrade head)
+        (cd "$project_root/backend" && as_service .venv/bin/alembic upgrade head)
     else
-        uv run --project "$project_root/backend" --no-sync \
+        as_service uv run --project "$project_root/backend" --no-sync \
             alembic -c "$project_root/backend/alembic.ini" upgrade head
     fi
 elif [[ -f "$project_root/alembic.ini" ]]; then
-    uv run --project "$project_root/backend" --no-sync \
+    as_service uv run --project "$project_root/backend" --no-sync \
         alembic -c "$project_root/alembic.ini" upgrade head
 else
     die "Alembic configuration not found; refusing to start without migrations"

@@ -7,6 +7,7 @@ import contextlib
 import logging
 import os
 import tempfile
+from ipaddress import ip_address
 from pathlib import Path
 
 import yaml  # type: ignore[import-untyped]
@@ -61,6 +62,26 @@ def success(
     return JSONResponse(status_code=status_code, content=envelope.model_dump(mode="json"))
 
 
+@router.get("/openai-endpoint")
+async def openai_endpoint(
+    request: Request, app_settings: Settings = Depends(get_settings)
+) -> JSONResponse:
+    # ASGI server comes from the accepted socket, independently of Host and proxy headers.
+    server = request.scope.get("server")
+    try:
+        address = ip_address(server[0]) if server else None
+    except ValueError:
+        address = None
+    if address is None or address.is_unspecified:
+        raise AppError(
+            "machine_ip_unavailable",
+            "Локальный IP приложения недоступен. Задайте VITE_OPENAI_API_BASE_URL при сборке.",
+            status_code=503,
+        )
+    host = f"[{address}]" if address.version == 6 else str(address)
+    return success(request, {"url": f"http://{host}:{app_settings.openai_port}/v1"})
+
+
 @router.get("/system", response_model=SuccessEnvelope[SystemData])
 async def system(request: Request) -> JSONResponse:
     process_manager = get_process_manager(request)
@@ -112,7 +133,8 @@ async def health(request: Request, engine: AsyncEngine = Depends(get_engine)) ->
                 openai_api_available=runtime.proxy_service is not None,
                 openai_api_models=model_count,
                 journal_error=runtime.journal_service.last_error,
-            )
+            ),
+            started_monotonic=getattr(request.app.state, "started_monotonic", None),
         ),
     )
 
@@ -242,6 +264,14 @@ async def installations(
     request: Request, service: EngineService = Depends(get_engine_service)
 ) -> JSONResponse:
     return success(request, {"items": await asyncio.to_thread(service.installations)})
+
+
+@router.delete("/installations/{installation_id}")
+async def forget_installation(
+    request: Request, installation_id: str, service: EngineService = Depends(get_engine_service)
+) -> JSONResponse:
+    await asyncio.to_thread(service.forget_installation, installation_id)
+    return success(request, {"id": installation_id})
 
 
 @router.get("/installations/{installation_id}", response_model=SuccessEnvelope[object])

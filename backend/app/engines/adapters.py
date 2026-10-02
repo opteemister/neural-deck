@@ -129,6 +129,22 @@ class PythonEngineAdapter:
             candidate.executable_path, os.X_OK
         ):
             return Verification(False, None, "исполняемый файл движка отсутствует или недоступен")
+        if self.engine_id == "vllm":
+            # --version imports the serving CLI and probes CUDA. Read package
+            # metadata in this environment without initialising the runtime.
+            python = candidate.root_path / "bin" / "python"
+            if not python.is_file() or not os.access(python, os.X_OK):
+                return Verification(False, None, "Python окружения vLLM отсутствует или недоступен")
+            script = (
+                "from importlib.metadata import distribution; "
+                "d = distribution('vllm'); "
+                "assert any(e.group == 'console_scripts' and e.name == 'vllm' "
+                "and e.value == 'vllm.entrypoints.cli.main:main' for e in d.entry_points), "
+                "'vLLM CLI entry point is missing'; "
+                "print(d.version)"
+            )
+            ok, version, diagnostic = _run_version([str(python), "-I", "-c", script])
+            return Verification(ok, version, diagnostic if not ok else None)
         command = [str(candidate.executable_path)]
         if self.engine_id == "sglang":
             command.append("version")

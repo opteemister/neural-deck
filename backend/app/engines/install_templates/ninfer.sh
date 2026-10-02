@@ -1,4 +1,8 @@
 set -euo pipefail
+if [ -f {{target}} ]; then
+  echo 'Бинарник уже существует; сборка пропущена. Приложение проверит и зарегистрирует его.'
+  exit 0
+fi
 # Только sm_120a / RTX 5090; RTX 3090 не поддерживается upstream.
 # Требуются CUDA Toolkit (upstream проверяет 13.1), CMake >= 3.28,
 # C++20 compiler, Ninja, pkg-config, libcurl >= 7.85 и FFmpeg development libraries.

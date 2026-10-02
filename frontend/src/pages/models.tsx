@@ -1,5 +1,5 @@
 import { marked } from 'marked'
-import { FormEvent, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { FormEvent, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, ArrowLeft, ChevronDown, ChevronUp, Download, ExternalLink, FolderOpen, RefreshCw, Search, Star, Trash2, X } from 'lucide-react'
 import { useSearchParams } from 'react-router-dom'
@@ -75,12 +75,21 @@ export function ModelsPage() {
   const deleteModel = useMutation({ mutationFn: api.deleteLocalModel, onSuccess: (data) => queryClient.setQueryData(queryKeys.localModels, data) })
   const deleteModelGroup = useMutation({ mutationFn: ({ modelId, groupId }: { modelId: string; groupId: string }) => api.deleteLocalModelGroup(modelId, groupId), onSuccess: (data) => queryClient.setQueryData(queryKeys.localModels, data) })
   const downloads = useQuery({ queryKey: queryKeys.downloads, queryFn: api.getDownloads, refetchInterval: 1_500 })
+  const previousDownloadIds = useRef<string[]>([])
   const downloadOperations = downloads.data?.items ?? []
   const download = useMutation({ mutationFn: api.downloadModels, onSuccess: () => { const shouldCollapse = downloadsClosed || downloadOperations.length === 0; setDownloadsClosed(false); if (shouldCollapse) setDownloadsCollapsed(true); void queryClient.invalidateQueries({ queryKey: queryKeys.downloads }); void queryClient.invalidateQueries({ queryKey: queryKeys.localModels }) } })
   const cancelDownload = useMutation({ mutationFn: api.cancelOperation, onSuccess: () => { void queryClient.invalidateQueries({ queryKey: queryKeys.downloads }); void queryClient.invalidateQueries({ queryKey: queryKeys.localModels }) } })
   useEffect(() => { window.localStorage.setItem('llm-studio.favorite-models', JSON.stringify(favoriteModels)) }, [favoriteModels])
   useEffect(() => { setSearchInput(hfQuery) }, [hfQuery])
-  useEffect(() => { if (downloadOperations.some((item) => item.state === 'succeeded')) void queryClient.invalidateQueries({ queryKey: queryKeys.models }) }, [downloadOperations, queryClient])
+  useEffect(() => {
+    if (!downloads.data) return
+    const ids = downloads.data.items.map((item) => item.id)
+    if (previousDownloadIds.current.some((id) => !ids.includes(id))) {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.models })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.localModels })
+    }
+    previousDownloadIds.current = ids
+  }, [downloads.data, queryClient])
   const localItems = useMemo(() => (localModels.data?.items ?? []).filter((model) => `${model.path} ${model.format} ${model.compatibility}`.toLowerCase().includes(localQuery.toLowerCase())).sort((left, right) => Number(!favoriteModels.includes(left.id)) - Number(!favoriteModels.includes(right.id))), [favoriteModels, localModels.data?.items, localQuery])
 
   function setView(next: ModelView) { setParams((current) => { current.set('view', next); current.delete('q'); current.delete('parent_repo'); current.delete('parent_revision'); current.delete('parent_tab'); current.delete('repo_stack'); current.delete('repo_tab'); if (next !== 'huggingface') { current.delete('repo'); current.delete('revision') } return current }, { replace: true }) }
@@ -385,11 +394,10 @@ function htmlLayoutClass(element: HTMLElement): string {
 function FileRow({ file, selected, onToggle }: { file: HfFile; selected: boolean; onToggle: () => void }) { return <TableRow><TableCell><input type="checkbox" aria-label={`Выбрать ${file.path}`} checked={selected} onChange={onToggle} className="size-4 accent-[#c58055]" /></TableCell><TableCell className="break-all font-mono text-[11px]">{file.path}</TableCell><TableCell className="whitespace-nowrap text-right font-mono text-[11px]">{formatBytes(file.size)}</TableCell><TableCell className="text-[11px] text-muted-foreground">{file.sha256 ? 'sha256' : file.etag ? 'etag' : 'без hash'}</TableCell></TableRow> }
 
 function DownloadCenter({ operations, closed, collapsed, onToggle, onCollapse, onClose, onStop, stoppingId }: { operations: Operation[]; closed: boolean; collapsed: boolean; onToggle: () => void; onCollapse: () => void; onClose: () => void; onStop: (id: string) => void; stoppingId: string | null | undefined }) {
-  const completedCount = operations.filter((operation) => operation.state === 'succeeded').length
   const hasActive = operations.some((operation) => ['queued', 'running'].includes(operation.state))
   const sorted = [...operations].sort((left, right) => new Date(right.created_at).getTime() - new Date(left.created_at).getTime())
   if (closed) return null
-  return <div className="mb-4 rounded-md border border-border bg-secondary px-4 py-3"><div className="flex items-center gap-2"><button type="button" className="flex min-w-0 items-center gap-2 text-left text-xs font-medium" onClick={onToggle} aria-expanded={!collapsed}><span>Загрузки</span><span className="text-[11px] text-muted-foreground">Загружено: {completedCount} из {operations.length}</span>{collapsed ? <ChevronDown className="size-3.5 text-muted-foreground" /> : <ChevronUp className="size-3.5 text-muted-foreground" />}</button><Button size="icon" variant="ghost" className="ml-auto -mr-2 -mt-2 shrink-0" aria-label={hasActive ? 'Свернуть загрузки' : 'Закрыть блок загрузок'} title={hasActive ? 'Свернуть' : 'Закрыть'} onClick={hasActive ? onCollapse : onClose}><X className="size-4" /></Button></div>{!collapsed && <div className="mt-3 space-y-2">{sorted.map((operation) => <DownloadTask key={operation.id} operation={operation} stopping={stoppingId === operation.id} onStop={() => onStop(operation.id)} />)}</div>}</div>
+  return <div className="mb-4 rounded-md border border-border bg-secondary px-4 py-3"><div className="flex items-center gap-2"><button type="button" className="flex min-w-0 items-center gap-2 text-left text-xs font-medium" onClick={onToggle} aria-expanded={!collapsed}><span>Загрузки</span><span className="text-[11px] text-muted-foreground">Активных: {operations.length}</span>{collapsed ? <ChevronDown className="size-3.5 text-muted-foreground" /> : <ChevronUp className="size-3.5 text-muted-foreground" />}</button><Button size="icon" variant="ghost" className="ml-auto -mr-2 -mt-2 shrink-0" aria-label={hasActive ? 'Свернуть загрузки' : 'Закрыть блок загрузок'} title={hasActive ? 'Свернуть' : 'Закрыть'} onClick={hasActive ? onCollapse : onClose}><X className="size-4" /></Button></div>{!collapsed && <div className="mt-3 space-y-2">{sorted.map((operation) => <DownloadTask key={operation.id} operation={operation} stopping={stoppingId === operation.id} onStop={() => onStop(operation.id)} />)}</div>}</div>
 }
 
 function DownloadTask({ operation, stopping, onStop }: { operation: Operation; stopping: boolean; onStop: () => void }) {

@@ -21,8 +21,8 @@ describe('ChatPage', () => {
   it('uses a registered model and renders an SSE assistant response', async () => {
     const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) => {
       const url = String(input)
-      if (url.endsWith('/v1/models')) return new Response(JSON.stringify({ object: 'list', data: [{ id: 'local-model', object: 'model' }] }), { status: 200 })
-      if (url.endsWith('/v1/chat/completions')) return streamResponse('готово')
+      if (url.endsWith('/api/proxy/models')) return new Response(JSON.stringify({ object: 'list', data: [{ id: 'local-model', object: 'model' }] }), { status: 200 })
+      if (url.endsWith('/api/proxy/chat/completions')) return streamResponse('готово')
       return new Response(JSON.stringify({ error: { code: 'not_found', message: 'not found', details: {}, request_id: 'req', retryable: false } }), { status: 404 })
     })
     vi.stubGlobal('fetch', fetchMock)
@@ -32,7 +32,7 @@ describe('ChatPage', () => {
     fireEvent.change(textbox, { target: { value: 'Привет' } })
     fireEvent.click(screen.getByRole('button', { name: 'Отправить' }))
     await waitFor(() => expect(screen.getByText('готово')).toBeInTheDocument())
-    expect(fetchMock).toHaveBeenCalledWith('/v1/chat/completions', expect.objectContaining({ method: 'POST' }))
-    expect(JSON.parse(String(fetchMock.mock.calls.find(([input]) => String(input).endsWith('/v1/chat/completions'))?.[1]?.body)).model).toBe('local-model')
+    expect(fetchMock).toHaveBeenCalledWith('/api/proxy/chat/completions', expect.objectContaining({ method: 'POST' }))
+    expect(JSON.parse(String(fetchMock.mock.calls.find(([input]) => String(input).endsWith('/api/proxy/chat/completions'))?.[1]?.body)).model).toBe('local-model')
   })
 })

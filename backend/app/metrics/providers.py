@@ -121,6 +121,68 @@ class SglangMetricsProvider(PrometheusMetricProvider):
 class LlamaCppMetricsProvider(PrometheusMetricProvider):
     def __init__(self, **kwargs: Any) -> None:
         super().__init__("llama.cpp", **kwargs)
+        self._slots: dict[str, tuple[datetime, dict[tuple[int, int], tuple[int, int]]]] = {}
+
+    async def collect(self, instance: Instance) -> list[Metric]:
+        result = await super().collect(instance)
+        if not isinstance(instance.port, int):
+            return result
+        client = self.client or (
+            self.client_factory() if self.client_factory else httpx.AsyncClient(timeout=2.0)
+        )
+        try:
+            response = await client.get(f"http://127.0.0.1:{instance.port}/slots")
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, list) or any(not isinstance(slot, dict) for slot in payload):
+                return result
+            now = datetime.now(UTC)
+            current: dict[tuple[int, int], tuple[int, int]] = {}
+            active = sum(slot.get('is_processing') is True for slot in payload)
+            for slot in payload:
+                if slot.get('is_processing') is not True:
+                    continue
+                next_token = slot.get('next_token')
+                if isinstance(next_token, list) and len(next_token) == 1:
+                    next_token = next_token[0]
+                if not isinstance(next_token, dict):
+                    continue
+                identity = (slot.get('id'), slot.get('id_task'))
+                counts = (next_token.get('n_decoded'), slot.get('n_prompt_tokens_processed'))
+                if not all(isinstance(item, int) and not isinstance(item, bool) and item >= 0 for item in (*identity, *counts)):
+                    continue
+                current[identity] = counts
+            previous = self._slots.get(instance.id)
+            rates: list[float | None] = [None, None]
+            if active == 0:
+                rates = [0.0, 0.0]
+            elif len(current) == active and previous:
+                elapsed = (now - previous[0]).total_seconds()
+                # Compare only the same slot/task: slot reuse is a counter reset.
+                if elapsed > 0 and all(key in previous[1] for key in current):
+                    for index in (0, 1):
+                        changes = [counts[index] - previous[1][key][index] for key, counts in current.items()]
+                        if all(change >= 0 for change in changes):
+                            rates[index] = sum(changes) / elapsed
+            self._slots[instance.id] = (now, current)
+            if len(self._slots) > 256:
+                self._slots.pop(next(iter(self._slots)))
+            replaced = {'llamacpp:predicted_tokens_seconds', 'llamacpp:prompt_tokens_seconds',
+                        'llamacpp:requests_processing'}
+            result = [item for item in result if item.name not in replaced]
+            for name, value in (('decode_tps', rates[0]), ('prefill_tps', rates[1]),
+                                ('active_requests', active),
+                                ('inflight_completion_tokens', sum(counts[0] for counts in current.values()) if len(current) == active else None)):
+                result.append(Metric(name=name, value=value, unit='tok/s' if name.endswith('_tps') else '',
+                                     source='llama.cpp:slots', observed_at=now,
+                                     state='ok' if value is not None else 'unavailable'))
+            return result
+        except (httpx.HTTPError, ValueError, TypeError):
+            # Completed-request exporter metrics remain usable when slots are disabled.
+            return result
+        finally:
+            if self.client is None:
+                await client.aclose()
 
 
 class NInferMetricsProvider(PrometheusMetricProvider):

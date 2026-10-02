@@ -67,6 +67,7 @@ class ProfileData(BaseModel):
     command: StrictStr = Field(min_length=1)
     environment: dict[StrictStr, StrictStr] = Field(default_factory=dict)
     autostart: StrictBool = False
+    enable_metrics: StrictBool = True
 
     @model_validator(mode="after")
     def draft_placeholder_has_path(self) -> ProfileData:

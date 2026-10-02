@@ -33,6 +33,8 @@ class GpuData(BaseModel):
     memory_total_bytes: int = Field(ge=0)
     usage_percent: float | None = Field(default=None, ge=0, le=100)
     temperature_celsius: float | None = None
+    power_watts: float | None = None
+    power_limit_watts: float | None = None
 
 
 InstanceState = Literal[
@@ -95,6 +97,7 @@ class HealthData(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     status: Literal["ok", "degraded"]
+    uptime_seconds: float | None = None
 
 
 class SettingsData(BaseModel):

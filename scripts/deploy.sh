@@ -54,6 +54,10 @@ git -C "$root" rev-parse --show-toplevel >/dev/null 2>&1 \
 : > "$manifest"
 while IFS= read -r -d '' item_path; do
     case "$item_path" in
+        .DS_Store|*/.DS_Store|._*|*/._*|__MACOSX|__MACOSX/*|*/__MACOSX|*/__MACOSX/*|\
+        .Spotlight-V100|.Spotlight-V100/*|.Trashes|.Trashes/*|.fseventsd|.fseventsd/*)
+            continue
+            ;;
         .env|deploy.env|.git|.git/*|\
         data|data/*|models|models/*|logs|logs/*|\
         backend/.venv|backend/.venv/*|backend/__pycache__|backend/__pycache__/*|\
@@ -73,7 +77,13 @@ done < <(git -C "$root" ls-files -c -z --)
 # The archive is written in a private temporary directory and is never sent
 # until both archive steps succeed. ``--null`` keeps tracked paths containing
 # spaces, tabs, or newlines unambiguous on GNU and BSD tar.
-if ! tar -C "$root" \
+tar_metadata_options=()
+if [[ "$(uname -s)" == Darwin ]]; then
+    # macOS bsdtar otherwise stores xattrs in LIBARCHIVE headers and creates
+    # AppleDouble entries even for an explicit list of tracked source files.
+    tar_metadata_options=(--no-xattrs --no-acls --no-fflags --no-mac-metadata)
+fi
+if ! COPYFILE_DISABLE=1 tar "${tar_metadata_options[@]}" -C "$root" \
     --null --files-from="$manifest" \
     -cf "$archive_tar"; then
     die "could not create deployment archive"
@@ -81,7 +91,7 @@ fi
 
 # .env is intentionally copied separately from the tracked transfer set. It is
 # checked above and is never accepted from an arbitrary path.
-if ! tar -C "$root" --append -f "$archive_tar" .env; then
+if ! COPYFILE_DISABLE=1 tar "${tar_metadata_options[@]}" -C "$root" --append -f "$archive_tar" .env; then
     die "could not append the populated root .env to deployment archive"
 fi
 
@@ -90,6 +100,10 @@ remote_command="mkdir -p ${remote_path} && tar -xpf - -C ${remote_path}"
 if ! ssh -- "$DEPLOY_TARGET" "$remote_command" < "$archive_tar"; then
     die "could not copy checkout to ${DEPLOY_TARGET}:${DEPLOY_PATH}"
 fi
+
+# The target extracts the stream directly; the local archive is no longer
+# needed while dependencies are installed and the service is restarted.
+cleanup
 
 install_command="cd ${remote_path} && LLM_STUDIO_INSTALL_CONFIRMED=1 bash deploy/install.sh"
 if ! ssh -- "$DEPLOY_TARGET" "$install_command"; then

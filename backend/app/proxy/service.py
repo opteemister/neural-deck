@@ -13,6 +13,7 @@ import logging
 import re
 import time
 from collections.abc import AsyncIterator, Callable, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, cast
 
@@ -20,6 +21,7 @@ import httpx
 
 from ..errors import AppError
 from ..process.manager import ProcessManager
+from ..schemas.instances import Instance
 from ..token_stats import RequestJournalService
 
 _HOP_BY_HOP = {
@@ -38,6 +40,13 @@ _SSE_USAGE_BUFFER_LIMIT = 2 * 1024 * 1024
 logger = logging.getLogger(__name__)
 
 
+@dataclass(slots=True)
+class _ModelsCache:
+    identity: tuple[int, int | None, int | None, str | None, str]
+    refreshed_at: float
+    metadata: dict[str, dict[str, Any]]
+
+
 class ProxyService:
     def __init__(
         self,
@@ -51,6 +60,8 @@ class ProxyService:
         self.journal = journal
         self.client_factory = client_factory
         self.timeout = timeout
+        self._models_lock = asyncio.Lock()
+        self._models_cache: dict[str, _ModelsCache] = {}
 
     async def close(self) -> None:
         """Release proxy-owned resources.
@@ -63,65 +74,118 @@ class ProxyService:
         return None
 
     async def models(self) -> dict[str, Any]:
-        await self.process_manager.refresh()
-        registered_models = sorted(
-            self.process_manager.model_registry().list(), key=lambda item: item.id
-        )
-        metadata = await asyncio.gather(
-            *(
-                self._model_metadata(item.instance_id, item.upstream_model)
-                for item in registered_models
+        async with self._models_lock:
+            # Observe process identities on every request without probing ready engines.
+            observed = await self.process_manager.refresh(probe_models=False)
+            instances = {
+                item.id: item for item in observed.items
+                if item.state not in {"exited", "error", "stopping"}
+                and (item.source == "managed" or item.identity_verified)
+            }
+            logger.info("Обновление списка моделей: активных запусков=%s", len(instances))
+            for instance_id in list(self._models_cache):
+                if instance_id not in instances:
+                    del self._models_cache[instance_id]
+            metadata = dict(zip(instances, await asyncio.gather(*(
+                self._cached_model_metadata(instance) for instance in instances.values()
+            )), strict=True))
+            registered_models = sorted(
+                self.process_manager.model_registry().list(), key=lambda item: item.id
             )
-        )
-        result = []
-        for registered, details in zip(registered_models, metadata, strict=True):
-            result.append(
-                {
+            result = []
+            for registered in registered_models:
+                engine_models = metadata.get(registered.instance_id, {})
+                if (
+                    registered.upstream_model is None
+                    or registered.upstream_model not in engine_models
+                ):
+                    continue
+                result.append({
                     "id": registered.id,
                     "object": "model",
                     "created": int(registered.observed_at.timestamp()),
                     "owned_by": "llm-studio",
                     "engine_id": registered.engine_id,
-                    **details,
-                }
-            )
-        return {"object": "list", "data": result}
+                    **engine_models[registered.upstream_model],
+                })
+            return {"object": "list", "data": result}
 
-    async def _model_metadata(self, instance_id: str, upstream_model: str | None) -> dict[str, Any]:
-        """Use the running engine's capacity, never a guessed model-name limit."""
-        details: dict[str, Any] = {}
+    async def _cached_model_metadata(self, instance: Instance) -> dict[str, dict[str, Any]]:
+        identity = (
+            instance.pid, instance.process_start_time_ns, instance.port,
+            instance.model_name if instance.source == "managed" else None, instance.engine_id,
+        )
+        cached = self._models_cache.get(instance.id)
+        if cached is not None and cached.identity == identity:
+            if time.monotonic() - cached.refreshed_at < 600:
+                logger.info("Модели из кеша: instance_id=%s", instance.id)
+                self.process_manager.model_registry().register_instance(
+                    instance, upstream_models=list(cached.metadata)
+                )
+                return cached.metadata
+        self._models_cache.pop(instance.id, None)
+        metadata = await self._model_metadata(instance)
+        # Only a nonempty, confirmed engine response starts the ten-minute TTL.
+        if metadata:
+            self._models_cache[instance.id] = _ModelsCache(identity, time.monotonic(), metadata)
+        return metadata
+
+    async def _model_metadata(self, instance: Instance) -> dict[str, dict[str, Any]]:
+        """Refresh engine model names and their metadata in one HTTP probe."""
+        details: dict[str, dict[str, Any]] = {}
         try:
-            instance = await self.process_manager.get(instance_id)
             if instance.port is None:
+                logger.warning("Опрос моделей пропущен: нет порта instance_id=%s", instance.id)
                 return {}
             client = (
                 self.client_factory() if self.client_factory else httpx.AsyncClient(timeout=1.0)
             )
             async with client:
                 base = f"http://127.0.0.1:{instance.port}"
+                logger.info("Опрос моделей: instance_id=%s url=%s/v1/models", instance.id, base)
                 response = await client.get(f"{base}/v1/models", timeout=1.0)
-                if response.is_success:
-                    items = response.json().get("data", [])
-                    model = next((item for item in items if item.get("id") == upstream_model), None)
-                    if model is None and len(items) == 1:
-                        model = items[0]
-                    if model:
-                        details.update(_reasoning_capabilities(model))
-                        for key in ("max_model_len", "context_length", "max_context_length"):
-                            limit = model.get(key)
-                            if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0:
-                                details["context_length"] = limit
-                                break
+                response.raise_for_status()
+                items = response.json().get("data")
+                if not isinstance(items, list):
+                    raise ValueError("Engine /v1/models data is not a list")
+                for model in items:
+                    if not isinstance(model, dict):
+                        continue
+                    name = model.get("id")
+                    if not isinstance(name, str) or not name:
+                        continue
+                    item_details = _reasoning_capabilities(model)
+                    for key in ("max_model_len", "context_length", "max_context_length"):
+                        limit = model.get(key)
+                        if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0:
+                            item_details["context_length"] = limit
+                            break
+                    details[name] = item_details
+                logger.info(
+                    "Ответ движка: instance_id=%s status=%s models=%s",
+                    instance.id, response.status_code, list(details),
+                )
+                if details:
+                    self.process_manager.model_registry().register_instance(
+                        instance, upstream_models=list(details)
+                    )
+                    instance.state = "ready"
+                else:
+                    self.process_manager.model_registry().clear_instance(instance.id)
                 if instance.engine_id == "llama.cpp":
                     response = await client.get(f"{base}/props", timeout=1.0)
                     if response.is_success:
                         props = response.json()
-                        details.update(_reasoning_capabilities(props))
+                        shared = _reasoning_capabilities(props)
                         limit = props.get("default_generation_settings", {}).get("n_ctx")
                         if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0:
-                            details["context_length"] = limit
-        except (httpx.HTTPError, AppError, ValueError, TypeError, AttributeError):
-            pass
+                            shared["context_length"] = limit
+                        for item_details in details.values():
+                            item_details.update(shared)
+        except (httpx.HTTPError, AppError, ValueError, TypeError, AttributeError) as exc:
+            logger.warning(
+                "Не удалось обновить модели движка: instance_id=%s error=%s", instance.id, exc
+            )
         return details
 
     async def forward(

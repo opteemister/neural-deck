@@ -48,6 +48,7 @@ from .process.registry import ModelRegistry
 from .profiles.repository import ProfileRepository
 from .profiles.service import ProfileService
 from .proxy.listener import ApplicationCORSMiddleware, model_api_listener
+from .proxy.router import internal_router as internal_proxy_router
 from .proxy.router import router as proxy_router
 from .proxy.service import ProxyService
 from .schemas.common import SuccessEnvelope
@@ -209,18 +210,21 @@ def _publish_runtime(app: FastAPI, runtime: AppContainer) -> None:
 async def _scan_startup(runtime: AppContainer) -> None:
     """Run all best-effort discovery steps before the app accepts requests."""
 
+    logger.info("Startup: обнаружение установленных движков")
     try:
         await asyncio.to_thread(runtime.engine_service.scan)
     except Exception as exc:  # noqa: BLE001 - scanner boundary is non-fatal
         runtime.engine_service.mark_scan_failed(exc)
         runtime.add_diagnostic("engine_discovery", "scan_failed", str(exc))
 
+    logger.info("Startup: сканирование локальных моделей без проверки хешей")
     try:
         await asyncio.to_thread(runtime.model_catalogue.scan)
     except Exception as exc:  # noqa: BLE001 - scanner boundary is non-fatal
         runtime.model_catalogue.mark_scan_failed(exc)
         runtime.add_diagnostic("model_catalogue", "scan_failed", str(exc))
 
+    logger.info("Startup: обнаружение процессов")
     try:
         await runtime.process_manager.refresh()
     except Exception as exc:  # noqa: BLE001 - scanner boundary is non-fatal
@@ -230,6 +234,7 @@ async def _scan_startup(runtime: AppContainer) -> None:
             "process_discovery", "scan_failed", runtime.process_manager.discovery_error
         )
 
+    logger.info("Startup: однократный автозапуск профилей")
     try:
         await runtime.profile_service.autostart_once()
     except Exception as exc:  # noqa: BLE001 - autostart boundary is non-fatal
@@ -245,6 +250,7 @@ async def _scan_startup(runtime: AppContainer) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    app.state.started_monotonic = time.monotonic()
     settings: Settings = getattr(app.state, "settings", None) or load_settings()
     paths = build_paths(settings)
     # These paths are mandatory application prerequisites.  A failure here or
@@ -426,10 +432,13 @@ def create_app(
     # Keep each management router registered once.  Future proxy/MCP routers
     # must be included before the frontend fallback route as well.
     app.include_router(management_router)
+    app.include_router(internal_proxy_router)
     app.include_router(profiles_router)
+    # Register metrics before the greedy /instances/{instance_id:path}
+    # detail route, which would otherwise consume the /metrics suffix.
+    app.include_router(metrics_router)
     app.include_router(instances_router)
     app.include_router(logs_router)
-    app.include_router(metrics_router)
 
     # The MCP server is mounted before the SPA fallback.  Its session manager
     # is entered from the host lifespan below, so the mounted Starlette app
@@ -450,7 +459,8 @@ def create_app(
                 openai_api_available=runtime.proxy_service is not None,
                 openai_api_models=model_count,
                 journal_error=runtime.journal_service.last_error,
-            )
+            ),
+            started_monotonic=getattr(request.app.state, "started_monotonic", None),
         )
         return {"data": data, "request_id": request.state.request_id}
 
@@ -468,7 +478,8 @@ def create_app(
                 openai_api_available=runtime.proxy_service is not None,
                 openai_api_models=model_count,
                 journal_error=runtime.journal_service.last_error,
-            )
+            ),
+            started_monotonic=getattr(request.app.state, "started_monotonic", None),
         )
         return {"data": data, "request_id": request.state.request_id}
 

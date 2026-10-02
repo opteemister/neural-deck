@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import csv
 import io
+import math
 import shutil
 import subprocess
+import time
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Literal
@@ -63,7 +65,7 @@ async def collect_gpus() -> list[GpuData]:
             subprocess.run,
             [
                 executable,
-                "--query-gpu=index,name,memory.used,memory.total,utilization.gpu,temperature.gpu,uuid",
+                "--query-gpu=index,name,memory.used,memory.total,utilization.gpu,temperature.gpu,uuid,power.draw,power.limit",
                 "--format=csv,noheader,nounits",
             ],
             capture_output=True,
@@ -78,8 +80,15 @@ async def collect_gpus() -> list[GpuData]:
 
     gpus: list[GpuData] = []
     for row in csv.reader(io.StringIO(completed.stdout), skipinitialspace=True):
-        if len(row) != 7:
+        if len(row) != 9:
             continue
+        power_values: list[float | None] = []
+        for raw in row[7:9]:
+            try:
+                watts = float(raw)
+                power_values.append(watts if math.isfinite(watts) and watts >= 0 else None)
+            except ValueError:
+                power_values.append(None)
         try:
             usage = float(row[4])
             temperature = float(row[5])
@@ -92,6 +101,8 @@ async def collect_gpus() -> list[GpuData]:
                     memory_total_bytes=int(float(row[3]) * 1024 * 1024),
                     usage_percent=usage,
                     temperature_celsius=temperature,
+                    power_watts=power_values[0],
+                    power_limit_watts=power_values[1],
                 )
             )
         except (TypeError, ValueError):
@@ -188,5 +199,8 @@ async def collect_status(
     return StatusData(overall=overall, components=components)
 
 
-def health_from_status(status: StatusData) -> HealthData:
-    return HealthData(status="ok" if status.overall == "ok" else "degraded")
+def health_from_status(status: StatusData, *, started_monotonic: float | None = None) -> HealthData:
+    return HealthData(
+        status="ok" if status.overall == "ok" else "degraded",
+        uptime_seconds=None if started_monotonic is None else max(0, time.monotonic() - started_monotonic),
+    )

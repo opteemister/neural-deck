@@ -65,6 +65,7 @@ class LogsData(BaseModel):
     instance_id: str = Field(min_length=1)
     lines: list[str]
     truncated: bool
+    available: bool = True
 
 
 class TokenCounts(BaseModel):

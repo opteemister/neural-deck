@@ -48,14 +48,45 @@ def _command_line(process: Any) -> list[str]:
 
 def identify_engine(command: list[str], process_name: str = "") -> str | None:
     del process_name  # command-line evidence is required; name alone is ambiguous
-    tokens = [Path(item).name.lower() for item in command]
-    for engine_id, markers in SUPPORTED_MARKERS.items():
-        if any(
-            token == marker or token.startswith(f"{marker}.") or token.endswith(f".{marker}")
-            for token in tokens
-            for marker in markers
+    if not command:
+        return None
+    executable = Path(command[0]).name.lower()
+    arguments = command[1:]
+    module = False
+    if re.fullmatch(r"python(?:\d+(?:\.\d+)*)?", executable):
+        # A Python console entry point or explicit -m server module. Do not
+        # inspect arbitrary -c code or package names passed to pip/build tools.
+        while arguments and arguments[0] in {"-u", "-B", "-E", "-s", "-S", "-I"}:
+            arguments = arguments[1:]
+        if not arguments:
+            return None
+        if arguments[0] == "-m" and len(arguments) >= 2:
+            executable, arguments = arguments[1], arguments[2:]
+            module = True
+        elif not arguments[0].startswith("-"):
+            executable, arguments = Path(arguments[0]).name.lower(), arguments[1:]
+        else:
+            return None
+    if any(
+        argument.split("=", 1)[0] in {"--help", "-h", "--version", "-V"}
+        for argument in arguments
+    ):
+        return None
+    if module and executable == "vllm.entrypoints.openai.api_server":
+        return "vllm"
+    if module and executable == "sglang.launch_server":
+        return "sglang"
+    if executable in {"vllm", "sglang", "freetoken", "free_token", "ft"}:
+        if arguments and arguments[0] == "serve":
+            return {"free_token": "freetoken", "ft": "freetoken"}.get(executable, executable)
+        return None
+    if not module and executable == "llama-server":
+        return "llama.cpp"
+    if executable in {"ninfer", "ninfer-serve"} and arguments:
+        if (not arguments[0].startswith("-") and "/" in arguments[0]) or any(
+            arg.split("=", 1)[0] in {"--model", "--model-path"} for arg in arguments
         ):
-            return engine_id
+            return "ninfer"
     return None
 
 
@@ -108,6 +139,7 @@ async def discover_external(
     excluded_keys: set[tuple[int, int | None]] | None = None,
     username: str | None = None,
     http_client: Any | None = None,
+    probe_models: bool = True,
 ) -> list[ExternalObservation]:
     """Return only processes whose command confirms one supported engine.
 
@@ -144,7 +176,7 @@ async def discover_external(
         except (AttributeError, psutil.Error, OSError):
             process_user = None
         port = process_port(process, command)
-        model_names = await query_models(port, client=http_client)
+        model_names = await query_models(port, client=http_client) if probe_models else []
         model_name = model_names[0] if len(model_names) == 1 else None
         identity_verified = start_ns is not None
         can_stop = identity_verified and process_user == current_user

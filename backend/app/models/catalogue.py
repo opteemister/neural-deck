@@ -1294,6 +1294,8 @@ def _hash_matches(
     hash_kind: str | None = None,
     verify_hashes: bool = False,
 ) -> bool | None:
+    if not verify_hashes:
+        return None
     expected = expected.removeprefix("sha256:")
     if len(expected) == 64:
         return _sha256(path) == expected

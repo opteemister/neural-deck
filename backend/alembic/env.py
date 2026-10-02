@@ -8,6 +8,8 @@ from logging.config import fileConfig
 from alembic import context
 from app.config import Settings, load_settings
 from app.db import Base, database_url
+from app.journal import ApiClientRecord, RequestJournalRecord  # noqa: F401
+from app.metrics.entities import MetricSample, MetricLaunchExtrema  # noqa: F401
 from app.models import entities as _model_entities  # noqa: F401
 from app.paths import build_paths, prepare_data_dirs
 from sqlalchemy import pool

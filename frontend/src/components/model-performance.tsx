@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react'
 import type { Instance, Metric, MetricsData } from '@/types/api'
+import { useQuery } from '@tanstack/react-query'
+import { api } from '@/lib/api'
+import { Table, TableBody, TableCell, TableRow } from '@/components/ui/table'
 import { Progress } from '@/components/ui/progress'
 
 type Point = { at: number; decode: number | null; prefill: number | null; ttft: number | null; requests: number | null }
-const historyWindowMs = 4 * 60 * 1000
 const maxHistoryPoints = 120
 const compact = new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 })
 function numeric(item: Metric | undefined): number | null {
@@ -30,7 +32,7 @@ function Chart({ title, unit, points, series }: { title: string; unit: string; p
     let segment = ''
     points.forEach((point) => {
       const value = point[line.key]
-      if (value === null) { if (segment) segments.push(segment); segment = ''; return }
+      if (value === null) return
       const x = end > start ? (point.at - start) / (end - start) * 400 : 0
       const y = 108 - value / max * 96
       segment += `${segment ? ' L' : 'M'}${x.toFixed(1)},${y.toFixed(1)}`
@@ -42,12 +44,15 @@ function Chart({ title, unit, points, series }: { title: string; unit: string; p
 
 export function ModelPerformance({ instance, data }: { instance?: Instance; data?: MetricsData }) {
   const historyKey = instance?.id ?? 'all'
+  const bootstrap = useQuery({ queryKey: ['metrics-bootstrap', historyKey],
+    queryFn: () => api.getMetricsHistory(instance ? { profile_name: instance.profile_name ?? undefined, pid: instance.pid } : { scope: 'all' }),
+    staleTime: Infinity, refetchOnWindowFocus: false, retry: false })
   const [histories, setHistories] = useState<Record<string, Point[]>>({})
   const history = histories[historyKey] ?? []
   const items = new Map(data?.items.map((item) => [item.name, item]))
   const value = (name: string) => numeric(items.get(name))
   useEffect(() => {
-    if (!data) return
+    if (!data || !bootstrap.isFetched) return
     const metrics = new Map(data.items.map((item) => [item.name, item]))
     const timestamps = ['decode_tps', 'prefill_tps', 'ttft_mean_ms', 'active_requests'].map((name) => metrics.get(name)).filter((item): item is Metric => Boolean(item && item.state === 'ok'))
     const at = timestamps.length ? Math.max(...timestamps.map((item) => Date.parse(item.observed_at))) : Date.parse(metrics.get('uptime_s')?.observed_at ?? '')
@@ -56,18 +61,32 @@ export function ModelPerformance({ instance, data }: { instance?: Instance; data
     setHistories((current) => {
       const previous = current[historyKey] ?? []
       if (previous.at(-1)?.at === at) return current
-      return { ...current, [historyKey]: [...previous, point].filter((sample) => sample.at >= at - historyWindowMs).slice(-maxHistoryPoints) }
+      return { ...current, [historyKey]: [...previous.filter((sample) => sample.at !== at), point].sort((a, b) => a.at - b.at).slice(-maxHistoryPoints) }
     })
-  }, [data, historyKey])
+  }, [data, historyKey, bootstrap.isFetched])
+  useEffect(() => {
+    if (!bootstrap.data) return
+    const seeded = [...bootstrap.data.history, ...(bootstrap.data.current ? [bootstrap.data.current] : [])].map((sample) => {
+      const metrics = new Map(sample.items.map((item) => [item.name, item]))
+      return { at: Date.parse(sample.observed_at), decode: numeric(metrics.get('decode_tps')), prefill: numeric(metrics.get('prefill_tps')), ttft: numeric(metrics.get('ttft_mean_ms')), requests: numeric(metrics.get('active_requests')) }
+    }).filter((point) => Number.isFinite(point.at))
+    setHistories((current) => {
+      const merged = new Map([...seeded, ...(current[historyKey] ?? [])].map((point) => [point.at, point]))
+      return { ...current, [historyKey]: [...merged.values()].sort((a, b) => a.at - b.at).slice(-maxHistoryPoints) }
+    })
+  }, [bootstrap.data, historyKey])
   const extrema = (key: 'decode' | 'prefill' | 'ttft' | 'requests', minimum = false) => {
-    const values = history.map((point) => point[key]).filter((item): item is number => item !== null)
+    const field = { decode: 'decode_tps', prefill: 'prefill_tps', ttft: 'ttft_mean_ms', requests: 'active_requests' }[key]
+    const persisted = data?.peaks?.[field] ?? bootstrap.data?.peaks?.[field]
+    if (persisted !== undefined) return `${minimum ? 'min' : 'max'} ${compact.format(persisted)}`
+    const values = history.map((point) => point[key]).filter((item): item is number => item !== null && (!minimum || item > 0))
     return values.length ? `${minimum ? 'min' : 'max'} ${compact.format(minimum ? Math.min(...values) : Math.max(...values))}` : 'Нет наблюдений'
   }
   const input = value('prompt_tokens_total'), output = value('completion_tokens_total')
   const inflight = value('inflight_completion_tokens')
   const stats = [
     { name: 'Decode', field: 'decode_tps', unit: 'tok/s', detail: extrema('decode') },
-    { name: 'TTFT', field: 'ttft_mean_ms', unit: 'ms', detail: instance ? 'Среднее по новым запросам' : 'Среднее по запускам' },
+    { name: 'TTFT', field: 'ttft_mean_ms', unit: 'ms', detail: instance ? `${extrema('ttft', true)} · Среднее по новым запросам` : 'Среднее по запросам' },
     { name: 'Prefill', field: 'prefill_tps', unit: 'tok/s', detail: extrema('prefill') },
     { name: 'Requests', field: 'active_requests', unit: 'live', detail: extrema('requests') },
     { name: 'KV cache', field: 'kv_cache_percent', unit: '%', detail: instance ? 'Занятость кеша' : 'Максимум по запускам' },
@@ -80,5 +99,10 @@ export function ModelPerformance({ instance, data }: { instance?: Instance; data
     const item = items.get(stat.field)
     const detail = item?.state === 'stale' ? 'Данные устарели' : number === null ? 'Недоступно' : stat.detail
     return <div key={stat.name} className="min-w-0" title={`${stat.detail}${item?.source && item.source !== 'unavailable' ? ` · ${item.source}` : ''}`}><p className="text-xs text-muted-foreground">{stat.name}</p><p className="mt-1 whitespace-nowrap text-xl font-medium tabular-nums">{number === null ? '—' : compact.format(number)}{number !== null && stat.unit && <span className="ml-1 text-[11px] font-normal text-muted-foreground">{stat.unit}</span>}</p>{stat.field === 'kv_cache_percent' && number !== null && <Progress className="mt-1.5" value={number ?? 0} />}<p className="mt-1 text-[10px] text-muted-foreground">{detail}</p></div>
-  })}</div><div className="grid gap-5 border-t border-border pt-4 lg:grid-cols-3"><Chart title="Prefill" unit="tok/s" points={history} series={[{ key: 'prefill', label: 'Prefill', color: '#cf9a78' }]} /><Chart title="Generation" unit="tok/s" points={history} series={[{ key: 'decode', label: 'Generation', color: '#cf9a78' }]} /><Chart title="Requests" unit="live" points={history} series={[{ key: 'requests', label: 'Active', color: '#cf9a78' }]} /></div><p className="mt-3 text-[10px] text-muted-foreground">Последние 4 минуты · до 120 точек · {instance?.engine_id ?? 'Сумма по всем активным запускам'}{instance?.engine_id === 'llama.cpp' ? items.get('decode_tps')?.source === 'llama.cpp:slots' ? ' \u00b7 Decode/Prefill: /slots (live); totals: /metrics.' : ' \u00b7 Decode/Prefill: completed requests (/metrics); /slots unavailable.' : ''}</p></div>
+  })}</div><Table className="mb-4"><TableBody>{[
+    ['Ожидание в очереди', 'queue_time_mean_ms', 'ms'],
+    ['Попадание в prefix cache сейчас', 'prefix_cache_hit_percent', '%'],
+    ['Попадание в prefix cache за запуск', 'prefix_cache_hit_mean_percent', '%'],
+    ['Draft acceptance', 'spec_acceptance_percent', '%'],
+  ].map(([label, field, unit]) => <TableRow key={field}><TableCell className="py-1.5 text-xs text-muted-foreground">{label}</TableCell><TableCell className="py-1.5 text-right font-mono text-xs tabular-nums">{value(field) === null ? '—' : `${value(field)!.toLocaleString('ru-RU', { maximumFractionDigits: 1 })} ${unit}`}</TableCell></TableRow>)}</TableBody></Table><div className="grid gap-5 border-t border-border pt-4 lg:grid-cols-3"><Chart title="Prefill" unit="tok/s" points={history} series={[{ key: 'prefill', label: 'Prefill', color: '#cf9a78' }]} /><Chart title="Generation" unit="tok/s" points={history} series={[{ key: 'decode', label: 'Generation', color: '#cf9a78' }]} /><Chart title="Requests" unit="live" points={history} series={[{ key: 'requests', label: 'Active', color: '#cf9a78' }]} /></div><p className="mt-3 text-[10px] text-muted-foreground">До 120 точек · история восстановлена при открытии · {instance?.engine_id ?? 'Сумма по всем активным запускам'}{instance?.engine_id === 'llama.cpp' ? items.get('decode_tps')?.source === 'llama.cpp:slots' ? ' \u00b7 Decode/Prefill: /slots (live); totals: /metrics.' : ' \u00b7 Decode/Prefill: completed requests (/metrics); /slots unavailable.' : ''}</p></div>
 }

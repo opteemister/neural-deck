@@ -44,6 +44,15 @@ class Settings(BaseSettings):
         if self.port == self.openai_port:
             raise ValueError("PORT and OPENAI_PORT must be different")
         return self
+
+    prometheus_url: str = Field(
+        default="", validation_alias=AliasChoices("PROMETHEUS_URL", "prometheus_url")
+    )
+    prometheus_token: str = Field(
+        default="",
+        repr=False,
+        validation_alias=AliasChoices("PROMETHEUS_TOKEN", "prometheus_token"),
+    )
     models_root: Path | None = Field(
         default=None,
         validation_alias=AliasChoices("MODELS_ROOT", "models_root"),

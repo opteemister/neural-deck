@@ -236,6 +236,13 @@ export const api = {
   getInstances: () => request<{ items: import('@/types/api').Instance[] }>('/api/v1/instances'),
   stopInstance: (id: string) => request<Operation>(`/api/v1/instances/${encodeURIComponent(id)}/stop`, json(undefined)),
   getMetrics: (id: string) => request<MetricsData>(`/api/v1/instances/${encodeURIComponent(id)}/metrics`),
+  getMetricsHistory: (filters: { profile_name?: string; pid?: number; scope?: 'profile' | 'all'; mode?: 'bootstrap' | 'current' } = {}) => {
+    const query = new URLSearchParams({ mode: filters.mode ?? 'bootstrap', limit: '120' })
+    if (filters.profile_name !== undefined) query.set('profile_name', filters.profile_name)
+    if (filters.pid !== undefined) query.set('pid', String(filters.pid))
+    if (filters.scope !== undefined) query.set('scope', filters.scope)
+    return request<import('@/types/api').MetricsHistoryData>(`/api/v1/metrics?${query}`)
+  },
   getLogs: (id: string, tail = 200) => request<LogsData>(`/api/v1/instances/${encodeURIComponent(id)}/logs?tail=${tail}`),
   getLogSources: () => request<LogSourceData>('/api/v1/logs'),
   getLog: (id: string, before?: number, limit = 500) => {

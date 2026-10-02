@@ -5,10 +5,21 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, Float, Integer, String, Text
+from sqlalchemy import JSON, DateTime, Float, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .db import Base
+
+
+class ApiClientRecord(Base):
+    __tablename__ = "api_clients"
+    __table_args__ = {"sqlite_autoincrement": True}
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    api_key: Mapped[str | None] = mapped_column(Text, nullable=True, unique=True)
+    anonymous_ip: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True)
+    ip_addresses: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class RequestJournalRecord(Base):
@@ -31,6 +42,25 @@ class RequestJournalRecord(Base):
     input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     streaming: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    pid: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    client_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    client_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    cached_input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    usage_received_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    usage_source: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    metric_meta: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    ttft_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    queue_time_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    prefill_time_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    generation_time_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    prefill_tps: Mapped[float | None] = mapped_column(Float, nullable=True)
+    decode_tps: Mapped[float | None] = mapped_column(Float, nullable=True)
+    prefix_cache_hit_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
+    spec_acceptance_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
     error_code: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 

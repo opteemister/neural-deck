@@ -24,6 +24,7 @@ from .api.dependencies import get_engine, get_runtime
 from .api.instances import router as instances_router
 from .api.logs import router as logs_router
 from .api.management import router as management_router
+from .api.metrics import export_router as metrics_export_router
 from .api.metrics import router as metrics_router
 from .api.profiles import router as profiles_router
 from .config import Settings, load_settings
@@ -88,8 +89,7 @@ def _configure_application_logging(log_path: Path) -> None:
         access_logger.removeHandler(handler)
         handler.close()
     if not any(
-        getattr(handler, "_llm_studio_console_handler", False)
-        for handler in logger.handlers
+        getattr(handler, "_llm_studio_console_handler", False) for handler in logger.handlers
     ):
         console_handler = logging.StreamHandler()
         console_handler.setLevel(logging.INFO)
@@ -294,7 +294,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         session_factory = create_session_factory(db_engine)
         journal_service = RequestJournalService(session_factory=session_factory)
         proxy_service = ProxyService(process_manager, journal=journal_service)
-        metrics_service = MetricsService(process_manager, journal=journal_service)
+        import secrets
+
+        from .metrics.storage import MetricsStorage
+
+        identity_path = paths.data_root / "studio-id"
+        if not identity_path.exists():
+            identity_path.write_text(secrets.token_hex(16), encoding="utf-8")
+        await journal_service.interrupt_pending()
+        metrics_service = MetricsService(
+            process_manager,
+            journal=journal_service,
+            storage=MetricsStorage(session_factory),
+            prometheus_url=settings.prometheus_url,
+            prometheus_token=settings.prometheus_token,
+            studio_id=identity_path.read_text().strip(),
+        )
         runtime = AppContainer(
             settings=settings,
             paths=paths,
@@ -315,6 +330,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
         _publish_runtime(app, runtime)
         await _scan_startup(runtime)
+        await metrics_service.start()
         logger.info("LLM Studio backend: готов принимать запросы %s", service_url)
     except BaseException:
         logger.exception("LLM Studio backend: запуск не выполнен")
@@ -437,6 +453,7 @@ def create_app(
     # Register metrics before the greedy /instances/{instance_id:path}
     # detail route, which would otherwise consume the /metrics suffix.
     app.include_router(metrics_router)
+    app.include_router(metrics_export_router)
     app.include_router(instances_router)
     app.include_router(logs_router)
 

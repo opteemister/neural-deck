@@ -13,9 +13,11 @@ import logging
 import re
 import time
 from collections.abc import AsyncIterator, Callable, Mapping
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, cast
+from uuid import uuid4
 
 import httpx
 
@@ -38,6 +40,7 @@ _HOP_BY_HOP = {
 }
 _SSE_USAGE_BUFFER_LIMIT = 2 * 1024 * 1024
 logger = logging.getLogger(__name__)
+_request_tracking: ContextVar[dict[str, Any] | None] = ContextVar("request_tracking", default=None)
 
 
 @dataclass(slots=True)
@@ -78,7 +81,8 @@ class ProxyService:
             # Observe process identities on every request without probing ready engines.
             observed = await self.process_manager.refresh(probe_models=False)
             instances = {
-                item.id: item for item in observed.items
+                item.id: item
+                for item in observed.items
                 if item.state not in {"exited", "error", "stopping"}
                 and (item.source == "managed" or item.identity_verified)
             }
@@ -86,9 +90,15 @@ class ProxyService:
             for instance_id in list(self._models_cache):
                 if instance_id not in instances:
                     del self._models_cache[instance_id]
-            metadata = dict(zip(instances, await asyncio.gather(*(
-                self._cached_model_metadata(instance) for instance in instances.values()
-            )), strict=True))
+            metadata = dict(
+                zip(
+                    instances,
+                    await asyncio.gather(
+                        *(self._cached_model_metadata(instance) for instance in instances.values())
+                    ),
+                    strict=True,
+                )
+            )
             registered_models = sorted(
                 self.process_manager.model_registry().list(), key=lambda item: item.id
             )
@@ -100,20 +110,25 @@ class ProxyService:
                     or registered.upstream_model not in engine_models
                 ):
                     continue
-                result.append({
-                    "id": registered.id,
-                    "object": "model",
-                    "created": int(registered.observed_at.timestamp()),
-                    "owned_by": "llm-studio",
-                    "engine_id": registered.engine_id,
-                    **engine_models[registered.upstream_model],
-                })
+                result.append(
+                    {
+                        "id": registered.id,
+                        "object": "model",
+                        "created": int(registered.observed_at.timestamp()),
+                        "owned_by": "llm-studio",
+                        "engine_id": registered.engine_id,
+                        **engine_models[registered.upstream_model],
+                    }
+                )
             return {"object": "list", "data": result}
 
     async def _cached_model_metadata(self, instance: Instance) -> dict[str, dict[str, Any]]:
         identity = (
-            instance.pid, instance.process_start_time_ns, instance.port,
-            instance.model_name if instance.source == "managed" else None, instance.engine_id,
+            instance.pid,
+            instance.process_start_time_ns,
+            instance.port,
+            instance.model_name if instance.source == "managed" else None,
+            instance.engine_id,
         )
         cached = self._models_cache.get(instance.id)
         if cached is not None and cached.identity == identity:
@@ -163,7 +178,9 @@ class ProxyService:
                     details[name] = item_details
                 logger.info(
                     "Ответ движка: instance_id=%s status=%s models=%s",
-                    instance.id, response.status_code, list(details),
+                    instance.id,
+                    response.status_code,
+                    list(details),
                 )
                 if details:
                     self.process_manager.model_registry().register_instance(
@@ -188,7 +205,64 @@ class ProxyService:
             )
         return details
 
+    async def _write_journal(self, **values: Any) -> None:
+        if self.journal is None:
+            return
+        try:
+            await self.journal.record_safely(**values)
+        except Exception as exc:
+            logger.error("Request journal write failed: %s", type(exc).__name__)
+
     async def forward(
+        self,
+        *,
+        route: str,
+        payload: Mapping[str, Any],
+        headers: Mapping[str, str],
+        request_id: str,
+        client_ip: str | None = None,
+    ) -> httpx.Response | Any:
+        tracking: dict[str, Any] = {
+            "journal_id": f"journal_{uuid4().hex}",
+            "started_at": datetime.now(UTC),
+            "client_ip": client_ip,
+            "pid": None,
+            "client_id": None,
+        }
+        if self.journal is not None:
+            try:
+                tracking["client_id"] = await self.journal.identify_client(
+                    next(
+                        (value for key, value in headers.items() if key.lower() == "authorization"),
+                        None,
+                    ),
+                    client_ip,
+                )
+            except Exception as exc:
+                logger.error("Client identification failed: %s", type(exc).__name__)
+            await self._write_journal(
+                request_id=request_id,
+                route=route,
+                model_name=str(payload.get("model", "<missing>")),
+                profile_name=None,
+                instance_id=None,
+                engine_id=None,
+                status_code=None,
+                latency_ms=0,
+                input_tokens=None,
+                output_tokens=None,
+                created_at=tracking["started_at"],
+                **tracking,
+            )
+        token = _request_tracking.set(tracking)
+        try:
+            return await self._forward(
+                route=route, payload=payload, headers=headers, request_id=request_id
+            )
+        finally:
+            _request_tracking.reset(token)
+
+    async def _forward(
         self,
         *,
         route: str,
@@ -241,6 +315,25 @@ class ProxyService:
                 error_code=exc.code,
             )
             raise
+        tracking = _request_tracking.get()
+        if tracking is not None:
+            tracking["pid"] = instance.pid
+            tracking["profile_name"] = registered.profile_name
+            tracking["instance_id"] = registered.instance_id
+            tracking["engine_id"] = registered.engine_id
+            if self.journal is not None:
+                # Persist the selected upstream before waiting for inference.
+                await self._write_journal(
+                    request_id=request_id,
+                    route=route,
+                    model_name=model_name,
+                    status_code=None,
+                    latency_ms=0,
+                    input_tokens=None,
+                    output_tokens=None,
+                    created_at=tracking["started_at"],
+                    **tracking,
+                )
         if instance.port is None:
             await self._journal(
                 request_id=request_id,
@@ -265,7 +358,9 @@ class ProxyService:
         upstream_payload["model"] = upstream_model
         target = f"http://127.0.0.1:{instance.port}{route}"
         outgoing_headers = {
-            key: value for key, value in headers.items() if key.lower() not in _HOP_BY_HOP
+            key: value
+            for key, value in headers.items()
+            if key.lower() not in _HOP_BY_HOP and key.lower() != "authorization"
         }
         stream = bool(upstream_payload.get("stream")) and route == "/v1/chat/completions"
         client = (
@@ -316,6 +411,10 @@ class ProxyService:
         try:
             body = await response.aread()
             input_tokens, output_tokens = _extract_usage(body, response.headers.get("content-type"))
+            if tracking is not None:
+                tracking.update(
+                    _response_metrics(body, streaming=False, engine_id=registered.engine_id)
+                )
             await self._journal(
                 request_id=request_id,
                 route=route,
@@ -345,6 +444,7 @@ class ProxyService:
         request_id: str,
         started: float,
     ) -> Any:
+        tracking = _request_tracking.get()
         context = client.stream("POST", target, json=payload, headers=headers)
         try:
             response = await context.__aenter__()
@@ -395,6 +495,32 @@ class ProxyService:
         async def stream_body() -> AsyncIterator[bytes]:
             usage_buffer = bytearray()
             error_code: str | None = None
+            pending = bytearray()
+            first_token_ms: float | None = None
+
+            def observe(chunk: bytes) -> None:
+                nonlocal first_token_ms
+                pending.extend(chunk)
+                while b"\n" in pending:
+                    line, _, tail = pending.partition(b"\n")
+                    pending[:] = tail
+                    if first_token_ms is not None or not line.startswith(b"data:"):
+                        continue
+                    try:
+                        event = json.loads(line[5:].strip())
+                        if any(
+                            any(
+                                choice.get("delta", {}).get(key)
+                                for key in ("content", "reasoning_content", "reasoning")
+                            )
+                            for choice in event.get("choices", [])
+                        ):
+                            first_token_ms = (time.perf_counter() - started) * 1000
+                    except (ValueError, TypeError, AttributeError):
+                        continue
+                if len(pending) > _SSE_USAGE_BUFFER_LIMIT:
+                    pending.clear()
+
             try:
                 # MockTransport and a few compatible clients return an
                 # already-closed in-memory response even when ``stream=True``.
@@ -404,9 +530,11 @@ class ProxyService:
                     chunk = response.content
                     if chunk:
                         usage_buffer.extend(chunk)
+                        observe(chunk)
                         yield chunk
                 else:
                     async for chunk in response.aiter_raw():
+                        observe(chunk)
                         usage_buffer.extend(chunk)
                         if len(usage_buffer) > _SSE_USAGE_BUFFER_LIMIT:
                             del usage_buffer[: len(usage_buffer) - _SSE_USAGE_BUFFER_LIMIT]
@@ -414,11 +542,25 @@ class ProxyService:
             except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError):
                 error_code = "upstream_unavailable"
                 raise
+            except (asyncio.CancelledError, GeneratorExit):
+                error_code = "client_disconnected"
+                raise
             except Exception:
                 error_code = "upstream_error"
                 raise
             finally:
                 input_tokens, output_tokens = _extract_sse_usage(bytes(usage_buffer))
+                if tracking is not None:
+                    tracking.update(
+                        _response_metrics(
+                            bytes(usage_buffer), streaming=True, engine_id=registered.engine_id
+                        )
+                    )
+                    if first_token_ms is not None:
+                        tracking["ttft_ms"] = first_token_ms
+                        tracking.setdefault("metric_meta", {})["ttft_ms"] = {
+                            "source": "proxy:first_token"
+                        }
                 await self._journal(
                     request_id=request_id,
                     route=route,
@@ -430,6 +572,7 @@ class ProxyService:
                     output_tokens=output_tokens,
                     stream=True,
                     error_code=error_code,
+                    tracking=tracking,
                 )
                 await context.__aexit__(None, None, None)
                 await client.aclose()
@@ -449,11 +592,17 @@ class ProxyService:
         output_tokens: int | None,
         stream: bool,
         error_code: str | None,
+        tracking: dict[str, Any] | None = None,
     ) -> None:
         if self.journal is None:
             return
         try:
-            await self.journal.record_safely(
+            extra = dict(tracking if tracking is not None else _request_tracking.get() or {})
+            for key in ("profile_name", "instance_id", "engine_id"):
+                extra.pop(key, None)
+            extra["finished_at"] = datetime.now(UTC)
+            await self._write_journal(
+                **extra,
                 request_id=request_id,
                 route=route,
                 model_name=model_name,
@@ -484,7 +633,12 @@ class ProxyService:
         if self.journal is None:
             return
         try:
-            await self.journal.record_safely(
+            extra = dict(_request_tracking.get() or {})
+            for key in ("profile_name", "instance_id", "engine_id"):
+                extra.pop(key, None)
+            extra["finished_at"] = datetime.now(UTC)
+            await self._write_journal(
+                **extra,
                 request_id=request_id,
                 route=route,
                 model_name=model_name,
@@ -582,15 +736,18 @@ def _reasoning_capabilities(metadata: Mapping[str, Any]) -> dict[str, Any]:
     allowed = {"none", "minimal", "low", "medium", "high", "xhigh"}
     efforts = (
         [item for item in efforts if isinstance(item, str) and item in allowed]
-        if isinstance(efforts, list) else []
+        if isinstance(efforts, list)
+        else []
     )
     if not efforts and not can_disable:
         return {}
-    return {"reasoning_capabilities": {
-        "efforts": efforts,
-        "effort_parameter": parameter,
-        "can_disable_thinking": can_disable,
-    }}
+    return {
+        "reasoning_capabilities": {
+            "efforts": efforts,
+            "effort_parameter": parameter,
+            "can_disable_thinking": can_disable,
+        }
+    }
 
 
 def _nonnegative_int(value: Any) -> int | None:
@@ -600,3 +757,96 @@ def _nonnegative_int(value: Any) -> int | None:
 
 
 __all__ = ["ProxyService"]
+
+
+def _response_metrics(body: bytes, *, streaming: bool, engine_id: str) -> dict[str, Any]:
+    """Read request-scoped usage and documented llama.cpp/NInfer timings."""
+    events: list[Any] = []
+    if streaming:
+        for line in body.splitlines():
+            if line.startswith(b"data:"):
+                try:
+                    events.append(json.loads(line[5:].strip()))
+                except ValueError:
+                    pass
+    else:
+        try:
+            events.append(json.loads(body))
+        except ValueError:
+            return {}
+    result: dict[str, Any] = {}
+    meta: dict[str, Any] = {}
+
+    def number(value: Any) -> float | None:
+        import math
+
+        return (
+            float(value)
+            if isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(value)
+            and value >= 0
+            else None
+        )
+
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        usage = event.get("usage")
+        if isinstance(usage, dict):
+            prompt, _ = _usage_values(usage)
+            details = usage.get("prompt_tokens_details", usage.get("input_tokens_details"))
+            cached = (
+                _nonnegative_int(details.get("cached_tokens"))
+                if isinstance(details, dict)
+                else None
+            )
+            result["usage_received_at"] = datetime.now(UTC)
+            result["usage_source"] = "upstream:usage"
+            if cached is not None and (prompt is None or cached <= prompt):
+                result["cached_input_tokens"] = cached
+                if prompt is not None and prompt > 0:
+                    result["prefix_cache_hit_percent"] = cached / prompt * 100
+        timings = event.get("timings")
+        if engine_id not in {"llama.cpp", "ninfer"} or not isinstance(timings, dict):
+            continue
+        cached = _nonnegative_int(timings.get("cache_n"))
+        prompt, _ = _usage_values(event.get("usage"))
+        if cached is not None and (prompt is None or cached <= prompt):
+            result.setdefault("cached_input_tokens", cached)
+            meta["cached_input_tokens"] = {"source": f"{engine_id}:timings.cache_n"}
+            if prompt is not None and prompt > 0:
+                result.setdefault("prefix_cache_hit_percent", cached / prompt * 100)
+        for field, source in (
+            ("prefill_time_ms", "prompt_ms"),
+            ("generation_time_ms", "predicted_ms"),
+            ("prefill_tps", "prompt_per_second"),
+            ("decode_tps", "predicted_per_second"),
+        ):
+            value = number(timings.get(source))
+            if value is not None:
+                result[field] = value
+                meta[field] = {"source": f"{engine_id}:timings", "field": source}
+        for field, tokens, duration in (
+            ("prefill_tps", "prompt_n", "prompt_ms"),
+            ("decode_tps", "predicted_n", "predicted_ms"),
+        ):
+            count, elapsed = number(timings.get(tokens)), number(timings.get(duration))
+            if count is not None and elapsed is not None and elapsed > 0:
+                meta[field] = {
+                    "source": f"{engine_id}:timings",
+                    "tokens": count,
+                    "duration_ms": elapsed,
+                }
+                result.setdefault(field, count / elapsed * 1000)
+        accepted, drafted = number(timings.get("draft_n_accepted")), number(timings.get("draft_n"))
+        if accepted is not None and drafted is not None and drafted > 0 and accepted <= drafted:
+            result["spec_acceptance_percent"] = accepted / drafted * 100
+            meta["spec_acceptance_percent"] = {
+                "source": f"{engine_id}:timings",
+                "accepted": accepted,
+                "drafted": drafted,
+            }
+    if meta:
+        result["metric_meta"] = meta
+    return result

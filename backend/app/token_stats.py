@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import case, func, select
+from sqlalchemy import case, func, select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
-from .journal import RequestJournalRecord
+from .journal import ApiClientRecord, RequestJournalRecord, journal_record_values
 from .schemas.instances import TokenCounts, TokenStats, TokenStatsData
 
 logger = logging.getLogger(__name__)
@@ -52,14 +52,33 @@ class RequestJournalService:
         streaming: bool = False,
         error_code: str | None = None,
         created_at: datetime,
+        journal_id: str | None = None,
+        **extra: Any,
     ) -> None:
         async with self._session_factory() as session:
+            existing = await session.get(RequestJournalRecord, journal_id) if journal_id else None
+            if existing is not None:
+                for key, value in {
+                    "profile_name": profile_name,
+                    "instance_id": instance_id,
+                    "engine_id": engine_id,
+                    "status_code": status_code,
+                    "latency_ms": max(0.0, latency_ms),
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "error_code": error_code,
+                    "streaming": int(streaming),
+                    **extra,
+                }.items():
+                    setattr(existing, key, value)
+                await session.commit()
+                return
             session.add(
                 RequestJournalRecord(
                     # The client supplied request ID is correlation metadata,
                     # not a database identity: retries and concurrent clients
                     # are allowed to reuse it.
-                    id=f"journal_{uuid4().hex}",
+                    id=journal_id or f"journal_{uuid4().hex}",
                     request_id=request_id or f"req_{uuid4().hex}",
                     created_at=created_at,
                     route=route,
@@ -73,9 +92,123 @@ class RequestJournalService:
                     output_tokens=output_tokens,
                     streaming=1 if streaming else 0,
                     error_code=error_code,
+                    **extra,
                 )
             )
             await session.commit()
+
+    async def identify_client(self, authorization: str | None, ip: str | None) -> int | None:
+        import ipaddress
+
+        parts = (authorization or "").split(None, 1)
+        key = parts[1].strip() if len(parts) == 2 and parts[0].lower() == "bearer" else None
+        try:
+            ip = str(ipaddress.ip_address(ip)) if ip else None
+        except ValueError:
+            ip = None
+        if not key and not ip:
+            return None
+        now = datetime.now(UTC)
+        async with self._session_factory() as session:
+            # SQLite serializes the lookup, insert and JSON update as one write.
+            await session.execute(text("BEGIN IMMEDIATE"))
+            predicate = (
+                ApiClientRecord.api_key == key if key else ApiClientRecord.anonymous_ip == ip
+            )
+            row = await session.scalar(select(ApiClientRecord).where(predicate))
+            if row is None:
+                row = ApiClientRecord(
+                    api_key=key or None,
+                    anonymous_ip=None if key else ip,
+                    ip_addresses=[ip] if ip else [],
+                    created_at=now,
+                    last_seen_at=now,
+                )
+                session.add(row)
+            else:
+                row.last_seen_at = now
+                if ip and ip not in row.ip_addresses:
+                    row.ip_addresses = [*row.ip_addresses, ip]
+            await session.commit()
+            return row.id
+
+    async def interrupt_pending(self) -> None:
+        from sqlalchemy import update
+
+        async with self._session_factory() as session:
+            await session.execute(
+                update(RequestJournalRecord)
+                .where(
+                    RequestJournalRecord.started_at.is_not(None),
+                    RequestJournalRecord.finished_at.is_(None),
+                )
+                .values(error_code="interrupted", finished_at=datetime.now(UTC))
+            )
+            await session.commit()
+
+    async def usage(
+        self,
+        *,
+        profile_name: str | None = None,
+        pid: int | None = None,
+        client_id: int | None = None,
+        from_: datetime | None = None,
+        to: datetime | None = None,
+        limit: int = 120,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        event_time = func.coalesce(
+            RequestJournalRecord.usage_received_at,
+            RequestJournalRecord.finished_at,
+            RequestJournalRecord.created_at,
+        )
+        query = select(RequestJournalRecord)
+        for field, value in (
+            ("profile_name", profile_name),
+            ("pid", pid),
+            ("client_id", client_id),
+        ):
+            if value is not None:
+                query = query.where(getattr(RequestJournalRecord, field) == value)
+        if from_ is not None:
+            query = query.where(event_time >= from_)
+        if to is not None:
+            query = query.where(event_time <= to)
+        async with self._session_factory() as session:
+            rows = (
+                await session.scalars(
+                    query.order_by(event_time.desc(), RequestJournalRecord.id)
+                    .offset(offset)
+                    .limit(limit + 1)
+                )
+            ).all()
+        fields = (
+            "pid",
+            "client_id",
+            "client_ip",
+            "cached_input_tokens",
+            "started_at",
+            "finished_at",
+            "usage_received_at",
+            "usage_source",
+            "ttft_ms",
+            "queue_time_ms",
+            "prefill_time_ms",
+            "generation_time_ms",
+            "prefill_tps",
+            "decode_tps",
+            "prefix_cache_hit_percent",
+            "spec_acceptance_percent",
+            "metric_meta",
+        )
+        return {
+            "items": [
+                {**journal_record_values(row), **{field: getattr(row, field) for field in fields}}
+                for row in rows[:limit]
+            ],
+            "next_offset": offset + limit if len(rows) > limit else None,
+            "source": "sqlite",
+        }
 
     async def latest_latency(self, instance_id: str) -> float | None:
         async with self._session_factory() as session:
@@ -154,8 +287,8 @@ class RequestJournalService:
         try:
             await self.record(**kwargs)
         except Exception as exc:  # noqa: BLE001 - persistence boundary
-            self.last_error = str(exc)
-            logger.exception("Request journal write failed")
+            self.last_error = type(exc).__name__
+            logger.error("Request journal write failed: %s", type(exc).__name__)
             return False
         self.last_error = None
         return True

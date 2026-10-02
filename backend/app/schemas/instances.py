@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -51,12 +51,15 @@ class Metric(BaseModel):
     source: str = Field(min_length=1)
     observed_at: datetime
     state: MetricState
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class MetricList(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     items: list[Metric]
+    source: str = "local"
+    peaks: dict[str, float] = Field(default_factory=dict)
 
 
 class LogsData(BaseModel):

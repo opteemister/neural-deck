@@ -3,17 +3,13 @@
 from __future__ import annotations
 
 import math
-import re
 from datetime import UTC, datetime
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 import httpx
+from prometheus_client.parser import text_string_to_metric_families
 
 from ..schemas.instances import Instance, Metric
-
-_PROMETHEUS_LINE = re.compile(
-    r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(?:\{[^}]*\})?\s+([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)$"
-)
 
 # Endpoints are intentionally explicit per engine.  ``None`` means that the
 # Version Zero adapter has no documented/observable Prometheus source and must
@@ -85,13 +81,7 @@ class PrometheusMetricProvider:
         except (httpx.HTTPError, ValueError, UnicodeError):
             previous = self._cache.get(instance.id)
             if previous:
-                age = max(
-                    0.0,
-                    (now - max(item.observed_at for item in previous)).total_seconds(),
-                )
-                if age >= self.stale_after:
-                    return [item.model_copy(update={"state": "stale"}) for item in previous]
-                return previous
+                return [item.model_copy(update={"state": "stale"}) for item in previous]
             return [self._unavailable(now)]
         finally:
             if own_client:
@@ -138,20 +128,23 @@ class LlamaCppMetricsProvider(PrometheusMetricProvider):
                 return result
             now = datetime.now(UTC)
             current: dict[tuple[int, int], tuple[int, int]] = {}
-            active = sum(slot.get('is_processing') is True for slot in payload)
+            active = sum(slot.get("is_processing") is True for slot in payload)
             for slot in payload:
-                if slot.get('is_processing') is not True:
+                if slot.get("is_processing") is not True:
                     continue
-                next_token = slot.get('next_token')
+                next_token = slot.get("next_token")
                 if isinstance(next_token, list) and len(next_token) == 1:
                     next_token = next_token[0]
                 if not isinstance(next_token, dict):
                     continue
-                identity = (slot.get('id'), slot.get('id_task'))
-                counts = (next_token.get('n_decoded'), slot.get('n_prompt_tokens_processed'))
-                if not all(isinstance(item, int) and not isinstance(item, bool) and item >= 0 for item in (*identity, *counts)):
+                identity = (slot.get("id"), slot.get("id_task"))
+                counts = (next_token.get("n_decoded"), slot.get("n_prompt_tokens_processed"))
+                if not all(
+                    isinstance(item, int) and not isinstance(item, bool) and item >= 0
+                    for item in (*identity, *counts)
+                ):
                     continue
-                current[identity] = counts
+                current[cast(tuple[int, int], identity)] = cast(tuple[int, int], counts)
             previous = self._slots.get(instance.id)
             rates: list[float | None] = [None, None]
             if active == 0:
@@ -161,21 +154,42 @@ class LlamaCppMetricsProvider(PrometheusMetricProvider):
                 # Compare only the same slot/task: slot reuse is a counter reset.
                 if elapsed > 0 and all(key in previous[1] for key in current):
                     for index in (0, 1):
-                        changes = [counts[index] - previous[1][key][index] for key, counts in current.items()]
+                        changes = [
+                            counts[index] - previous[1][key][index]
+                            for key, counts in current.items()
+                        ]
                         if all(change >= 0 for change in changes):
                             rates[index] = sum(changes) / elapsed
             self._slots[instance.id] = (now, current)
             if len(self._slots) > 256:
                 self._slots.pop(next(iter(self._slots)))
-            replaced = {'llamacpp:predicted_tokens_seconds', 'llamacpp:prompt_tokens_seconds',
-                        'llamacpp:requests_processing'}
+            replaced = {
+                "llamacpp:predicted_tokens_seconds",
+                "llamacpp:prompt_tokens_seconds",
+                "llamacpp:requests_processing",
+            }
             result = [item for item in result if item.name not in replaced]
-            for name, value in (('decode_tps', rates[0]), ('prefill_tps', rates[1]),
-                                ('active_requests', active),
-                                ('inflight_completion_tokens', sum(counts[0] for counts in current.values()) if len(current) == active else None)):
-                result.append(Metric(name=name, value=value, unit='tok/s' if name.endswith('_tps') else '',
-                                     source='llama.cpp:slots', observed_at=now,
-                                     state='ok' if value is not None else 'unavailable'))
+            for name, value in (
+                ("decode_tps", rates[0]),
+                ("prefill_tps", rates[1]),
+                ("active_requests", active),
+                (
+                    "inflight_completion_tokens",
+                    sum(counts[0] for counts in current.values())
+                    if len(current) == active
+                    else None,
+                ),
+            ):
+                result.append(
+                    Metric(
+                        name=name,
+                        value=value,
+                        unit="tok/s" if name.endswith("_tps") else "",
+                        source="llama.cpp:slots",
+                        observed_at=now,
+                        state="ok" if value is not None else "unavailable",
+                    )
+                )
             return result
         except (httpx.HTTPError, ValueError, TypeError):
             # Completed-request exporter metrics remain usable when slots are disabled.
@@ -332,27 +346,27 @@ def _parse_prometheus(
     engine_id: str,
 ) -> list[Metric]:
     result: list[Metric] = []
-    for line in body.splitlines():
-        match = _PROMETHEUS_LINE.match(line.strip())
-        if match is None:
-            continue
-        name, raw_value = match.groups()
-        if names is not None and name not in names:
-            continue
-        try:
-            value = float(raw_value)
-        except ValueError:
-            continue
-        result.append(
-            Metric(
-                name=name,
-                value=value,
-                unit="",
-                source=f"{engine_id}:prometheus",
-                observed_at=observed_at,
-                state="ok",
+    for family in text_string_to_metric_families(body):
+        for sample in family.samples:
+            if names is not None and sample.name not in names:
+                continue
+            if not math.isfinite(sample.value) or sample.value < 0:
+                continue
+            result.append(
+                Metric(
+                    name=sample.name,
+                    value=sample.value,
+                    unit="",
+                    source=f"{engine_id}:prometheus",
+                    observed_at=observed_at,
+                    state="ok",
+                    metadata={
+                        "labels": sample.labels,
+                        "type": family.type,
+                        "help": family.documentation,
+                    },
+                )
             )
-        )
     return result
 
 

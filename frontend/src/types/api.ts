@@ -254,6 +254,8 @@ export interface Metric {
 }
 
 export interface MetricsData {
+  source?: string
+  peaks?: Record<string, number>
   items: Metric[]
 }
 
@@ -383,4 +385,12 @@ export interface ApiErrorBody {
 
 export interface ApiErrorResponse {
   error: ApiErrorBody
+}
+
+
+export interface MetricsHistoryData {
+  history: Array<MetricsData & { observed_at: string; profile_name?: string | null; pid?: number }>
+  current: (MetricsData & { observed_at: string }) | null
+  peaks: Record<string, number>
+  source: string
 }

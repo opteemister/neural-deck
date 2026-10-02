@@ -19,13 +19,16 @@ logger = logging.getLogger(__name__)
 
 @router.get("/models", response_model=OpenAIModelList, response_model_exclude_none=True)
 async def models(
-    request: Request, service: ProxyService = Depends(get_proxy_service)  # noqa: B008
+    request: Request,
+    service: ProxyService = Depends(get_proxy_service),  # noqa: B008
 ) -> dict[str, Any]:
     logger.info("GET %s: request_id=%s", request.url.path, request.state.request_id)
     result = await service.models()
     logger.info(
         "GET %s: models=%s request_id=%s",
-        request.url.path, len(result["data"]), request.state.request_id,
+        request.url.path,
+        len(result["data"]),
+        request.state.request_id,
     )
     return result
 
@@ -42,6 +45,7 @@ async def _forward(
             payload=payload,
             headers=request.headers,
             request_id=request.state.request_id,
+            client_ip=request.client.host if request.client else None,
         )
     except AppError as exc:
         # OpenAI clients expect their own error object, separate from the
@@ -88,8 +92,11 @@ async def embeddings(
 
 internal_router = APIRouter(prefix="/api/proxy", tags=["internal-chat"])
 internal_router.add_api_route(
-    "/models", models, methods=["GET"],
-    response_model=OpenAIModelList, response_model_exclude_none=True,
+    "/models",
+    models,
+    methods=["GET"],
+    response_model=OpenAIModelList,
+    response_model_exclude_none=True,
 )
 internal_router.add_api_route("/chat/completions", chat_completions, methods=["POST"])
 

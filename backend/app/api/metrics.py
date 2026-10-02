@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from fastapi import APIRouter, Depends, Query, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from ..metrics.service import MetricsService
 from ..schemas.common import SuccessEnvelope
@@ -44,3 +45,41 @@ async def token_stats(
 
 
 __all__ = ["get_journal_service", "get_metrics_service", "router"]
+
+
+@router.get("/metrics")
+async def metrics(
+    request: Request,
+    mode: Literal["current", "bootstrap", "history", "peaks", "usage"] = "current",
+    profile_name: str | None = None,
+    pid: int | None = Query(None, gt=0),
+    scope: Literal["profile", "all"] = "profile",
+    from_: datetime | None = Query(None, alias="from"),
+    to: datetime | None = None,
+    limit: int = Query(120, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    client_id: int | None = Query(None, gt=0),
+    service: MetricsService = Depends(get_metrics_service),
+) -> JSONResponse:
+    return success(
+        request,
+        await service.read(
+            mode=mode,
+            profile_name=profile_name,
+            pid=pid,
+            scope=scope,
+            from_=from_,
+            to=to,
+            limit=limit,
+            offset=offset,
+            client_id=client_id,
+        ),
+    )
+
+
+export_router = APIRouter()
+
+
+@export_router.get("/metrics", include_in_schema=False)
+async def export_metrics(service: MetricsService = Depends(get_metrics_service)) -> Response:
+    return Response(service.export(), media_type="text/plain; version=0.0.4; charset=utf-8")

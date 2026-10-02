@@ -93,7 +93,8 @@ export function DashboardPage() {
   const selectedCanStop = canStopInstance(selected)
   const metricQueries = useQueries({ queries: activeInstances.map((instance) => ({ queryKey: ['metrics', instance.id], queryFn: () => api.getMetrics(instance.id), retry: instance.source === 'external' ? false as const : 1, refetchInterval: 2_000, refetchIntervalInBackground: false })) })
   const selectedMetrics = metricQueries[activeInstances.findIndex((instance) => instance.id === selectedId)]
-  const aggregateMetrics: MetricsData = {
+  const allMetrics = useQuery({ queryKey: ['metrics-current', 'all'], queryFn: () => api.getMetricsHistory({ scope: 'all', mode: 'current' }), refetchInterval: 2_000, refetchIntervalInBackground: false })
+  const fallbackAggregate: MetricsData = {
     items: ['decode_tps', 'ttft_mean_ms', 'prefill_tps', 'kv_cache_percent', 'active_requests', 'queue_requests', 'prompt_tokens_total', 'completion_tokens_total', 'inflight_completion_tokens', 'completed_requests'].map((name) => {
       const observations = metricQueries.map((query) => query.isError ? undefined : query.data?.items.find((item) => item.name === name))
       const complete = observations.every((item) => item?.state === 'ok' && typeof item.value === 'number' && Number.isFinite(item.value))
@@ -105,6 +106,7 @@ export function DashboardPage() {
       return { name, value, unit: null, source: complete ? source : 'Не все запуски предоставили этот показатель', observed_at: observedAt, state: complete ? 'ok' as const : 'unavailable' as const }
     }),
   }
+  const aggregateMetrics: MetricsData = allMetrics.data?.current ?? (activeInstances.length === 0 ? fallbackAggregate : { items: [] })
   const logs = useQuery({ queryKey: ['logs', selected?.id], queryFn: async () => {
     const data = await api.getLogs(selected!.id)
     // Keep previously observed external output if its source temporarily disappears.

@@ -39,6 +39,7 @@ def create_engine(sqlite_path: Path, *, echo: bool = False) -> AsyncEngine:
         database_url(sqlite_path),
         echo=echo,
         future=True,
+        hide_parameters=True,
         connect_args={"check_same_thread": False},
     )
 

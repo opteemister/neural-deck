@@ -6,11 +6,14 @@ import asyncio
 import contextlib
 import hashlib
 import json
+import logging
 import os
-import shutil
 import re
-import tempfile
+import shutil
 import sys
+import tempfile
+import threading
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +33,10 @@ from ..schemas.models import (
     LocalModelFile,
     LocalModelGroup,
 )
+
+logger = logging.getLogger(__name__)
+_MANIFEST_LOCK = threading.RLock()
+_DOWNLOAD_WORKING_DIR = Path(__file__).resolve().parents[2]
 
 MODEL_EXTENSIONS = {
     ".gguf": "gguf",
@@ -63,9 +70,40 @@ class ModelCatalogue:
         self.operations = operations or OperationManager(paths.operations_log_dir)
         self._items: list[LocalModel] | None = None
         self.scan_error: str | None = None
-        self._manifest_lock = asyncio.Lock()
+        self._manifest_lock = _MANIFEST_LOCK
+        self._update_task: asyncio.Task[None] | None = None
+        self._update_check_lock = asyncio.Lock()
+
+    async def start_update_scheduler(self, interval_seconds: int = 6 * 60 * 60) -> None:
+        """Start the non-blocking Hugging Face update loop."""
+
+        if self._update_task is None or self._update_task.done():
+            self._update_task = asyncio.create_task(
+                self._update_loop(interval_seconds),
+                name="model-hf-update-check",
+            )
+
+    async def stop_update_scheduler(self) -> None:
+        task = self._update_task
+        self._update_task = None
+        if task is None:
+            return
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    async def _update_loop(self, interval_seconds: int) -> None:
+        while True:
+            await asyncio.sleep(interval_seconds)
+            try:
+                await self.check_updates()
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - background checks are best effort
+                logger.exception("Периодическая проверка обновлений моделей завершилась ошибкой")
 
     async def close(self) -> None:
+        await self.stop_update_scheduler()
         await self.operations.close()
 
     def scan(self, *, verify_hashes: bool = False) -> list[LocalModel]:
@@ -88,8 +126,7 @@ class ModelCatalogue:
         model_directory_set = set(model_directories)
         for path in model_directories:
             _reconcile_local_manifest(root, path)
-            if verify_hashes:
-                _refresh_manifest_hashes(path)
+            _refresh_local_hash_cache(path)
         standalone_files = [
             path
             for path in paths
@@ -98,6 +135,8 @@ class ModelCatalogue:
             and path.suffix.lower() in MODEL_EXTENSIONS
             and not any(parent in model_directory_set for parent in path.parents)
         ]
+        for path in standalone_files:
+            _refresh_local_hash_cache(path)
         items = [
             self._describe(path, verify_hashes=verify_hashes)
             for path in [*model_directories, *standalone_files]
@@ -274,6 +313,15 @@ class ModelCatalogue:
             status, missing_files, unverified_files = _manifest_status(
                 path, manifest, verify_hashes=verify_hashes
             )
+            tracked = isinstance(manifest.get("tracking_ref"), str) and bool(manifest.get("tracking_ref"))
+            remote_check = manifest.get("remote_check") or {
+                "availability": "unavailable" if tracked else "not_tracked",
+                "stale": False,
+            }
+            remote_update = manifest.get("remote_update") or {
+                "status": "unknown" if tracked else "not_tracked",
+                "changed_files": 0,
+            }
             return HfMatch(
                 status=status,
                 repo_id=manifest["repo_id"],
@@ -281,6 +329,16 @@ class ModelCatalogue:
                 scope=manifest["scope"],
                 missing_files=missing_files,
                 unverified_files=unverified_files,
+                remote_check=remote_check,
+                remote_update=remote_update,
+                local_integrity=manifest.get("local_integrity"),
+                changed_paths=manifest.get("changed_paths", []),
+                downloaded_revision_date=manifest.get("downloaded_revision_date"),
+                remote_revision_date=(
+                    remote_check.get("repository_date")
+                    if isinstance(remote_check, dict)
+                    else None
+                ),
             )
         except (OSError, ValueError, yaml.YAMLError):
             return _cache_match(path)
@@ -330,6 +388,7 @@ class ModelCatalogue:
                 if not isinstance(resolved, str) or not _is_commit_sha(resolved):
                     raise AppError("hf_revision_unknown", "Hugging Face не вернул revision")
                 files = await self._hf_files(client, repo_id, resolved)
+                revision_date = _hf_date(metadata.get("lastModified") or metadata.get("last_modified"))
                 card_data = metadata.get("cardData")
                 description = card_data.get("description") if isinstance(card_data, dict) else None
                 if not isinstance(description, str):
@@ -348,6 +407,7 @@ class ModelCatalogue:
         return HfRepoData(
             repo_id=repo_id,
             revision=resolved,
+            revision_date=revision_date,
             description=description,
             readme=readme,
             files=files,
@@ -439,6 +499,7 @@ class ModelCatalogue:
                 wanted,
                 repo_files=repo.files,
                 full_snapshot=request.files is None,
+                revision_date=repo.revision_date,
             )
             # A child process keeps the Hub library's blocking I/O off the API
             # loop and lets operation cancellation stop all download threads.
@@ -457,7 +518,7 @@ class ModelCatalogue:
 
                 code, _, stderr = await run_command(
                     [sys.executable, "-m", "app.models.hf_download", plan_path],
-                    cwd=str(Path(__file__).resolve().parents[2]),
+                    cwd=str(_DOWNLOAD_WORKING_DIR),
                     timeout_seconds=7 * 24 * 3600,
                     on_stdout_line=report,
                 )
@@ -466,7 +527,7 @@ class ModelCatalogue:
                     raise RuntimeError(f"Загрузчик Hugging Face завершился с кодом {code}: {stderr[-2000:]}")
                 operation["stdout"] += "".join(f"downloaded {item.path}\n" for item in wanted)
             finally:
-                Path(plan_path).unlink(missing_ok=True)
+                await asyncio.to_thread(Path(plan_path).unlink, missing_ok=True)
             operation["progress"]["current_file"] = None
             # Re-read and merge once more because another quantization from
             # the same repository may have completed while this task ran.
@@ -477,6 +538,7 @@ class ModelCatalogue:
                 wanted,
                 repo_files=repo.files,
                 full_snapshot=request.files is None,
+                revision_date=repo.revision_date,
             )
             operation["checked_at"] = utc_now()
             await asyncio.to_thread(self.scan)
@@ -484,6 +546,112 @@ class ModelCatalogue:
         operation = await self.operations.create("download", target_id, worker)
         operation["label"] = request.label or request.repo_id
         return operation
+
+    async def check_updates(self) -> list[LocalModel]:
+        """Check tracked model manifests without downloading or replacing files."""
+
+        async with self._update_check_lock:
+            await asyncio.to_thread(self.scan)
+            entries: dict[tuple[str, str], list[Path]] = {}
+            for item in self.items():
+                manifest = _read_manifest(item.path)
+                if manifest is None:
+                    continue
+                tracking_ref = manifest.get("tracking_ref")
+                repo_id = manifest.get("repo_id")
+                if not isinstance(repo_id, str) or not isinstance(tracking_ref, str) or not tracking_ref:
+                    continue
+                entries.setdefault((repo_id, tracking_ref), []).append(item.path)
+            async with httpx.AsyncClient(base_url="https://huggingface.co", timeout=8) as client:
+                for (repo_id, tracking_ref), paths in entries.items():
+                    await self._check_repo_updates(client, repo_id, tracking_ref, paths)
+            return await asyncio.to_thread(self.scan)
+
+    async def _check_repo_updates(
+        self,
+        client: httpx.AsyncClient,
+        repo_id: str,
+        tracking_ref: str,
+        paths: list[Path],
+    ) -> None:
+        attempted_at = utc_now().isoformat()
+        manifests = [(path, _read_manifest(path)) for path in paths]
+        manifests = [(path, manifest) for path, manifest in manifests if manifest is not None]
+        try:
+            namespace, name = _repo_parts(repo_id)
+            response = await _hf_get_with_retries(
+                client,
+                f"/api/models/{namespace}/{name}", params={"revision": tracking_ref}
+            )
+            repo_metadata = response.json()
+            current_revision = repo_metadata.get("sha") if isinstance(repo_metadata, dict) else None
+            if not isinstance(current_revision, str) or not _is_commit_sha(current_revision):
+                raise ValueError("Hugging Face не вернул текущую revision")
+            repo_date = _hf_date(
+                repo_metadata.get("lastModified") or repo_metadata.get("last_modified")
+                if isinstance(repo_metadata, dict)
+                else None
+            )
+            need_tree = any(
+                manifest.get("scope") == "snapshot"
+                or any(
+                    not isinstance(item.get("remote_snapshot"), dict)
+                    or item["remote_snapshot"].get("revision") != current_revision
+                    or not item["remote_snapshot"].get("hash")
+                    or not item["remote_snapshot"].get("hash_kind")
+                    or not item["remote_snapshot"].get("file_date")
+                    for item in manifest.get("files", [])
+                    if isinstance(item, dict)
+                )
+                for _, manifest in manifests
+            )
+            remote_tree: dict[str, dict[str, Any]] = {}
+            if need_tree:
+                tree_response = await _hf_get_with_retries(
+                    client,
+                    f"/api/models/{namespace}/{name}/tree/{current_revision}",
+                    params={"recursive": "true", "expand": "true"},
+                )
+                payload = tree_response.json()
+                if not isinstance(payload, list):
+                    raise ValueError("Hugging Face вернул неожиданный список файлов")
+                for raw in payload:
+                    if not isinstance(raw, dict) or raw.get("type") not in {None, "file"}:
+                        continue
+                    relative = ensure_safe_relative_path(str(raw.get("path", "")))
+                    metadata = _tree_file_metadata(raw)
+                    if metadata is not None:
+                        remote_tree[relative] = metadata
+                tracked_paths = {
+                    str(item.get("path"))
+                    for _, manifest in manifests
+                    for item in manifest.get("files", [])
+                    if isinstance(item, dict) and isinstance(item.get("path"), str)
+                }
+                missing_dates = [
+                    relative
+                    for relative in tracked_paths
+                    if relative in remote_tree and not remote_tree[relative].get("file_date")
+                ]
+                if missing_dates:
+                    raise ValueError(
+                        "Hugging Face не вернул дату файла "
+                        + ", ".join(sorted(missing_dates)[:3])
+                    )
+            for path, manifest in manifests:
+                await asyncio.to_thread(
+                    _apply_remote_snapshot,
+                    path,
+                    manifest,
+                    tracking_ref,
+                    current_revision,
+                    repo_date,
+                    remote_tree,
+                    attempted_at,
+                )
+        except (AppError, httpx.HTTPError, ValueError, OSError) as exc:
+            for path, manifest in manifests:
+                _record_remote_failure(path, manifest, attempted_at, str(exc))
 
     async def _merge_download_manifest(
         self,
@@ -494,6 +662,7 @@ class ModelCatalogue:
         *,
         repo_files: list[HfFile],
         full_snapshot: bool,
+        revision_date: str | None = None,
     ) -> dict[str, Any]:
         """Persist a cumulative manifest for selections from one revision.
 
@@ -504,7 +673,7 @@ class ModelCatalogue:
         unverified.
         """
 
-        async with self._manifest_lock:
+        with self._manifest_lock:
             existing = await asyncio.to_thread(_read_manifest, destination)
             files_by_path: dict[str, dict[str, Any]] = {}
             if (
@@ -516,19 +685,32 @@ class ModelCatalogue:
                     if isinstance(item, dict) and isinstance(item.get("path"), str):
                         files_by_path[item["path"]] = dict(item)
             for item in wanted:
-                files_by_path[item.path] = item.model_dump(mode="json")
+                payload = item.model_dump(mode="json")
+                remote_hash = payload.get("sha256") or payload.get("etag")
+                payload["downloaded_remote_hash"] = remote_hash
+                payload["downloaded_remote_hash_kind"] = (
+                    "lfs_sha256" if payload.get("sha256") else payload.get("hash_kind")
+                )
+                payload["downloaded_file_date"] = payload.get("file_date")
+                files_by_path[item.path] = payload
             # Recover files downloaded before the cumulative-manifest fix (or
             # copied into the repository by hand) when their Hub size matches.
             # This keeps the sidecar aligned with the actual directory on the
             # next download without treating partial files as complete.
-            destination_root = destination.resolve(strict=True)
+            destination_root = await asyncio.to_thread(destination.resolve, strict=True)
             for item in repo_files:
                 if item.size is None or item.path in files_by_path:
                     continue
                 candidate = _safe_hf_path(destination_root, item.path)
                 try:
                     if candidate.is_file() and candidate.stat().st_size == item.size:
-                        files_by_path[item.path] = item.model_dump(mode="json")
+                        payload = item.model_dump(mode="json")
+                        payload["downloaded_remote_hash"] = payload.get("sha256") or payload.get("etag")
+                        payload["downloaded_remote_hash_kind"] = (
+                            "lfs_sha256" if payload.get("sha256") else payload.get("hash_kind")
+                        )
+                        payload["downloaded_file_date"] = payload.get("file_date")
+                        files_by_path[item.path] = payload
                 except OSError:
                     continue
             scope = "snapshot" if full_snapshot or (
@@ -537,13 +719,18 @@ class ModelCatalogue:
                 and existing.get("revision") == revision
                 and existing.get("scope") == "snapshot"
             ) else "selection"
+            existing_tracking_ref = existing.get("tracking_ref") if isinstance(existing, dict) else None
             manifest = {
-                "schema_version": 1,
+                "schema_version": 2,
                 "repo_id": repo_id,
+                "tracking_ref": existing_tracking_ref or "main",
                 "revision": revision,
+                "downloaded_revision_date": revision_date,
                 "scope": scope,
                 "files": list(files_by_path.values()),
             }
+            if existing and isinstance(existing.get("downloaded_revision_date"), str):
+                manifest["downloaded_revision_date"] = existing["downloaded_revision_date"]
             sidecar = destination / SIDECAR_DIR
             await _atomic_write_text(sidecar, yaml.safe_dump(manifest, sort_keys=False))
             return manifest
@@ -551,7 +738,8 @@ class ModelCatalogue:
     @staticmethod
     async def _hf_files(client: httpx.AsyncClient, repo_id: str, revision: str) -> list[HfFile]:
         response = await client.get(
-            f"/api/models/{repo_id}/tree/{revision}", params={"recursive": "true"}
+            f"/api/models/{repo_id}/tree/{revision}",
+            params={"recursive": "true", "expand": "true"},
         )
         response.raise_for_status()
         payload = response.json()
@@ -588,6 +776,10 @@ class ModelCatalogue:
                 if isinstance(raw_oid, str)
                 and len(raw_oid) == 40
                 and lfs is None
+                else "md5"
+                if isinstance(raw_oid, str)
+                and len(raw_oid) == 32
+                and lfs is None
                 else None
             )
             result.append(
@@ -599,6 +791,11 @@ class ModelCatalogue:
                     etag=raw_oid if hash_kind else None,
                     sha256=sha256,
                     hash_kind=hash_kind,
+                    file_date=_hf_date(
+                        (item.get("lastCommit") or item.get("last_commit") or {}).get("date")
+                        if isinstance(item.get("lastCommit") or item.get("last_commit"), dict)
+                        else None
+                    ),
                 )
             )
         return result
@@ -967,28 +1164,379 @@ def _refresh_manifest_hashes(path: Path) -> None:
                 item["sha256"] = file_metadata["sha256"]
                 item.pop("etag", None)
                 item.pop("hash_kind", None)
-            elif file_metadata.get("hash_kind") == "git_blob":
+            elif file_metadata.get("hash_kind") in {"git_blob", "md5"}:
                 item["etag"] = file_metadata.get("etag")
-                item["hash_kind"] = "git_blob"
+                item["hash_kind"] = file_metadata["hash_kind"]
                 item.pop("sha256", None)
             elif file_metadata.get("etag"):
                 item["etag"] = file_metadata["etag"]
                 item.pop("hash_kind", None)
+            if file_metadata.get("file_date"):
+                item["file_date"] = file_metadata["file_date"]
             changed = item != raw_item or changed
         refreshed.append(item)
     if not changed:
         return
-    updated = {
-        "schema_version": 1,
-        "repo_id": repo_id,
-        "revision": revision,
-        "scope": manifest["scope"],
-        "files": refreshed,
-    }
+    updated = dict(manifest)
+    updated.update({"schema_version": 2, "repo_id": repo_id, "revision": revision, "files": refreshed})
     try:
         _atomic_write_text_sync(path / SIDECAR_DIR, yaml.safe_dump(updated, sort_keys=False))
     except OSError:
         return
+
+
+def _refresh_local_hash_cache(path: Path) -> None:
+    """Calculate local digests once and reuse them while ``mtime_ns + size`` is stable."""
+
+    manifest = _read_manifest(path)
+    if manifest is None:
+        return
+    updated = dict(manifest)
+    updated["schema_version"] = 2
+    files: list[dict[str, Any]] = []
+    changed = manifest.get("schema_version") != 2
+    for raw_item in manifest.get("files", []):
+        if not isinstance(raw_item, dict) or not isinstance(raw_item.get("path"), str):
+            files.append(raw_item)
+            continue
+        item = dict(raw_item)
+        baseline_hash = item.get("downloaded_remote_hash")
+        if not isinstance(baseline_hash, str):
+            baseline_hash = item.get("sha256") or item.get("etag")
+            if isinstance(baseline_hash, str):
+                item["downloaded_remote_hash"] = baseline_hash
+                item["downloaded_remote_hash_kind"] = (
+                    "lfs_sha256"
+                    if len(baseline_hash) == 64 and item.get("sha256")
+                    else "git_blob"
+                    if len(baseline_hash) == 40 and item.get("etag")
+                    else item.get("hash_kind")
+                )
+                if item.get("file_date") and not item.get("downloaded_file_date"):
+                    item["downloaded_file_date"] = item["file_date"]
+                changed = True
+        if (
+            isinstance(baseline_hash, str)
+            and not isinstance(item.get("downloaded_remote_hash_kind"), str)
+        ):
+            inferred_kind = _hash_kind_from_value(baseline_hash, item)
+            if inferred_kind:
+                item["downloaded_remote_hash_kind"] = inferred_kind
+                changed = True
+        candidate = path / item["path"] if path.is_dir() else path
+        local = item.get("local") if isinstance(item.get("local"), dict) else None
+        try:
+            stat = candidate.stat()
+            fingerprint = {
+                "fingerprint_policy": "mtime_size",
+                "size_bytes": stat.st_size,
+                "mtime_ns": stat.st_mtime_ns,
+            }
+            expected_kind = (
+                item.get("downloaded_remote_hash_kind")
+                or item.get("hash_kind")
+                or _hash_kind_from_value(item.get("downloaded_remote_hash"))
+            )
+            cached_digest_available = (
+                isinstance(local.get("git_blob_sha1"), str)
+                if expected_kind == "git_blob"
+                else isinstance(local.get("md5"), str)
+                if expected_kind == "md5"
+                else isinstance(local.get("sha256"), str)
+            ) if local is not None else False
+            reusable = (
+                local is not None
+                and local.get("fingerprint_policy") == "mtime_size"
+                and local.get("size_bytes") == stat.st_size
+                and local.get("mtime_ns") == stat.st_mtime_ns
+                and cached_digest_available
+            )
+            if reusable:
+                item["local"] = {**local, **fingerprint}
+            else:
+                item["local"] = {**fingerprint, **_compute_local_digests(candidate)}
+            if item.get("local_error") is not None:
+                item.pop("local_error", None)
+            changed = item != raw_item or changed
+        except (OSError, RuntimeError) as exc:
+            item["local_error"] = str(exc)[:200]
+            changed = item != raw_item or changed
+        files.append(item)
+    updated["files"] = files
+    if not changed:
+        return
+    try:
+        _atomic_write_text_sync(path / SIDECAR_DIR, yaml.safe_dump(updated, sort_keys=False))
+    except OSError:
+        return
+
+
+def _compute_local_digests(path: Path) -> dict[str, str]:
+    before = path.stat()
+    sha256 = hashlib.sha256()
+    md5 = hashlib.md5()  # noqa: S324 - legacy HF ETag compatibility
+    git_blob_sha1 = hashlib.sha1(  # noqa: S324 - Git blob compatibility hash
+        f"blob {before.st_size}\0".encode("ascii")
+    )
+    with path.open("rb") as stream:
+        descriptor_stat = os.fstat(stream.fileno())
+        if descriptor_stat.st_size != before.st_size or descriptor_stat.st_mtime_ns != before.st_mtime_ns:
+            raise OSError("file changed before hash calculation")
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            sha256.update(chunk)
+            md5.update(chunk)
+            git_blob_sha1.update(chunk)
+        after_descriptor = os.fstat(stream.fileno())
+    after = path.stat()
+    if (
+        after_descriptor.st_size != before.st_size
+        or after_descriptor.st_mtime_ns != before.st_mtime_ns
+        or after.st_size != before.st_size
+        or after.st_mtime_ns != before.st_mtime_ns
+    ):
+        raise OSError("file changed during hash calculation")
+    return {
+        "sha256": sha256.hexdigest(),
+        "md5": md5.hexdigest(),
+        "git_blob_sha1": git_blob_sha1.hexdigest(),
+        "hash_calculated_at": utc_now().isoformat(),
+    }
+
+
+def _apply_remote_snapshot(
+    path: Path,
+    manifest: dict[str, Any],
+    tracking_ref: str,
+    current_revision: str,
+    repo_date: str | None,
+    remote_tree: dict[str, dict[str, Any]],
+    attempted_at: str,
+) -> None:
+    with _MANIFEST_LOCK:
+        current = _read_manifest(path) or manifest
+        files = [item for item in current.get("files", []) if isinstance(item, dict)]
+        scope = current.get("scope", "selection")
+        baseline_paths = {str(item["path"]): item for item in files if isinstance(item.get("path"), str)}
+        changed_paths: list[dict[str, Any]] = []
+        update_available = False
+        unknown = False
+        baseline_statuses: list[str] = []
+        remote_statuses: list[str] = []
+
+        for item in files:
+            relative = str(item["path"])
+            metadata = remote_tree.get(relative)
+            snapshot = item.get("remote_snapshot") if isinstance(item.get("remote_snapshot"), dict) else None
+            if metadata is None and snapshot and snapshot.get("revision") == current_revision:
+                metadata = {
+                    "size": snapshot.get("size"),
+                    "sha256": snapshot.get("hash") if snapshot.get("hash_kind") == "lfs_sha256" else None,
+                    "etag": snapshot.get("hash") if snapshot.get("hash_kind") in {"git_blob", "md5"} else None,
+                    "hash_kind": snapshot.get("hash_kind")
+                    if snapshot.get("hash_kind") in {"git_blob", "md5"}
+                    else None,
+                    "file_date": snapshot.get("file_date"),
+                }
+            local = (
+                item.get("local")
+                if isinstance(item.get("local"), dict) and not item.get("local_error")
+                else None
+            )
+            downloaded_hash = item.get("downloaded_remote_hash") or item.get("sha256") or item.get("etag")
+            downloaded_kind = (
+                item.get("downloaded_remote_hash_kind")
+                or item.get("hash_kind")
+                or _hash_kind_from_value(downloaded_hash, item)
+            )
+            local_hash = _local_hash_for_kind(local, downloaded_kind)
+            if local is None or item.get("local_error"):
+                baseline_statuses.append("unavailable")
+            elif not isinstance(downloaded_hash, str) or not isinstance(local_hash, str):
+                baseline_statuses.append("unknown")
+            elif _same_hash(downloaded_hash, downloaded_kind, local_hash, downloaded_kind):
+                baseline_statuses.append("matches_downloaded")
+            else:
+                baseline_statuses.append("diverged_from_downloaded")
+
+            if metadata is None:
+                changed_paths.append(
+                    {
+                        "path": relative,
+                        "status": "removed",
+                        "downloaded_file_date": item.get("downloaded_file_date"),
+                        "remote_file_date": None,
+                    }
+                )
+                update_available = True
+                remote_statuses.append("differs_from_current_remote")
+                continue
+
+            remote_hash, remote_kind = _remote_hash(metadata)
+            remote_local_hash = _local_hash_for_kind(local, remote_kind)
+            if not isinstance(remote_hash, str):
+                unknown = True
+                remote_statuses.append("unknown")
+            elif isinstance(remote_local_hash, str) and _same_hash(
+                remote_local_hash, remote_kind, remote_hash, remote_kind
+            ):
+                remote_statuses.append("matches_current_remote")
+            elif isinstance(remote_local_hash, str):
+                remote_statuses.append("differs_from_current_remote")
+            else:
+                remote_statuses.append("unknown")
+                unknown = True
+
+            item["remote_snapshot"] = {
+                "revision": current_revision,
+                "hash": remote_hash,
+                "hash_kind": remote_kind,
+                "file_date": metadata.get("file_date"),
+                "size": metadata.get("size"),
+            }
+            if isinstance(downloaded_hash, str) and isinstance(remote_hash, str):
+                remote_differs_from_baseline = not _same_hash(
+                    downloaded_hash, downloaded_kind, remote_hash, remote_kind
+                )
+                if remote_differs_from_baseline:
+                    changed_paths.append(
+                        {
+                            "path": relative,
+                            "status": "changed",
+                            "downloaded_file_date": item.get("downloaded_file_date"),
+                            "remote_file_date": metadata.get("file_date"),
+                        }
+                    )
+                    if not isinstance(remote_local_hash, str):
+                        unknown = True
+                    elif not _same_hash(remote_local_hash, remote_kind, remote_hash, remote_kind):
+                        update_available = True
+                elif isinstance(remote_local_hash, str) and not _same_hash(
+                    remote_local_hash, remote_kind, remote_hash, remote_kind
+                ):
+                    changed_paths.append(
+                        {
+                            "path": relative,
+                            "status": "local_divergence",
+                            "downloaded_file_date": item.get("downloaded_file_date"),
+                            "remote_file_date": metadata.get("file_date"),
+                        }
+                    )
+            else:
+                unknown = True
+
+        if scope == "snapshot":
+            for relative in sorted(set(remote_tree) - set(baseline_paths)):
+                metadata = remote_tree[relative]
+                changed_paths.append(
+                    {
+                        "path": relative,
+                        "status": "added",
+                        "downloaded_file_date": None,
+                        "remote_file_date": metadata.get("file_date"),
+                    }
+                )
+                update_available = True
+
+        if unknown and not update_available:
+            remote_update_status = "unknown"
+        else:
+            remote_update_status = "update_available" if update_available else "up_to_date"
+        updated = dict(current)
+        updated.update(
+            {
+                "schema_version": 2,
+                "tracking_ref": tracking_ref,
+                "remote_check": {
+                    "availability": "success",
+                    "last_attempted_at": attempted_at,
+                    "last_successful_at": utc_now().isoformat(),
+                    "current_revision": current_revision,
+                    "last_error": None,
+                    "stale": False,
+                },
+                "remote_update": {
+                    "status": remote_update_status,
+                    "changed_files": sum(1 for item in changed_paths if item["status"] != "local_divergence"),
+                },
+                "local_integrity": {
+                    "baseline_status": _aggregate_integrity(baseline_statuses),
+                    "remote_status": _aggregate_integrity(remote_statuses, remote=True),
+                },
+                "changed_paths": changed_paths,
+            }
+        )
+        if repo_date:
+            updated["remote_check"]["repository_date"] = repo_date
+        updated["files"] = files
+        _atomic_write_text_sync(path / SIDECAR_DIR, yaml.safe_dump(updated, sort_keys=False))
+
+
+def _record_remote_failure(path: Path, manifest: dict[str, Any] | None, attempted_at: str, error: str) -> None:
+    if manifest is None:
+        return
+    with _MANIFEST_LOCK:
+        current = _read_manifest(path) or manifest
+        previous = current.get("remote_check") if isinstance(current.get("remote_check"), dict) else {}
+        updated = dict(current)
+        updated["schema_version"] = 2
+        updated["remote_check"] = {
+            **previous,
+            "availability": "unavailable",
+            "last_attempted_at": attempted_at,
+            "last_successful_at": previous.get("last_successful_at"),
+            "last_error": error[:200],
+            "stale": True,
+        }
+        try:
+            _atomic_write_text_sync(path / SIDECAR_DIR, yaml.safe_dump(updated, sort_keys=False))
+        except OSError:
+            return
+
+
+def _remote_hash(metadata: dict[str, Any]) -> tuple[str | None, str | None]:
+    if isinstance(metadata.get("sha256"), str) and metadata["sha256"]:
+        return metadata["sha256"], "lfs_sha256"
+    if isinstance(metadata.get("etag"), str) and metadata["etag"]:
+        return metadata["etag"], metadata.get("hash_kind")
+    return None, None
+
+
+def _hash_kind_from_value(value: Any, item: dict[str, Any] | None = None) -> str | None:
+    if not isinstance(value, str):
+        return None
+    if len(value) == 64:
+        return "lfs_sha256"
+    if len(value) == 40 and (item is None or item.get("etag") == value or item.get("hash_kind") == "git_blob"):
+        return "git_blob"
+    if len(value) == 32:
+        return "md5"
+    return None
+
+
+def _local_hash_for_kind(local: dict[str, Any] | None, kind: str | None) -> str | None:
+    if not local:
+        return None
+    if kind == "git_blob":
+        return local.get("git_blob_sha1") if isinstance(local.get("git_blob_sha1"), str) else None
+    if kind == "md5":
+        return local.get("md5") if isinstance(local.get("md5"), str) else None
+    return local.get("sha256") if isinstance(local.get("sha256"), str) else None
+
+
+def _same_hash(left: str, left_kind: str | None, right: str, right_kind: str | None) -> bool:
+    return left_kind == right_kind and left == right
+
+
+def _aggregate_integrity(statuses: list[str], *, remote: bool = False) -> str:
+    if not statuses:
+        return "unknown"
+    if "unavailable" in statuses:
+        return "unavailable"
+    if "unknown" in statuses:
+        return "unknown"
+    if remote:
+        return "differs_from_current_remote" if "differs_from_current_remote" in statuses else "matches_current_remote"
+    return "diverged_from_downloaded" if "diverged_from_downloaded" in statuses else "matches_downloaded"
 
 
 def _cached_hf_tree_metadata(path: Path, revision: str) -> dict[str, dict[str, Any]] | None:
@@ -1019,7 +1567,7 @@ def _remote_hf_tree_metadata(repo_id: str, revision: str) -> dict[str, dict[str,
         with httpx.Client(base_url="https://huggingface.co", timeout=8) as client:
             response = client.get(
                 f"/api/models/{repo_id}/tree/{revision}",
-                params={"recursive": "true"},
+                params={"recursive": "true", "expand": "true"},
             )
             response.raise_for_status()
             payload = response.json()
@@ -1058,13 +1606,50 @@ def _tree_file_metadata(raw: dict[str, Any], *, cached: bool = False) -> dict[st
     metadata: dict[str, Any] = {}
     if isinstance(raw_size, int) and not isinstance(raw_size, bool) and raw_size >= 0:
         metadata["size"] = raw_size
+    last_commit = raw.get("last_commit") or raw.get("lastCommit")
+    if isinstance(last_commit, dict) and isinstance(last_commit.get("date"), str):
+        metadata["file_date"] = last_commit["date"]
     if sha256:
         metadata["sha256"] = sha256
         return metadata
     raw_oid = raw.get("blob_id") if cached else raw.get("oid")
     if isinstance(raw_oid, str) and len(raw_oid) == 40:
         metadata.update({"etag": raw_oid, "hash_kind": "git_blob"})
+    elif isinstance(raw_oid, str) and len(raw_oid) == 32:
+        metadata.update({"etag": raw_oid, "hash_kind": "md5"})
     return metadata or None
+
+
+def _hf_date(value: Any) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+async def _hf_get_with_retries(
+    client: httpx.AsyncClient,
+    url: str,
+    *,
+    params: dict[str, str],
+) -> httpx.Response:
+    for attempt in range(3):
+        try:
+            response = await client.get(url, params=params)
+        except httpx.HTTPError:
+            if attempt == 2:
+                raise
+            await asyncio.sleep(0.5 * (attempt + 1))
+            continue
+        if response.status_code not in {429, *range(500, 600)}:
+            response.raise_for_status()
+            return response
+        if attempt == 2:
+            response.raise_for_status()
+        retry_after = response.headers.get("Retry-After")
+        try:
+            delay = min(5.0, max(0.0, float(retry_after))) if retry_after else 0.5 * (attempt + 1)
+        except ValueError:
+            delay = 0.5 * (attempt + 1)
+        await asyncio.sleep(delay)
+    raise RuntimeError("Hugging Face request retry loop did not return")
 
 
 def _repo_id_for_path(root: Path, path: Path) -> str | None:
@@ -1201,7 +1786,7 @@ def _is_commit_sha(value: str | None) -> bool:
 
 
 def _validate_manifest(value: Any) -> dict[str, Any]:
-    if not isinstance(value, dict) or value.get("schema_version") != 1:
+    if not isinstance(value, dict) or value.get("schema_version") not in {1, 2}:
         raise ValueError("unsupported manifest")
     repo_id = value.get("repo_id")
     revision = value.get("revision")
@@ -1225,7 +1810,64 @@ def _validate_manifest(value: Any) -> dict[str, Any]:
         if not isinstance(size, int) or isinstance(size, bool) or size < 0:
             raise ValueError("invalid manifest size")
         parsed.append({**item, "path": relative})
-    return {"repo_id": repo_id, "revision": revision, "scope": scope, "files": parsed}
+    normalized = dict(value)
+    normalized["schema_version"] = int(value["schema_version"])
+    normalized["repo_id"] = repo_id
+    normalized["revision"] = revision
+    normalized["scope"] = scope
+    normalized["files"] = [
+        {
+            **item,
+            **{
+                key: _manifest_date(item.get(key))
+                for key in ("file_date", "downloaded_file_date")
+                if key in item
+            },
+            "remote_snapshot": (
+                {
+                    **item["remote_snapshot"],
+                    "file_date": _manifest_date(item["remote_snapshot"].get("file_date")),
+                }
+                if isinstance(item.get("remote_snapshot"), dict)
+                else item.get("remote_snapshot")
+            ),
+        }
+        for item in parsed
+    ]
+    for key in ("downloaded_revision_date",):
+        if key in normalized:
+            normalized[key] = _manifest_date(normalized.get(key))
+    if isinstance(normalized.get("remote_check"), dict):
+        normalized["remote_check"] = {
+            **normalized["remote_check"],
+            **{
+                key: _manifest_date(normalized["remote_check"].get(key))
+                for key in ("last_attempted_at", "last_successful_at", "repository_date")
+                if key in normalized["remote_check"]
+            },
+        }
+    if isinstance(normalized.get("changed_paths"), list):
+        normalized["changed_paths"] = [
+            {
+                **item,
+                **{
+                    key: _manifest_date(item.get(key))
+                    for key in ("downloaded_file_date", "remote_file_date")
+                    if key in item
+                },
+            }
+            for item in normalized["changed_paths"]
+            if isinstance(item, dict)
+        ]
+    return normalized
+
+
+def _manifest_date(value: Any) -> str | None:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    return None
 
 
 def _manifest_status(
@@ -1253,13 +1895,21 @@ def _manifest_status(
             if candidate.stat().st_size != expected_size:
                 missing_files.append(str(item["path"]))
                 continue
-            expected_hash = item.get("sha256") or item.get("etag")
+            expected_hash = (
+                item.get("downloaded_remote_hash")
+                or item.get("sha256")
+                or item.get("etag")
+            )
             if expected_hash:
                 hash_result = _hash_matches(
                     candidate,
                     expected_hash,
-                    hash_kind=item.get("hash_kind"),
+                    hash_kind=(
+                        item.get("downloaded_remote_hash_kind")
+                        or item.get("hash_kind")
+                    ),
                     verify_hashes=verify_hashes,
+                    local=item.get("local") if isinstance(item.get("local"), dict) else None,
                 )
                 if hash_result is None:
                     unverified_files.append(str(item["path"]))
@@ -1293,26 +1943,51 @@ def _hash_matches(
     *,
     hash_kind: str | None = None,
     verify_hashes: bool = False,
+    local: dict[str, Any] | None = None,
 ) -> bool | None:
-    if not verify_hashes:
-        return None
+    if local is not None:
+        try:
+            current = path.stat()
+        except OSError:
+            return None
+        if (
+            local.get("size_bytes") != current.st_size
+            or local.get("mtime_ns") != current.st_mtime_ns
+        ):
+            local = None
     expected = expected.removeprefix("sha256:")
     if len(expected) == 64:
+        actual = local.get("sha256") if local else None
+        if isinstance(actual, str):
+            return actual == expected
+        if not verify_hashes:
+            return None
         return _sha256(path) == expected
     if len(expected) == 40:
         # A regular Hub file's oid is the SHA-1 of a Git blob (header plus
         # bytes), not the SHA-1 of the payload. Only calculate it for metadata
         # explicitly refreshed from a regular-file tree entry. Legacy 40-char
         # etags remain informational until the user runs an explicit sync.
+        if hash_kind == "git_blob" and isinstance(local, dict):
+            actual = local.get("git_blob_sha1") if local else None
+            if isinstance(actual, str):
+                return actual == expected
         if verify_hashes and hash_kind == "git_blob":
             return _git_blob_sha1(path) == expected
         return None
     if len(expected) == 32:
-        digest = hashlib.md5()  # noqa: S324 - HF ETag may be an MD5 value
-        with path.open("rb") as stream:
-            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                digest.update(chunk)
-        return digest.hexdigest() == expected
+        actual = local.get("md5") if local else None
+        if isinstance(actual, str):
+            return actual == expected
+        if not verify_hashes:
+            return None
+        if not isinstance(actual, str):
+            digest = hashlib.md5()  # noqa: S324 - HF ETag may be an MD5 value
+            with path.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            actual = digest.hexdigest()
+        return actual == expected
     # An opaque ETag can still be useful metadata but cannot be verified from
     # local bytes without provider-specific semantics.
     return None

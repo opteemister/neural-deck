@@ -124,6 +124,7 @@ class AppContainer:
         # send signals to managed processes, because shutdown must not kill
         # model servers that can outlive this web process.
         try:
+            await self.model_catalogue.stop_update_scheduler()
             await self.metrics_service.close()
             await self.proxy_service.close()
             await self.process_manager.close()

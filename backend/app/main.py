@@ -338,6 +338,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
         _publish_runtime(app, runtime)
         await _scan_startup(runtime)
+        await model_catalogue.start_update_scheduler()
         await metrics_service.start()
         logger.info("LLM Studio backend: готов принимать запросы %s", service_url)
     except BaseException:

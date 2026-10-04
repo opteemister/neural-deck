@@ -10,7 +10,6 @@ import { Input } from '@/components/ui/input'
 import { Progress } from '@/components/ui/progress'
 import { PageHeader } from '@/components/page-header'
 import { QueryEmpty, QueryError, QueryLoading } from '@/components/query-state'
-import { StatusBadge } from '@/components/status-badge'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { api, queryKeys } from '@/lib/api'
 import { formatBytes } from '@/lib/utils'
@@ -76,15 +75,27 @@ export function ModelsPage() {
   const deleteModelGroup = useMutation({ mutationFn: ({ modelId, groupId }: { modelId: string; groupId: string }) => api.deleteLocalModelGroup(modelId, groupId), onSuccess: (data) => queryClient.setQueryData(queryKeys.localModels, data) })
   const downloads = useQuery({ queryKey: queryKeys.downloads, queryFn: api.getDownloads, refetchInterval: 1_500 })
   const previousDownloadIds = useRef<string[]>([])
-  const downloadOperations = downloads.data?.items ?? []
+  const [downloadHistory, setDownloadHistory] = useState<Operation[]>([])
+  const downloadOperations = downloadHistory
   const download = useMutation({ mutationFn: api.downloadModels, onSuccess: () => { const shouldCollapse = downloadsClosed || downloadOperations.length === 0; setDownloadsClosed(false); if (shouldCollapse) setDownloadsCollapsed(true); void queryClient.invalidateQueries({ queryKey: queryKeys.downloads }); void queryClient.invalidateQueries({ queryKey: queryKeys.localModels }) } })
   const cancelDownload = useMutation({ mutationFn: api.cancelOperation, onSuccess: () => { void queryClient.invalidateQueries({ queryKey: queryKeys.downloads }); void queryClient.invalidateQueries({ queryKey: queryKeys.localModels }) } })
   useEffect(() => { window.localStorage.setItem('llm-studio.favorite-models', JSON.stringify(favoriteModels)) }, [favoriteModels])
   useEffect(() => { setSearchInput(hfQuery) }, [hfQuery])
   useEffect(() => {
     if (!downloads.data) return
+    setDownloadHistory((current) => {
+      const merged = new Map(current.map((item) => [item.id, item]))
+      for (const item of downloads.data.items) merged.set(item.id, item)
+      return [...merged.values()]
+    })
     const ids = downloads.data.items.map((item) => item.id)
-    if (previousDownloadIds.current.some((id) => !ids.includes(id))) {
+    const disappearedIds = previousDownloadIds.current.filter((id) => !ids.includes(id))
+    if (disappearedIds.length > 0) {
+      for (const id of disappearedIds) {
+        void api.getOperation(id).then((operation) => {
+          setDownloadHistory((current) => current.map((item) => item.id === id ? operation : item))
+        }).catch(() => undefined)
+      }
       void queryClient.invalidateQueries({ queryKey: queryKeys.models })
       void queryClient.invalidateQueries({ queryKey: queryKeys.localModels })
     }
@@ -139,10 +150,10 @@ export function ModelsPage() {
   }
   function toggleFile(path: string) { setSelectedFiles((current) => current.includes(path) ? current.filter((item) => item !== path) : [...current, path]) }
   function startDownload(files: string[] | null, repo: HfRepoData, label?: string) { void download.mutate({ repo_id: repo.repo_id, revision: repo.revision, files, label: label ?? repo.repo_id }) }
-  function closeDownloads() { setDownloadsClosed(true); setDownloadsCollapsed(false) }
+  function closeDownloads() { setDownloadHistory([]); setDownloadsClosed(true); setDownloadsCollapsed(false) }
 
   return <div><PageHeader title="Модели" />
-    {downloadOperations.length > 0 && <DownloadCenter operations={downloadOperations} closed={downloadsClosed} collapsed={downloadsCollapsed} onToggle={() => setDownloadsCollapsed((value) => !value)} onCollapse={() => setDownloadsCollapsed(true)} onClose={closeDownloads} onStop={(id) => void cancelDownload.mutate(id)} stoppingId={cancelDownload.isPending ? cancelDownload.variables : null} />}
+    {downloadOperations.length > 0 && <DownloadCenter operations={downloadOperations} closed={downloadsClosed} collapsed={downloadsCollapsed} onToggle={() => setDownloadsCollapsed((value) => !value)} onClose={closeDownloads} onStop={(id) => void cancelDownload.mutate(id)} stoppingId={cancelDownload.isPending ? cancelDownload.variables : null} />}
     <div className="mb-5 flex flex-wrap gap-1 border-b border-border"><Tab active={view === 'local'} onClick={() => setView('local')}>Локальные</Tab><Tab active={view === 'huggingface'} onClick={() => setView('huggingface')}>Hugging Face</Tab></div>
     {deleteModel.isError && <div className="mb-4"><QueryError error={deleteModel.error} label="Папку модели не удалось удалить" /></div>}
     {deleteModelGroup.isError && <div className="mb-4"><QueryError error={deleteModelGroup.error} label="Компонент модели не удалось удалить" /></div>}
@@ -171,7 +182,7 @@ function ModelFolder({ model, favorite, onToggleFavorite, onOpenHf, onDelete, on
   const pathParts = model.path.split('/').filter(Boolean)
   const vendor = toCamelCase(model.vendor || pathParts.at(-2) || pathParts.at(-1) || 'Неизвестный вендор')
   const modelName = toCamelCase(model.model_name || pathParts.at(-1) || 'Модель')
-  return <Card><CardContent><div className="flex flex-wrap items-start justify-between gap-4"><div className="min-w-0"><div className="flex items-center gap-2"><h2 className="text-base font-medium tracking-tight">{vendor} / {modelName}</h2><Button size="icon" variant="ghost" aria-label={favorite ? 'Убрать из избранного' : 'Добавить в избранное'} title={favorite ? 'Убрать из избранного' : 'Добавить в избранное'} onClick={onToggleFavorite}><Star className={`size-4 ${favorite ? 'fill-copper text-copper' : 'text-muted-foreground'}`} /></Button>{model.hf_match.repo_id && <a href={`https://huggingface.co/${model.hf_match.repo_id}`} target="_blank" rel="noreferrer" aria-label="Открыть модель на Hugging Face" title="Открыть модель на Hugging Face" className="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"><ExternalLink className="size-4" /></a>}</div><div className="mt-1 flex items-center gap-2 text-[11px] text-muted-foreground"><FolderOpen className="size-3.5 shrink-0 text-copper" /><p className="break-all font-mono">{model.path}</p></div><p className="mt-2 text-[11px] text-muted-foreground">{model.format || 'формат неизвестен'} · {formatBytes(model.size_bytes)} · {variantGroups.length} вариантов · {auxiliaryGroups.length} вспомогательных блоков</p>{model.hf_match.repo_id && <button type="button" className="mt-1 inline-block text-[11px] text-copper underline-offset-2 hover:underline" onClick={() => onOpenHf(model.hf_match.repo_id!, model.hf_match.revision)}>{model.hf_match.repo_id}</button>}</div><div className="flex self-stretch flex-col items-end justify-between gap-2"><Button size="sm" variant="danger" disabled={deleting} onClick={() => onDelete(model)}><Trash2 className="size-3.5" />{deleting ? 'Удаляем…' : 'Удалить'}</Button><ModelSourceStatus match={model.hf_match} /></div></div>{variantGroups.length > 0 && <LocalGroupList title="Варианты модели" groups={variantGroups} model={model} onDelete={onDeleteGroup} deletingGroupId={deletingGroupId} />}{auxiliaryGroups.length > 0 && <LocalGroupList title="Вспомогательные блоки" groups={auxiliaryGroups} model={model} onDelete={onDeleteGroup} deletingGroupId={deletingGroupId} />}{variantGroups.length === 0 && auxiliaryGroups.length === 0 && <p className="mt-3 text-[11px] text-muted-foreground">Файлы модели пока не распознаны автоматически · служебных файлов: {model.supporting_files ?? 0}</p>}</CardContent></Card>
+  return <Card><CardContent><div className="flex flex-wrap items-start justify-between gap-4"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><h2 className="text-base font-medium tracking-tight">{vendor} / {modelName}</h2><Button size="icon" variant="ghost" aria-label={favorite ? 'Убрать из избранного' : 'Добавить в избранное'} title={favorite ? 'Убрать из избранного' : 'Добавить в избранное'} onClick={onToggleFavorite}><Star className={`size-4 ${favorite ? 'fill-copper text-copper' : 'text-muted-foreground'}`} /></Button>{model.hf_match.repo_id && <a href={`https://huggingface.co/${model.hf_match.repo_id}`} target="_blank" rel="noreferrer" aria-label="Открыть модель на Hugging Face" title="Открыть модель на Hugging Face" className="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"><ExternalLink className="size-4" /></a>}<HfUpdateBadge match={model.hf_match} /></div><div className="mt-1 flex items-center gap-2 text-[11px] text-muted-foreground"><FolderOpen className="size-3.5 shrink-0 text-copper" /><p className="break-all font-mono">{model.path}</p></div><p className="mt-2 text-[11px] text-muted-foreground">{model.format || 'формат неизвестен'} · {formatBytes(model.size_bytes)} · {variantGroups.length} вариантов · {auxiliaryGroups.length} вспомогательных блоков</p>{model.hf_match.repo_id && <button type="button" className="mt-1 inline-block text-[11px] text-copper underline-offset-2 hover:underline" onClick={() => onOpenHf(model.hf_match.repo_id!, model.hf_match.revision)}>{model.hf_match.repo_id}</button>}</div><div className="flex self-stretch flex-col items-end justify-between gap-2"><Button size="sm" variant="danger" disabled={deleting} onClick={() => onDelete(model)}><Trash2 className="size-3.5" />{deleting ? 'Удаляем…' : 'Удалить'}</Button><ModelSourceStatus match={model.hf_match} /></div></div>{variantGroups.length > 0 && <LocalGroupList title="Варианты модели" groups={variantGroups} model={model} onDelete={onDeleteGroup} deletingGroupId={deletingGroupId} />}{auxiliaryGroups.length > 0 && <LocalGroupList title="Вспомогательные блоки" groups={auxiliaryGroups} model={model} onDelete={onDeleteGroup} deletingGroupId={deletingGroupId} />}</CardContent></Card>
 }
 
 function toCamelCase(value: string): string {
@@ -195,9 +206,47 @@ function ModelSourceStatus({ match }: { match: LocalModelArtifact['hf_match'] })
     : match.status === 'downloaded'
       ? 'Для каждого файла совпали наличие и размер с manifest Hugging Face.'
       : match.status === 'incomplete'
-        ? 'Часть файлов из сохранённого набора отсутствует, имеет другой размер или не прошла проверку хеша.'
+      ? 'Часть файлов из сохранённого набора отсутствует, имеет другой размер или не прошла локальную проверку.'
         : 'Модель найдена локально, но её источник или полнота не подтверждены.'
-  return <div className="flex max-w-full flex-col items-end gap-1 text-right text-[10px] leading-4 text-muted-foreground"><span title={hint} className="inline-flex rounded-sm border border-border px-2 py-1">{text}</span>{match.status === 'downloaded' && match.scope === 'selection' && <p className="max-w-xl">Проверен выбранный набор; остальные файлы репозитория не входят в эту загрузку.</p>}{missing.length > 0 && <details className="max-w-xl"><summary className="cursor-pointer">Не хватает или отличаются: {missing.length}</summary><ul className="mt-1 max-h-32 space-y-0.5 overflow-auto text-left">{missing.slice(0, 8).map((file) => <li key={file} className="break-all font-mono">{file}</li>)}{missing.length > 8 && <li>и ещё {missing.length - 8}</li>}</ul></details>}{unverified.length > 0 && <details className="max-w-xl"><summary className="cursor-pointer">Размер совпал, хеш не проверен: {unverified.length}</summary><ul className="mt-1 max-h-32 space-y-0.5 overflow-auto text-left">{unverified.slice(0, 8).map((file) => <li key={file} className="break-all font-mono">{file}</li>)}{unverified.length > 8 && <li>и ещё {unverified.length - 8}</li>}</ul></details>}</div>
+  const localDivergenceBadge = match.local_integrity?.baseline_status === 'diverged_from_downloaded'
+    ? <span className="inline-flex rounded-sm border border-[#8b7652] px-2 py-1 text-[#d4b878]">Локальный файл изменён</span>
+    : null
+  return (
+    <div className="flex max-w-full flex-col items-end gap-1 text-right text-[10px] leading-4 text-muted-foreground">
+      <span title={hint} className="inline-flex rounded-sm border border-border px-2 py-1">{text}</span>
+      {localDivergenceBadge}
+      {missing.length > 0 && (
+        <details className="max-w-xl">
+          <summary className="cursor-pointer">Не хватает или отличаются: {missing.length}</summary>
+          <ul className="mt-1 max-h-32 space-y-0.5 overflow-auto text-left">
+            {missing.slice(0, 8).map((file) => <li key={file} className="break-all font-mono">{file}</li>)}
+            {missing.length > 8 && <li>и ещё {missing.length - 8}</li>}
+          </ul>
+        </details>
+      )}
+      {unverified.length > 0 && (
+        <details className="max-w-xl">
+          <summary className="cursor-pointer">Размер совпал, локальная проверка не завершена: {unverified.length}</summary>
+          <ul className="mt-1 max-h-32 space-y-0.5 overflow-auto text-left">
+            {unverified.slice(0, 8).map((file) => <li key={file} className="break-all font-mono">{file}</li>)}
+            {unverified.length > 8 && <li>и ещё {unverified.length - 8}</li>}
+          </ul>
+        </details>
+      )}
+    </div>
+  )
+}
+
+function HfUpdateBadge({ match }: { match: LocalModelArtifact['hf_match'] }) {
+  const update = match.remote_update
+  if (match.remote_check?.availability !== 'success' || update?.status !== 'update_available' || update.changed_files <= 0) return null
+  return <span className="inline-flex rounded-sm border border-[#81554c] px-2 py-1 text-[10px] text-[#d09b87]">Доступно обновление · {update.changed_files} файлов</span>
+}
+
+function formatHfDate(value: string): string {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return new Intl.DateTimeFormat('ru-RU', { dateStyle: 'medium', timeStyle: 'short' }).format(date)
 }
 
 function LocalGroupList({ title, groups, model, onDelete, deletingGroupId }: { title: string; groups: LocalGroup[]; model: LocalModelArtifact; onDelete: (model: LocalModelArtifact, group: LocalGroup) => void; deletingGroupId: string | null | undefined }) {
@@ -222,7 +271,7 @@ function RepoView({ repo, query, initialTab, backLabel, selectedFiles, toggleFil
   if (query.isLoading) return <QueryLoading label="Получаем данные репозитория" />
   if (query.isError) return <QueryError error={query.error} retry={() => void query.refetch()} label="Репозиторий недоступен" />
   if (!repo) return null
-  return <div className="space-y-4"><Button variant="ghost" size="sm" onClick={onBack}><ArrowLeft className="size-3.5" />{backLabel}</Button><Card><div className="border-b border-border px-4 py-3"><div className="flex items-center gap-2"><CardTitle className="font-mono">{repo.repo_id}</CardTitle><a href={`https://huggingface.co/${repo.repo_id}`} target="_blank" rel="noreferrer" aria-label="Открыть модель на Hugging Face" title="Открыть на Hugging Face" className="inline-flex size-7 items-center justify-center rounded-md border border-border text-muted-foreground hover:border-[#6c625a] hover:text-foreground"><ExternalLink className="size-3.5" /></a></div></div><div className="flex gap-1 border-b border-border px-4"><button type="button" className={`min-h-10 border-b-2 px-3 text-xs ${tab === 'description' ? 'border-copper text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}`} onClick={() => setTab('description')}>Описание</button><button type="button" className={`min-h-10 border-b-2 px-3 text-xs ${tab === 'files' ? 'border-copper text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}`} onClick={() => setTab('files')}>Файлы</button><button type="button" className={`min-h-10 border-b-2 px-3 text-xs ${tab === 'quantizations' ? 'border-copper text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}`} onClick={() => setTab('quantizations')}>Кванты</button></div>{tab === 'description' ? <CardContent>{repo.readme || repo.description ? <MarkdownContent source={repo.readme ?? repo.description ?? ''} repoId={repo.repo_id} revision={repo.revision} /> : <QueryEmpty title="Описание недоступно" description="В репозитории нет README или описания модели." />}</CardContent> : tab === 'files' ? <CardContent><div className="mb-4 flex flex-wrap items-center justify-between gap-3 border-b border-border pb-3"><p className="text-xs text-muted-foreground">Ревизия <code>{repo.revision}</code> · {repo.files.length} файлов</p><div className="flex flex-wrap gap-2"><Button size="sm" variant="secondary" disabled={selectedFiles.length === 0} onClick={() => onDownload(selectedFiles, repo, `${repo.repo_id} — выбранные файлы`)}><Download className="size-3.5" />Выбранные ({selectedFiles.length})</Button><Button size="sm" variant="primary" onClick={() => onDownload(null, repo, `${repo.repo_id} — весь snapshot`)}><Download className="size-3.5" />Весь snapshot</Button></div></div><DownloadBundles repo={repo} onDownload={onDownload} downloadOperations={downloadOperations} /><Table><TableHeader><TableRow><TableHead className="w-10">Выбор</TableHead><TableHead>Путь</TableHead><TableHead className="text-right">Размер</TableHead><TableHead>Проверка</TableHead></TableRow></TableHeader><TableBody>{repo.files.map((file) => <FileRow key={file.path} file={file} selected={selectedFiles.includes(file.path)} onToggle={() => toggleFile(file.path)} />)}</TableBody></Table></CardContent> : <QuantizationsContent query={quantizationsQuery} onOpen={(id) => onOpenQuantization(id, repo)} />}</Card></div>
+  return <div className="space-y-4"><Button variant="ghost" size="sm" onClick={onBack}><ArrowLeft className="size-3.5" />{backLabel}</Button><Card><div className="border-b border-border px-4 py-3"><div className="flex items-center gap-2"><CardTitle className="font-mono">{repo.repo_id}</CardTitle><a href={`https://huggingface.co/${repo.repo_id}`} target="_blank" rel="noreferrer" aria-label="Открыть модель на Hugging Face" title="Открыть на Hugging Face" className="inline-flex size-7 items-center justify-center rounded-md border border-border text-muted-foreground hover:border-[#6c625a] hover:text-foreground"><ExternalLink className="size-3.5" /></a></div></div><div className="flex gap-1 border-b border-border px-4"><button type="button" className={`min-h-10 border-b-2 px-3 text-xs ${tab === 'description' ? 'border-copper text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}`} onClick={() => setTab('description')}>Описание</button><button type="button" className={`min-h-10 border-b-2 px-3 text-xs ${tab === 'files' ? 'border-copper text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}`} onClick={() => setTab('files')}>Файлы</button><button type="button" className={`min-h-10 border-b-2 px-3 text-xs ${tab === 'quantizations' ? 'border-copper text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}`} onClick={() => setTab('quantizations')}>Кванты</button></div>{tab === 'description' ? <CardContent>{repo.readme || repo.description ? <MarkdownContent source={repo.readme ?? repo.description ?? ''} repoId={repo.repo_id} revision={repo.revision} /> : <QueryEmpty title="Описание недоступно" description="В репозитории нет README или описания модели." />}</CardContent> : tab === 'files' ? <CardContent><div className="mb-4 flex flex-wrap items-center justify-between gap-3 border-b border-border pb-3"><p className="text-xs text-muted-foreground">Ревизия <code>{repo.revision}</code> · {repo.files.length} файлов{repo.revision_date ? ` · последний commit репозитория ${formatHfDate(repo.revision_date)}` : ''}</p><div className="flex flex-wrap gap-2"><Button size="sm" variant="secondary" disabled={selectedFiles.length === 0} onClick={() => onDownload(selectedFiles, repo, `${repo.repo_id} — выбранные файлы`)}><Download className="size-3.5" />Выбранные ({selectedFiles.length})</Button><Button size="sm" variant="primary" onClick={() => onDownload(null, repo, `${repo.repo_id} — весь snapshot`)}><Download className="size-3.5" />Весь snapshot</Button></div></div><DownloadBundles repo={repo} onDownload={onDownload} downloadOperations={downloadOperations} /><Table><TableHeader><TableRow><TableHead className="w-10">Выбор</TableHead><TableHead>Путь</TableHead><TableHead className="text-right">Размер</TableHead><TableHead>Дата файла на HF</TableHead></TableRow></TableHeader><TableBody>{repo.files.map((file) => <FileRow key={file.path} file={file} selected={selectedFiles.includes(file.path)} onToggle={() => toggleFile(file.path)} />)}</TableBody></Table></CardContent> : <QuantizationsContent query={quantizationsQuery} onOpen={(id) => onOpenQuantization(id, repo)} />}</Card></div>
 }
 
 function QuantizationsContent({ query, onOpen }: { query: ReturnType<typeof useQuery<Awaited<ReturnType<typeof api.getHfQuantizations>>, Error>>; onOpen: (id: string) => void }) {
@@ -391,13 +440,12 @@ function htmlLayoutClass(element: HTMLElement): string {
   return classes.join(' ')
 }
 
-function FileRow({ file, selected, onToggle }: { file: HfFile; selected: boolean; onToggle: () => void }) { return <TableRow><TableCell><input type="checkbox" aria-label={`Выбрать ${file.path}`} checked={selected} onChange={onToggle} className="size-4 accent-[#c58055]" /></TableCell><TableCell className="break-all font-mono text-[11px]">{file.path}</TableCell><TableCell className="whitespace-nowrap text-right font-mono text-[11px]">{formatBytes(file.size)}</TableCell><TableCell className="text-[11px] text-muted-foreground">{file.sha256 ? 'sha256' : file.etag ? 'etag' : 'без hash'}</TableCell></TableRow> }
+function FileRow({ file, selected, onToggle }: { file: HfFile; selected: boolean; onToggle: () => void }) { return <TableRow><TableCell><input type="checkbox" aria-label={`Выбрать ${file.path}`} checked={selected} onChange={onToggle} className="size-4 accent-[#c58055]" /></TableCell><TableCell className="break-all font-mono text-[11px]">{file.path}</TableCell><TableCell className="whitespace-nowrap text-right font-mono text-[11px]">{formatBytes(file.size)}</TableCell><TableCell className="whitespace-nowrap text-[11px] text-muted-foreground">{file.file_date ? formatHfDate(file.file_date) : '—'}</TableCell></TableRow> }
 
-function DownloadCenter({ operations, closed, collapsed, onToggle, onCollapse, onClose, onStop, stoppingId }: { operations: Operation[]; closed: boolean; collapsed: boolean; onToggle: () => void; onCollapse: () => void; onClose: () => void; onStop: (id: string) => void; stoppingId: string | null | undefined }) {
-  const hasActive = operations.some((operation) => ['queued', 'running'].includes(operation.state))
+function DownloadCenter({ operations, closed, collapsed, onToggle, onClose, onStop, stoppingId }: { operations: Operation[]; closed: boolean; collapsed: boolean; onToggle: () => void; onClose: () => void; onStop: (id: string) => void; stoppingId: string | null | undefined }) {
   const sorted = [...operations].sort((left, right) => new Date(right.created_at).getTime() - new Date(left.created_at).getTime())
   if (closed) return null
-  return <div className="mb-4 rounded-md border border-border bg-secondary px-4 py-3"><div className="flex items-center gap-2"><button type="button" className="flex min-w-0 items-center gap-2 text-left text-xs font-medium" onClick={onToggle} aria-expanded={!collapsed}><span>Загрузки</span><span className="text-[11px] text-muted-foreground">Активных: {operations.length}</span>{collapsed ? <ChevronDown className="size-3.5 text-muted-foreground" /> : <ChevronUp className="size-3.5 text-muted-foreground" />}</button><Button size="icon" variant="ghost" className="ml-auto -mr-2 -mt-2 shrink-0" aria-label={hasActive ? 'Свернуть загрузки' : 'Закрыть блок загрузок'} title={hasActive ? 'Свернуть' : 'Закрыть'} onClick={hasActive ? onCollapse : onClose}><X className="size-4" /></Button></div>{!collapsed && <div className="mt-3 space-y-2">{sorted.map((operation) => <DownloadTask key={operation.id} operation={operation} stopping={stoppingId === operation.id} onStop={() => onStop(operation.id)} />)}</div>}</div>
+  return <div className="mb-4 rounded-md border border-border bg-secondary px-4 py-3"><div className="flex items-center gap-2"><button type="button" className="flex min-w-0 items-center gap-2 text-left text-xs font-medium" onClick={onToggle} aria-expanded={!collapsed}><span>Загрузки</span><span className="text-[11px] text-muted-foreground">Задач: {operations.length}</span>{collapsed ? <ChevronDown className="size-3.5 text-muted-foreground" /> : <ChevronUp className="size-3.5 text-muted-foreground" />}</button><Button size="icon" variant="ghost" className="ml-auto -mr-2 -mt-2 shrink-0" aria-label="Закрыть блок загрузок" title="Закрыть" onClick={onClose}><X className="size-4" /></Button></div>{!collapsed && <div className="mt-3 space-y-2">{sorted.map((operation) => <DownloadTask key={operation.id} operation={operation} stopping={stoppingId === operation.id} onStop={() => onStop(operation.id)} />)}</div>}</div>
 }
 
 function DownloadTask({ operation, stopping, onStop }: { operation: Operation; stopping: boolean; onStop: () => void }) {

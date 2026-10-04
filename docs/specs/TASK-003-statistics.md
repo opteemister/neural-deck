@@ -7,9 +7,11 @@ date: 2026-10-04
 # Черновик, не согласовано
 
 Этот документ переводит требования `docs/tasks/TASK-003-statistics.md` в
-проверяемый контракт для обсуждения. Он не разрешает реализацию. Выбор
-часового пояса, тарифа, правил оплаты cache, определения busy/загруженности,
-исторических цен и включения benchmark traffic остаётся открытым.
+проверяемый контракт для обсуждения. Он не разрешает реализацию. Пользователь
+согласовал UTC, USD, применение текущих ставок профиля, включение ошибок,
+benchmark traffic и месячный период по умолчанию как последние 30 календарных
+дней.
+Остаются отдельные детали UI.
 
 Исходные факты и ограничения приведены в
 `docs/research/TASK-003-statistics.md`. Существующая approved-спецификация
@@ -20,8 +22,8 @@ date: 2026-10-04
 ## Review 2026-10-04 — решено review
 
 Ниже зафиксированы рекомендуемые shared contracts для TASK-001/003/004/005.
-Это review-решения для согласования документов, не разрешение реализации и не
-выбор конкретной timezone/currency/cache policy.
+Это review-решения для согласования документов, не разрешение реализации.
+Конкретные продуктовые решения пользователя приведены ниже.
 
 1. Instance-scoped counters/gauges с verified exporter identity (`profile_id`,
    PID/start) можно показывать как profile activity/throughput. Они не являются
@@ -33,9 +35,10 @@ date: 2026-10-04
 3. `request_event_time = finished_at` для terminal rows (включая failed/partial)
    и `started_at` для interrupted/unknown. Один logical request целиком попадает
    в один bucket, период `[from,to)`, `usage_received_at` остаётся provenance.
-   Day/hour используют absolute interval keys + выбранный IANA offset, включая
-   отдельные повторные часы DST. Run/concurrency intervals пересекаются с
-   buckets; observation gaps не интерполируются.
+   TASK-003 использует UTC для day/hour и absolute bucket keys; на месячном
+   экране основной bucket — календарный день. DST в UI не возникает.
+   Run/concurrency intervals пересекаются с buckets; observation gaps не
+   интерполируются.
 4. Рекомендуется immutable `profile_id` + revision; PID/start — runtime identity,
    legacy rows получают явный fallback. Edit тарифа не меняет execution
    performance identity; currencies агрегируются раздельно без FX.
@@ -43,20 +46,46 @@ date: 2026-10-04
    explicit events с `benchmark_run_id` и dedup; interval/counter spike не
    объявляет весь overlapping traffic тестовым.
 
-Оставшиеся вопросы: конкретная timezone и UI трактовка недели, включение
-failed/interrupted rows, cache billing и price unit, отображаемая load/busy
-метрика, benchmark inclusion в обычные totals и acceptance threshold TASK-005.
+Оставшиеся вопросы: детали load coverage, UI-агрегации и acceptance threshold
+TASK-005.
+
+## Решения пользователя 2026-10-04
+
+- Вся временная семантика страницы, API, базы и UI — UTC. Дневные buckets
+  группируются и подписываются в UTC; пользовательская timezone не выбирается.
+  Почасовые buckets остаются технической детализацией источников и не являются
+  основным графиком месячного экрана.
+- Валюта статистики — USD. Для расчёта берётся текущая ставка, указанная в
+  профиле на момент чтения статистики; исторические ставки не восстанавливаются.
+- В requests входят успешные, terminal failed/HTTP-error и interrupted rows.
+  Ошибочные состояния показываются отдельными счётчиками/цветами; неизвестные
+  tokens и стоимость не превращаются в ноль.
+- Benchmark traffic входит в общие tokens, requests и cost. Benchmark не
+  является отдельным фильтром: на графике отмечается интервал запуска,
+  сценарий и нагрузка.
+- Load — не uptime процесса. Профиль считается загруженным пропорционально
+  активной concurrency: `load_percent = 100 * time_weighted_active_requests /
+  profile_max_concurrency`, где `profile_max_concurrency` — исторический
+  максимум active requests по этому профилю за весь доступный период. Поэтому
+  0 запросов дают 0%, один запрос при максимуме 10 — 10%, десять — 100%.
+  Простой процесс в памяти без запросов не считается загрузкой.
+  Если в будущем будет зафиксирован новый исторический максимум, проценты
+  прошлых периодов пересчитаются относительно нового знаменателя.
+- В настройках модели задаются три ставки: `input_rate`, `output_rate` и
+  `cached_input_rate`. Cached input остаётся частью общего input token count,
+  но вычитается из обычного input перед расчётом и считается по третьей ставке.
+  Отдельная cache ставка не является дополнительными токенами.
 
 ## 1. Назначение
 
 Страница «Статистика» в разделе «Наблюдение» должна показывать расход токенов,
-наблюдаемую производительность, concurrency, активность по дням и часам,
+наблюдаемую производительность, concurrency и активность по календарным дням,
 ориентировочную стоимость при наличии согласованных цен и загрузку профилей.
 Статистика строится по выбранному периоду и фильтрам модели/профиля.
 
-Первый экран открывается с периодом «неделя» и общей областью по всем
-наблюдаемым моделям и профилям. Точная трактовка «неделя» — последние семь
-календарных дней или текущая календарная неделя — открытый вопрос раздела 11.
+Первый экран открывается с периодом «месяц», который означает последние 30
+календарных дней с границами `00:00 UTC`, и общей дневной heatmap по всем наблюдаемым
+моделям и профилям. Ниже располагаются сводки по профилям и клиентам.
 
 Источники данных показываются отдельно в контракте ответа. Наблюдаемые через
 прокси события нельзя выдавать за полный расход всех прямых клиентов движка.
@@ -97,59 +126,68 @@ logical requests.
 
 ### 3.1. Период и фильтры
 
-- Период по умолчанию — «неделя».
+- Период по умолчанию — последние 30 календарных дней, включая текущий
+  неполный день; границы периода выравниваются по `00:00 UTC`.
 - Пользователь может задать период, а границы и часовой пояс отображаются рядом
   с результатом.
 - Доступны общий вид, фильтр конкретной модели и фильтр конкретного профиля.
-- В каждом ответе фильтр применяется одинаково к обзору, дневной таблице,
-  итогам, activity heatmap, concurrency и стоимости.
+- В каждом ответе фильтр применяется одинаково к overview, activity heatmap,
+  profile summary, client summary, concurrency и стоимости.
 - Если фильтр выбирает alias, в деталях показываются запрошенное имя и
   фактические served profiles, когда такая attribution доступна.
 
-### 3.2. Обзор, дневная таблица и итоги
+### 3.2. Сводки по профилям и клиентам
 
-Для каждого дня показываются:
+Страница показывает две сводки за выбранные 30 календарных дней по умолчанию;
+при смене периода таблицы агрегируются по выбранному диапазону.
 
-- количество логических запросов;
-- известные input и output tokens и отдельные количества запросов с неизвестным
-  input/output usage;
-- известные cached input tokens и количество запросов с неизвестным cache;
-- наблюдаемая concurrency с подписью метода агрегации;
-- средние показатели производительности профиля, как минимум prefill и decode
-  при наличии совместимого источника, с единицами и числом/весом наблюдений;
-- примерная стоимость дня, только когда для каждого включённого расхода
-  существует согласованная ставка и currency;
-- процент загрузки профиля за день вместе с числителем, знаменателем и basis.
+Таблица профилей содержит строки профилей и колонки:
 
-Под таблицей показываются totals за выбранный период. Известные суммы не
-включают неизвестные значения. Unknown counters и недоступная стоимость
-остаются видимыми как «неизвестно/недоступно», а не как ноль.
+- input tokens, cached input tokens и output tokens;
+- total requests и отдельные status counters для failed/interrupted/unknown;
+- average и peak concurrency за период, а также исторический максимум,
+  использованный как знаменатель load;
+- load percentage с basis, numerator, denominator и coverage;
+- доступные performance series (prefill/decode и другие source/semantic series
+  раздельно);
+- стоимость в USD по трём текущим ставкам профиля.
 
-В общем обзоре разрешается tooltip с разбивкой дня по моделям и/или served
-profiles. Tooltip не меняет totals и не скрывает неизвестные значения.
+External/unmanaged rows без profile identity показываются отдельно с
+`unavailable/unknown`, а не объединяются с похожим профилем.
+
+Таблица клиентов содержит тот же usage-набор: input, cached input, output,
+requests, status counters и cost, а также список фактически обслуживших
+профилей. Profile-only поля load и engine performance для клиента показываются
+только при наличии корректной attribution; иначе имеют `unavailable`.
+
+Итоги за период выводятся внутри заголовка/подвала соответствующей таблицы.
+Известные суммы не включают unknown values, а недоступная стоимость не
+отображается как ноль.
 
 ### 3.3. Activity heatmap
 
-Нужен график с квадратами для комбинаций day × hour: интенсивность отражает
-известный расход токенов, а tooltip сообщает календарную дату, час, tokens,
-запросы и разбивку по моделям/profiles, если она есть.
+Нужен один основной график с квадратами по календарным дням UTC. Для периода
+«месяц» используется календарная сетка: одна ячейка соответствует одному дню,
+а строки группируют последовательные недели. Интенсивность отражает известный
+расход токенов за день. Tooltip сообщает дату, input/cached/output tokens,
+requests, разбивку по профилям и клиентам, а также benchmark interval, если он
+пересекает ячейку. Почасовая детализация не является основным графиком
+месячного периода и может появиться позже как drill-down выбранного дня.
 
-Требуемая форма и детализация остаются на согласование: одна сетка day × hour
-или переключение дневного/часового режима. Нулевой расход, неизвестный расход и
-отсутствие событий должны иметь различимые текстовые состояния; интенсивность
-не может превращать unknown в ноль.
+Нулевой расход, неизвестный расход и отсутствие событий имеют различимые
+текстовые состояния; интенсивность не может превращать unknown в ноль.
 
 ### 3.4. Загрузка профиля
 
-На странице статистики и на карточке профиля TASK-001 показывается процент
-загрузки за день. В подписи обязательно указывать определение basis:
+На странице статистики в сводке профилей показывается процент загрузки за
+выбранный период; на карточке профиля TASK-001 этот показатель также может
+показываться за день. Load не означает uptime: профиль в памяти без активных
+запросов имеет 0%. Значение рассчитывается как time-weighted active
+concurrency относительно максимальной ёмкости профиля. В подписи указываются
+basis, `profile_max_concurrency`, числитель, знаменатель и coverage.
 
-- «процесс профиля был запущен»; или
-- «профиль обрабатывал хотя бы один запрос».
-
-Одно из определений и знаменатель неполного текущего дня ещё не выбраны.
-Показатель с неизвестным интервалом должен иметь состояние unavailable/unknown,
-а не выглядеть как 0%.
+При неизвестной максимальной ёмкости или недостаточном покрытии наблюдения
+показатель имеет состояние unavailable/unknown, а не выглядит как 0%.
 
 ## 4. Контракт данных агрегации (предложение)
 
@@ -162,7 +200,7 @@ endpoint. Имена полей являются предложением и м�
   "period": {
     "from": "RFC3339 UTC",
     "to": "RFC3339 UTC",
-    "timezone": "IANA timezone supplied by the UI/request",
+    "timezone": "UTC",
     "boundary": "[from,to)",
     "request_event_time": "finished_at_else_started_at"
   },
@@ -176,16 +214,17 @@ endpoint. Имена полей являются предложением и м�
     "input_tokens": {"known_total": null, "unknown_requests": 0},
     "output_tokens": {"known_total": null, "unknown_requests": 0},
     "cached_input_tokens": {"known_total": null, "unknown_requests": 0},
-    "cost": {"value": null, "currency": null, "state": "unavailable"}
+    "cost": {"value": null, "currency": "USD", "state": "unavailable"}
   },
-  "days": [],
+  "profiles": [],
+  "clients": [],
   "activity": [],
   "missing": []
 }
 ```
 
-Каждый дневной элемент должен содержать `day`, `source`, identity измерений и
-те же token/unknown поля, а также:
+Каждый элемент `profiles` должен содержать profile identity, те же
+token/unknown поля, status counters и:
 
 ```json
 {
@@ -210,12 +249,20 @@ endpoint. Имена полей являются предложением и м�
   },
   "cost": {
     "value": null,
-    "currency": null,
+    "currency": "USD",
     "state": "unavailable",
     "unknown_requests": 0
   }
 }
 ```
+
+Каждый элемент `clients` содержит client identity, input/cached/output tokens,
+requests, status counters, cost и список served profiles. Profile-only поля
+`load` и engine performance имеют `unavailable`, если корректной attribution
+нет. Каждый элемент `activity` содержит UTC day bucket и token/request метрики
+для месячной heatmap, включая optional profile/client breakdown. Если позднее
+появится почасовая детализация, она возвращается отдельными hour buckets, не
+меняя дневную агрегацию.
 
 `unknown`, `unavailable`, `stale` и отсутствие строк должны быть различимы в
 ответе или в `missing`. Timestamps и внутренние числовые значения передаются
@@ -229,22 +276,22 @@ midnight/period; если `event_time == to`, она исключена из `[f
 rows не входят в terminal totals, пока не появится отдельная явно подписанная
 inflight metric.
 
-Для day/hour response дополнительно нужны absolute `bucket_from`/`bucket_to` и
-local UTC offset. Повторный час DST получает отдельный key, а 23/25-часовой
-день не приводится к массиву с молчаливыми индексами `0..23`. Run/concurrency
+Для activity response дополнительно нужны absolute `bucket_from`/`bucket_to` и
+UTC offset `+00:00`. DST не создаёт дополнительных UI-бuckets. Run/concurrency
 intervals пересекаются с bucket и period; разрывы наблюдений не интерполируются.
 
 ## 5. Правила расчёта, которые предлагаются для согласования
 
 ### 5.1. Tokens и запросы
 
-- `requests.total` — число логических завершённых request rows, включённых
+- `requests.total` — число логических request rows с terminal или явно
+  зафиксированным interrupted/unknown исходом, включённых
   выбранным `request_event_time` и фильтрами. Рекомендуемая граница периода
   `[from,to)` и единое правило применяются к таблице, totals и heatmap.
-- Failed/HTTP-error rows входят в requests, если они terminal; interrupted rows
-  с fallback `started_at` показываются отдельно как `unknown/interrupted`, пока
-  не будет согласовано включение. Attempts не считаются дополнительными
-  логическими запросами.
+- Failed/HTTP-error rows и interrupted rows входят в requests и получают
+  отдельные status counters (`failed`, `interrupted`, `unknown`). Tokens и cost
+  для них учитываются только при подтверждённом usage. Attempts не считаются
+  дополнительными логическими запросами.
 - `input_tokens.known_total` и `output_tokens.known_total` — суммы только
   известных per-request значений. `unknown_requests` — число строк с `NULL`.
 - `cached_input_tokens.known_total` — сумма cache subset только для совместимой
@@ -262,15 +309,19 @@ intervals пересекаются с bucket и period; разрывы набл�
 
 Текущие источники дают `active_requests` gauges и архив
 `MetricConcurrencyDaily`, где скорость взвешена по наблюдаемому elapsed time.
-Кандидат для страницы — time-weighted average, максимум и распределение
-наблюдавшихся уровней concurrency, с числом секунд и samples. Переходы,
-невалидные значения и большие пробелы не интерполируются. При пересечении
-day/hour bucket observation contributes только пересечением своего интервала;
-coverage/observed_seconds остаются явными.
+Для load используется time-weighted average `active_requests` за выбранный
+bucket, разделённый на исторический `profile_max_concurrency` — максимум
+`active_requests` по профилю за весь доступный период. Нулевые интервалы дают
+0%; один запрос при максимуме 10 — 10%, десять — 100%. Uptime и простой
+процесса в памяти в load не входят. Новый исторический максимум меняет
+знаменатель и может пересчитать load прошлых buckets.
 
-Вопрос, считать ли concurrency только за время обработки запросов, весь период
-работы профиля или весь календарный день, открыт. Если валидных observations
-нет, поля concurrency возвращают `NULL`.
+Переходы, невалидные значения и большие пробелы не интерполируются. При
+пересечении day/hour bucket observation contributes только пересечением своего
+интервала; coverage/observed_seconds остаются явными. Если максимальная
+ёмкость не подтверждена или валидных observations нет, load возвращает `NULL`.
+Точный набор отображаемых полей concurrency (average, maximum,
+distribution/quantiles) остаётся UI-вопросом.
 
 ### 5.3. Performance
 
@@ -288,49 +339,36 @@ throughput не заменяют друг друга.
 разрешено внутри одинаковых profile/model/engine/source/semantic; edit тарифа
 не invalidates execution performance.
 
-### 5.4. Стоимость (предложение, не решение)
+### 5.4. Стоимость
 
-Стоимость может быть вычислена только когда TASK-001 добавит цену input/output,
-валюту и единицу тарифа в общий контракт профиля/настроек. Для исторической
-статистики нужно выбрать один вариант:
+Стоимость рассчитывается в USD по текущим ставкам профиля. Исторические
+запросы пересчитываются по текущей конфигурации профиля; изменение ставки
+должно быть явно видно как следствие этой политики. Внутренний расчёт
+нормализует единицу ставки перед умножением на tokens.
 
-1. записывать эффективные ставки в каждую request row при завершении;
-2. хранить версию/интервал ставки и связывать с request row;
-3. пересчитывать прошлое по текущей ставке.
+Если известны `input`, `cached` и `output`, формула по трём ставкам профиля
+имеет вид: `(input - cached) * input_rate + cached * cached_input_rate +
+output * output_rate`. Cached input не прибавляется к input второй раз.
+Неизвестный input/output/rate даёт `partial` или `unavailable`, но не нулевую
+стоимость.
 
-Ни один вариант не выбран. До выбора `cost.state = unavailable` либо
-`partial`, с объяснением причины. Нельзя считать нулевую цену, отсутствие цены
-и неизвестный cache одинаковыми состояниями.
+### 5.5. Cache billing
 
-Currency является частью каждой стоимости. Профили с разными currencies не
-суммируются и не конвертируются без явного FX source: overview возвращает
-группы по currency и `multi_currency`/`unavailable`. Иллюстративный пример,
-не выбор billing policy: `input=100`, `cached=20`, `output=50`, rates
-`input=2/M`, `cached=0.5/M`, `output=8/M` дают
-`(80*2 + 20*0.5 + 50*8) / 1_000_000 = 0.00057`. Cached tokens уже входят в
-input subset; если cached rate не утверждён, result остаётся `partial` или
-`unavailable`, а не считается бесплатным молча.
+Исходные cached tokens отображаются как subset input и не добавляются к input
+второй раз. Для каждой модели профиль хранит отдельную `cached_input_rate`.
+UI и API сохраняют token count, три ставки и `billing_rule`/`state`.
 
-### 5.5. Cache billing (открытый вопрос)
+### 5.6. Busy/load
 
-Исходные cached tokens отображаются как subset input. Не выбрано, оплачиваются
-ли они по полной input ставке, по отдельной скидочной ставке или исключаются из
-оплачиваемого input. UI и API должны хранить известный token count независимо
-от этого решения, а cost должен указывать `billing_rule`/`state`, когда правило
-будет утверждено.
+Numerator — time-weighted сумма `active_requests` по подтверждённым
+интервалам наблюдения. Denominator — та же длительность, умноженная на
+максимальную concurrency профиля. Это даёт среднюю долю ёмкости за bucket:
+0 активных запросов — 0%, один запрос при ёмкости 10 — 10%, десять — 100%.
+Uptime, наличие процесса в памяти и простои без запросов в load не входят.
 
-### 5.6. Busy/load (открытый вопрос)
-
-Возможные numerator:
-
-- время, когда процесс профиля был запущен/доступен;
-- время, когда `active_requests > 0` по snapshots;
-- объединение фактических request intervals из журнала.
-
-Возможные denominator: полный календарный день, прошедшая часть текущего дня,
-или наблюдаемое время профиля. Нельзя выбрать одно значение молча. Snapshot
-каждые 5 секунд не доказывает состояние между пропущенными наблюдениями; для
-точного process basis нужен журнал run intervals с PID и process start time.
+Пропуски наблюдений не заполняются автоматически. При неизвестной максимальной
+ёмкости или недостаточном coverage возвращаются `unknown/unavailable` и
+coverage, а не ложный 0%.
 
 ## 6. Профиль, routing и историческая идентичность
 
@@ -360,26 +398,24 @@ TASK-005 требует запускать тест относительно в�
 профиля, продолжать обычный background collector и выделять интервал теста на
 графиках. Текущий Benchmarks UI — placeholder; benchmark storage и ID нет.
 
-До реализации TASK-005 нужно решить:
-
-- получает ли тест `benchmark_run_id`, `started_at`, `finished_at`, сценарий,
-  профиль/PID и уровни concurrency;
-- включается ли benchmark traffic в общие расход токенов и стоимость;
-- если включается, как tooltip отличает его от обычного трафика;
-- если исключается, как запросы/метрики фильтруются без удаления из журнала;
-- как показывать пересечение benchmark interval с другими профилями и
-  внешними клиентами.
+До реализации TASK-005 тест получает `benchmark_run_id`, `started_at`,
+`finished_at`, сценарий, профиль/PID и уровни concurrency. Его traffic входит
+в общие расход токенов, requests и стоимость; отдельного фильтра benchmark не
+требуется. Tooltip показывает, что выбранный интервал включал benchmark, его
+сценарий и нагрузку. Пересечение с другими профилями и внешними клиентами
+показывается как потенциально смешанная активность.
 
 Статистика не должна выводить benchmark из всплеска токенов или concurrency без
 явной interval-записи. Review рекомендует разделять overlay и traffic filter:
-interval (`started_at`, `finished_at`, scenario) только подсвечивает фон графика.
+interval (`started_at`, `finished_at`, scenario) только подсвечивает фон графика
+и сообщает нагрузку; traffic остаётся в общих totals и cost.
 Proxy benchmark rows получают `benchmark_run_id`; runner, который обращается к
 engine напрямую, должен писать по одному logical request event с profile/run
 identity, status, usage и dedup key `(benchmark_run_id, client_request_id,
-attempt)`. Только explicit events участвуют в benchmark-filtered request/cost
-totals. Instance counters за interval помечаются potentially mixed, потому что
-обычный трафик мог идти одновременно. Исходные usage rows и metric samples
-сохраняются.
+attempt)`. Explicit events нужны для provenance и отображения нагрузки; они
+входят в общие request/cost totals. Instance counters за interval помечаются
+potentially mixed, потому что обычный трафик мог идти одновременно. Исходные
+usage rows и metric samples сохраняются.
 
 ## 8. Предложение API
 
@@ -390,20 +426,19 @@ totals. Instance counters за interval помечаются potentially mixed, 
 GET /api/v1/statistics
   ?from=<RFC3339>
   &to=<RFC3339>
-  &period=week|custom
-  &timezone=<IANA timezone>
+  &period=month|custom
+  &timezone=UTC
   &boundary=[from,to)
   &profile_name=<optional>
   &model_name=<optional>
   &served_profile_name=<optional>
-  &benchmark_run_id=<optional>
-  &include_benchmarks=true|false
 ```
 
 Ответ — стандартный success envelope проекта с `period`, `filters`,
-`overview`, `days`, `activity`, optional `served_profiles`, `benchmark_intervals`
-`currencies` и `missing`. `period` возвращает normalized `[from,to)`, IANA
-timezone и event-time policy. Точные поля, paging и лимит периода следует определить после
+`overview`, `profiles`, `clients`, `activity`, `benchmark_intervals`, `currencies`
+и `missing`. Benchmark intervals всегда являются overlay и не исключают traffic
+из totals. `period` возвращает normalized `[from,to)`, timezone `UTC` и event-time
+policy. Точные поля, paging и лимит периода следует определить после
 оценки объёма бессрочного журнала.
 
 До появления нового endpoint текущие источники остаются полезными:
@@ -425,8 +460,8 @@ timezone и event-time policy. Точные поля, paging и лимит пе�
    upstream model, process start identity и benchmark marker; существующий
    journal сохраняется, а attempts и direct benchmark events лучше хранить в
    нормализованных child rows с logical-request id и dedup key, чем в opaque JSON.
-2. **Prices:** profile price/rate revision и эффективная ставка на момент
-   request, если будет выбран исторический тариф.
+2. **Prices:** текущие profile price/rate settings, нормализованные к единице
+   расчёта; историческую effective rate сохранять не требуется.
 3. **Run intervals:** start/stop или heartbeat intervals с profile/PID/start
    identity, bucket intersection и coverage, если нужен process uptime basis.
 4. **Benchmark intervals/events:** immutable interval/scenario/profile/PID
@@ -436,23 +471,27 @@ timezone и event-time policy. Точные поля, paging и лимит пе�
    оптимизация после измерения объёма журнала, а не обязательное решение этого
    черновика.
 
-Все timestamps хранения остаются UTC по общему API-контракту. Это не выбирает
-конкретный часовой пояс группировки day/hour и не меняет существующий timezone
-cleanup архива метрик. Profile rename/delete оставляет старые rows и dangling
+Все timestamps хранения и дневная группировка для месячного TASK-003 остаются UTC по
+общему API-контракту. Это не меняет существующий timezone cleanup архива
+метрик, который должен быть отдельно приведён к UTC или пересчитан при чтении.
+Profile rename/delete оставляет старые rows и dangling
 route/run references диагностируемыми, а не переиспользует PID как identity.
 
 ## 10. UI и дизайн
 
 После утверждения страница должна быть добавлена в группу «Наблюдение» и
 получить отдельный route `/statistics`. Реализация использует существующие
-shadcn/ui `Card`, `Table`, `Select`, `Tabs`, `Tooltip`, `Progress`, empty/error
-states и тему из `docs/specs/2026-09-29-design-system.md`.
+shadcn/ui `Table`, `Select`, `Tooltip`, empty/error states и тему из
+`docs/specs/2026-09-29-design-system.md`. Таблицы профилей и клиентов строятся
+одним переиспользуемым renderer с разным набором колонок.
 
-Текущий `MetricLineChart` переиспользуется для временных performance series;
-существующий `TokenHistoryChart` является основой stacked token bars, но его
-24-hour-only контракт не достаточен для выбранного периода. Для day × hour
-heatmap понадобится отдельный визуальный renderer только после подтверждения,
-что существующие компоненты нельзя расширить без дублирования поведения.
+Основной визуальный блок — дневная календарная heatmap в медной палитре
+дизайн-системы. Для периода «месяц» одна ячейка означает один календарный день
+UTC; почасовая детализация не выводится отдельным верхним графиком.
+Новые графики расхода токенов и верхние KPI-блоки не добавляются. Существующий
+`TokenHistoryChart` и `MetricLineChart` не используются для отдельного верхнего
+графика; их можно переиспользовать только если конкретная performance series
+появится в согласованной сводке профиля.
 
 Состояния недоступности показываются текстом/иконкой и tooltip с источником и
 причиной. Цвет не является единственным сигналом. На узком экране фильтры,
@@ -461,40 +500,22 @@ tabular/monospace без уменьшения основного текста.
 
 ## 11. Открытые вопросы для согласования
 
-1. «Неделя» — последние семь календарных дней или текущая календарная неделя?
-2. Какой timezone выбрать для day/hour и как показывать переходы DST? Review
-   рекомендует IANA timezone и absolute offset-aware buckets, но конкретный
-   продуктовый default не выбран. Это
-   не утверждает ни UTC референса vllm-studio, ни timezone ОС архива метрик.
-3. Как считать concurrency: time-weighted average, максимум, квантили,
-   распределение; учитывать весь день, uptime или только request processing?
-4. Что считать «работает/busy»: process alive, active request или request
-   interval; какой denominator у неполного текущего дня?
-5. Какие цены задаются в TASK-001: валюта, за токен/тысячу/миллион,
-   precision и правила отсутствующей/нулевой ставки?
-6. Применяется ли историческая цена на момент запроса, interval revision или
-   текущая цена при пересчёте?
-7. Как оплачиваются cached input tokens: полная ставка, отдельная скидка или
-   исключение; как выглядит `cost.state` при неизвестном cache?
-8. Включать ли failed/interrupted/retry/fallback attempts в requests и cost?
-9. При alias/failover считать attribution успешному served profile, разделять
-   attempts или показывать обе величины?
-10. Считать ли benchmark requests общей статистикой и стоимостью; нужны ли
-    фильтры «с benchmark/без benchmark»?
-11. Нужен ли в tooltip heatmap уровень profile, model, engine и benchmark?
-12. Подтвердить operational threshold, после которого optional daily rollup
-    понадобится; review рекомендует query-time агрегации для прототипа и не
-    делать rollup источником истины до измерения объёма.
-13. Какие performance series показывать в первом UI кроме рекомендуемых
-    prefill/decode, latency и native throughput; review уже требует раздельные
-    source/semantic/weights и не смешивает их в одну цифру?
+1. Какие поля concurrency показывать кроме load: time-weighted average,
+   maximum, distribution/quantiles?
+2. Какие performance series показывать в первом UI кроме рекомендуемых
+   prefill/decode, latency и native throughput; review требует раздельные
+   source/semantic/weights и не смешивает их в одну цифру?
+3. Подтвердить operational threshold, после которого optional daily rollup
+   понадобится; review рекомендует query-time агрегации для прототипа и не
+   делать rollup источником истины до измерения объёма.
 
 ## 12. Предлагаемые критерии приёмки после утверждения
 
 ### Backend/data
 
-- Период и фильтры применяются одинаково к overview, days, activity и totals;
-  границы тестируются на точном переходе часа/дня.
+- Период и фильтры применяются одинаково к overview, profiles, clients,
+  activity и totals;
+  границы тестируются на точном переходе дня UTC.
 - Один proxy request, включая streaming, считается одной логической строкой;
   retries/fallback имеют проверенную attribution policy.
 - Известные input/output/cache суммируются, unknown counters сохраняются;
@@ -505,7 +526,8 @@ tabular/monospace без уменьшения основного текста.
   stale/NULL не превращаются в ноль и не интерполируются через пробелы.
 - Run identity, rename/edit профиля, PID reuse и external process проверены.
 - Стоимость возвращается только при наличии согласованной цены/billing rule;
-  историческая ставка покрыта тестом изменения цены.
+  изменение текущей цены проверяет пересчёт уже сохранённых rows по выбранной
+  current-rate policy.
 - Busy/load показывает basis, numerator и denominator; текущий неполный день и
   отсутствие run interval покрыты тестами.
 - Benchmark intervals не угадываются из spike и корректно фильтруются/маркируются
@@ -513,12 +535,14 @@ tabular/monospace без уменьшения основного текста.
 
 ### Frontend
 
-- По умолчанию виден согласованный период недели, фильтры модели/профиля и
-  общий обзор; ошибка/пустой ответ/unknown различимы.
-- Дневная таблица показывает input/output/cache, requests, concurrency,
+- По умолчанию видны последние 30 календарных дней UTC, фильтры модели/профиля
+  и общий heatmap; ошибка/пустой ответ/unknown различимы.
+- Сводка по профилям показывает input/output/cache, requests, concurrency,
   performance, cost и load без скрытого нулевого значения.
-- Heatmap day × hour даёт доступные tooltip по дате, часу, model/profile и
-  unknown/source.
+- Отдельная сводка по клиентам показывает те же usage-поля и attribution
+  профилей.
+- Дневная heatmap даёт доступные tooltip по дате, model/profile/client,
+  benchmark и unknown/source.
 - Страница и карточка профиля используют одно согласованное определение load.
 - Existing dashboard charts и profile UI не меняют поведение; новый renderer
   не дублирует общие линии, tooltip и темы.

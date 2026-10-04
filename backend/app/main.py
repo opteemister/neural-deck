@@ -28,6 +28,7 @@ from .api.management import router as management_router
 from .api.metrics import export_router as metrics_export_router
 from .api.metrics import router as metrics_router
 from .api.profiles import router as profiles_router
+from .api.proxy_routes import router as proxy_routes_router
 from .config import Settings, load_settings
 from .container import AppContainer
 from .db import check_database, create_engine, create_session_factory, migrate_database
@@ -54,6 +55,7 @@ from .profiles.service import ProfileService
 from .proxy.listener import ApplicationCORSMiddleware, model_api_listener
 from .proxy.router import internal_router as internal_proxy_router
 from .proxy.router import router as proxy_router
+from .proxy.routes import RouteManager
 from .proxy.service import ProxyService
 from .schemas.common import SuccessEnvelope
 from .schemas.system import HealthData
@@ -301,7 +303,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
         session_factory = create_session_factory(db_engine)
         journal_service = RequestJournalService(session_factory=session_factory)
-        proxy_service = ProxyService(process_manager, journal=journal_service)
+        route_manager = RouteManager(paths.config_dir, profile_repository)
+        proxy_service = ProxyService(
+            process_manager,
+            journal=journal_service,
+            route_manager=route_manager,
+        )
         import secrets
 
         from .metrics.storage import MetricsStorage
@@ -457,6 +464,7 @@ def create_app(
     # Keep each management router registered once.  Future proxy/MCP routers
     # must be included before the frontend fallback route as well.
     app.include_router(management_router)
+    app.include_router(proxy_routes_router)
     app.include_router(internal_proxy_router)
     app.include_router(profiles_router)
     # Register metrics before the greedy /instances/{instance_id:path}

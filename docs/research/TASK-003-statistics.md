@@ -23,10 +23,10 @@
   failed/partial usage, иначе `started_at` для interrupted/unknown. Одна row
   попадает ровно в один bucket, период имеет границу `[from,to)`. `usage_received_at`
   сохраняется как provenance, но не меняет bucket задним числом.
-- Day/hour labels строятся из абсолютных UTC instants и выбранной IANA timezone.
-  DST 23/25 часов и повторный local hour имеют разные UTC offsets/interval keys;
-  нельзя молча индексировать каждый день `0..23`. Run/concurrency intervals
-  пересекаются с bucket, а observation gaps не интерполируются.
+- Day/hour labels для TASK-003 строятся из абсолютных UTC instants и всегда
+  показываются в UTC; DST в пользовательском интерфейсе не возникает. Run и
+  concurrency intervals пересекаются с bucket, а observation gaps не
+  интерполируются.
 - Stable `profile_id`/revision рекомендуется для новых данных; PID/start остаётся
   runtime identity, а старые rows получают явный legacy fallback. Редактирование
   тарифа не меняет performance identity и execution metrics.
@@ -35,9 +35,14 @@
   и dedup key; interval или counter spike сами по себе не доказывают тестовый
   трафик.
 
-Оставшиеся product-вопросы: конкретная timezone, состав failed/interrupted rows,
-cache billing, currency/rate unit, displayed load basis, benchmark inclusion и
-точные UI labels. Эти вопросы не должны менять указанные source/identity правила.
+После решения пользователя остаются product-вопросы: точный набор
+concurrency-полей и UI labels. Период по умолчанию определён как последние 30
+календарных дней в UTC; для него основная activity-визуализация дневная.
+`profile_max_concurrency` определён
+как исторический максимум active requests по профилю за весь доступный период.
+Зафиксированы UTC, USD по текущей ставке профиля, включение failed/interrupted
+и benchmark traffic в общие totals, а load определяется по time-weighted active
+concurrency относительно максимальной ёмкости профиля.
 
 ## Как проводилась проверка
 
@@ -186,11 +191,11 @@ engine; в JSON есть avg/max/веса/число измерений и merge
 Весом служит фактический elapsed time. Переходы и длинные разрывы пропускаются.
 
 Архивирование запускается перед очисткой `metric_samples` старше 24 часов;
-чекпоинт и очистка выполняются одной транзакцией. День в архиве вычисляется
-через локальный timezone ОС (`astimezone()`), а timestamps API остаются UTC.
-Это существующая семантика дневного архива, но она не является согласованным
-решением для календаря TASK-003: часовой пояс страницы и правило неполного
-текущего дня ещё нужно обсудить.
+чекпоинт и очистка выполняются одной транзакцией. Сейчас день в архиве
+вычисляется через локальный timezone ОС (`astimezone()`), а timestamps API
+остаются UTC. Это ограничение текущей реализации: TASK-003 должен группировать
+данные по UTC и не использовать локальное поле `day` архива без проверки или
+пересчёта.
 
 `MetricsService.read(mode="aggregates")` сейчас даёт окно последних 24 часов,
 max и взвешенное среднее по снимкам. `mode="token-history"` использует журнал,
@@ -249,8 +254,8 @@ UTC там не должен автоматически становиться �
 | Показатель страницы | Источник сейчас | Состояние данных | Что понадобится для полного контракта |
 |---|---|---|---|
 | Input/output tokens | `request_journal.input_tokens`, `output_tokens`; instance-scoped counters | Per-request values известны через прокси; verified instance counters дают только attributed activity/throughput, не request events | Для direct per-request нужен явный event source; counters нельзя разворачивать в события |
-| Cached input tokens | `request_journal.cached_input_tokens`; snapshot counters `cached_prompt_tokens_total` | Per-request cache доступен только при usage/timings; snapshot cache — отдельная cumulative наблюдаемая величина | Правило billing и исторической ставки; cache не добавлять к input второй раз |
-| Количество запросов | count строк журнала | Точно только для запросов через прокси; включая ошибки/unknown нужно определить | Правило включения ошибок, interrupted, retries и benchmark traffic |
+| Cached input tokens | `request_journal.cached_input_tokens`; snapshot counters `cached_prompt_tokens_total` | Per-request cache доступен только при usage/timings; snapshot cache — отдельная cumulative наблюдаемая величина | Текущий profile billing rule; cache не добавлять к input второй раз |
+| Количество запросов | count строк журнала | Точно только для запросов через прокси; включая ошибки/unknown нужно определить | Отдельные status counters для ошибок/interrupted; benchmark traffic входит в totals |
 | Модель | `RequestJournalRecord.model_name` и snapshot `model_name` | В журнале это запрошенное публичное имя; для маршрута alias может отличаться от upstream имени | Контракт external model vs served upstream model и фактический served profile |
 | Профиль/PID/engine | journal `profile_name`, `pid`, `engine_id`; snapshot instance | Журнал фиксирует served target; verified instance counters могут иметь profile attribution; external/direct engine может быть без профиля | Stable `profile_id`/revision плюс run identity; PID-only unsafe при reuse |
 | Prefill/decode | request timings для llama.cpp/NInfer; snapshots и daily archive для поддержанных exporters | Pure phase speed только при явных phase tokens/time; native engine throughput — отдельная semantic; latency не подменяет speed | Общие source/semantic/weight labels и formula per TASK-001/005 |
@@ -258,8 +263,8 @@ UTC там не должен автоматически становиться �
 | Concurrency | `active_requests` snapshot; `MetricConcurrencyDaily` | Наблюдаемая concurrency с шагом опроса, не полное распределение запросов | Решить среднее/max/распределение, time-weighted окно и пробелы |
 | Работа профиля | live process state, `process_start_time_ns`, snapshot timestamps | История start/stop и интервалы не хранятся | Run intervals или явное правило по наблюдаемым snapshots |
 | Стоимость | нет цены в `ProfileData`/YAML | Расчёт невозможен без TASK-001 | Тариф input/output, валюта/единица, версия ставки и cache billing |
-| Heatmap day×hour | raw journal event times; snapshot samples | Request row имеет один completion/start event time; intervals пересекаются с buckets; direct engine и unknown остаются отдельно | IANA timezone, `[from,to)`, DST keys и tooltip-разбивка |
-| Benchmark interval/events | нет хранилища benchmark/run stages; страница placeholder | Interval overlay не доказывает, что весь трафик тестовый; direct runner bypass proxy не создаёт journal row | `benchmark_run_id`, explicit logical events, dedup и filter/include policy |
+| Heatmap day×hour | raw journal event times; snapshot samples | Request row имеет один completion/start event time; intervals пересекаются с buckets; direct engine и unknown остаются отдельно | UTC, `[from,to)` и tooltip-разбивка |
+| Benchmark interval/events | нет хранилища benchmark/run stages; страница placeholder | Interval overlay не доказывает, что весь трафик тестовый; direct runner bypass proxy не создаёт journal row | `benchmark_run_id`, explicit logical events и dedup для provenance; traffic входит в totals |
 
 ## Ограничения, которые должны попасть в спецификацию
 
@@ -305,10 +310,9 @@ UTC там не должен автоматически становиться �
   периода, не дробится: его tokens/requests целиком относятся к bucket его
   event time. In-flight rows не входят в terminal total, но могут быть отдельным
   `inflight_unknown` счётчиком;
-- period — абсолютные instants с рекомендованной границей `[from,to)`. Day/hour
-  отображаются в выбранной IANA timezone. Bucket key включает UTC offset и
-  абсолютные `bucket_from/bucket_to`; повторный час DST не объединяется с первым,
-  а 23/25-часовой день не дополняется фиктивным bucket;
+- period — абсолютные instants с границей `[from,to)`. Day/hour отображаются
+  в UTC. Bucket key включает абсолютные `bucket_from/bucket_to`; DST не создаёт
+  дополнительных пользовательских часов;
 - run intervals и concurrency observations режутся пересечением с period и
   bucket. Интервал с observation gap не заполняется автоматически; его вклад
   ограничивается подтверждёнными участками и получает coverage/unknown state.
@@ -325,23 +329,22 @@ UTC там не должен автоматически становиться �
   `(profile_id/revision, model, engine, source, semantic)`. Different source
   выводится отдельными строками или `mixed`, но не одной цифрой без подписи.
 
-Для cost хранится currency per row/rollup. Профили с разными currencies не
-суммируются и не конвертируются без явного FX source; overview возвращает
-разбивку по currency и `multi_currency`, либо cost unavailable. Гипотетический
-пример (не выбор billing): при input=100, cached=20, output=50 и rates
-`input=2/M`, `cached=0.5/M`, `output=8/M`,
-`cost=(80×2 + 20×0.5 + 50×8)/1,000,000 = $0.00057`. Cached — subset input;
-если отдельная cached ставка не утверждена, формула ждёт решения и не считает
-cache бесплатным молча. При known input=100/output=50 и unknown cached cost
-может быть только `partial` по утверждённой cache policy.
+Для cost используется USD и текущая ставка профиля на момент чтения
+статистики; историческая ставка не восстанавливается. Cached — subset input.
+Профиль хранит три ставки: `input_rate`, `cached_input_rate` и `output_rate`.
+Применяется формула `(input-cached)×input_rate + cached×cached_input_rate +
+output×output_rate`. Cached input не прибавляется к input второй раз. При
+неизвестных tokens или rates cost остаётся `partial`/`unavailable`, а не
+превращается в ноль.
 
 Benchmark review contract: interval overlay (`started_at`, `finished_at`,
 scenario) не является фильтром трафика. Proxy benchmark rows получают
 `benchmark_run_id`; direct runner, который обходит proxy, обязан писать один
 logical event на request с profile/run identity, status, token usage (если есть)
-и dedup key `(benchmark_run_id, client_request_id, attempt)`. Только такие rows
-могут попасть в benchmark-filtered request/cost totals; instance counters за
-interval показываются как potentially mixed activity.
+и dedup key `(benchmark_run_id, client_request_id, attempt)`. Такие events нужны
+для provenance и отображения нагрузки; benchmark traffic входит в обычные
+request/cost totals. Instance counters за interval показываются как potentially
+mixed activity.
 
 ## Проверенные, но не подтверждённые runtime факты
 
@@ -360,8 +363,31 @@ proxy usage для input/output/cache/requests и дневной архив пе
 снимков для performance/concurrency. Их следует объединять только по явному
 профилю/модели/engine и периоду, с сохранением source и unknown counts.
 
-Требования о цене, cache billing, timezone календаря, смысле «busy» и включении
-benchmark traffic остаются открытыми. Отдельно нужно согласовать, как TASK-004
-фиксирует served profile при alias/failover и как TASK-005 маркирует интервал
-теста. До этих решений стоимость и процент загрузки нельзя показывать как
-достоверные числа.
+Требования о cache billing уточнены: cached input — подмножество input, а
+отдельная cache-hit ставка применяется только если она явно задана для модели
+или профиля; иначе используется обычная input ставка. Стоимость считается в
+USD по текущим ставкам профиля, а benchmark traffic входит в обычные totals и
+cost с визуальной отметкой интервала.
+
+Официальные тарифные документы подтверждают, что отдельная cache billing у
+провайдеров встречается: DeepSeek публикует cache-hit и cache-miss ставки для
+`deepseek-flash` и `deepseek-v4-pro`, а Alibaba Cloud Model Studio описывает
+отдельную цену cache-hit для Qwen и model-specific исключения. Эти цены нельзя
+зашивать в LLM Studio: в проекте они должны приходить из текущих настроек
+профиля и периодически проверяться пользователем.
+
+Источники проверки:
+
+- [DeepSeek Models & Pricing](https://api-docs.deepseek.com/quick_start/pricing/)
+  — отдельные cache-hit/cache-miss цены и зависимость от peak/off-peak.
+- [DeepSeek Context Caching](https://api-docs.deepseek.com/guides/kv_cache/)
+  — поля `prompt_cache_hit_tokens` и `prompt_cache_miss_tokens` в usage.
+- [Alibaba Cloud Qwen Context Cache](https://www.alibabacloud.com/help/en/model-studio/context-cache)
+  — cache-hit billing и model-specific правила.
+- [Alibaba Cloud Model Pricing](https://docs.modelstudio.console.alibabacloud.com/en/model-studio/model-pricing)
+  — отдельные input/cache-hit/output ставки для поддерживаемых моделей.
+
+Отдельно нужно согласовать, как TASK-004 фиксирует served profile при
+alias/failover и как TASK-005 маркирует интервал теста. При отсутствии истории
+active requests процент загрузки должен иметь coverage/unknown state, а не
+выглядеть как достоверный 0%.

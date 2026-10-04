@@ -201,25 +201,9 @@ class ProcessManager:
                     status_code=409,
                     details={"profile_name": profile.name},
                 )
-            registry_model = self.registry.get(profile.model_name)
-            if any(item.instance.model_name == profile.model_name for item in active) or any(
-                item.model_name == profile.model_name for item in active_external
-            ):
-                raise AppError(
-                    "model_name_conflict",
-                    "Имя модели уже используется активным экземпляром",
-                    status_code=409,
-                    details={"model_name": profile.model_name},
-                )
-            if registry_model is not None and registry_model.instance_id not in {
-                item.instance.id for item in active
-            }:
-                raise AppError(
-                    "model_name_conflict",
-                    "Имя модели уже зарегистрировано активным экземпляром",
-                    status_code=409,
-                    details={"model_name": profile.model_name},
-                )
+            # Several managed profiles may intentionally publish the same
+            # public model name.  TASK-004 groups them into one ordered route;
+            # port conflicts remain a separate safety check below.
             command = substitute_placeholders(
                 profile.command,
                 engine=engine_path,

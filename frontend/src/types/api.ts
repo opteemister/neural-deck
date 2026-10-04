@@ -218,6 +218,33 @@ export interface ModelRegistryData {
   items: ModelRegistryItem[]
 }
 
+export type ProxyRouteKind = 'auto' | 'alias'
+
+export interface ProxyRouteCandidate {
+  profile_id: string
+  profile_name: string | null
+  instance_id: string | null
+  upstream_model: string | null
+  engine_id: string | null
+  port: number | null
+  state: string
+  available: boolean
+  reason: string | null
+}
+
+export interface ProxyRoute {
+  name: string
+  kind: ProxyRouteKind
+  candidate_profile_ids: string[]
+  candidates: ProxyRouteCandidate[]
+  available: boolean
+  diagnostics: string[]
+}
+
+export interface ProxyRoutesData {
+  items: ProxyRoute[]
+}
+
 /** Models exposed by the OpenAI-compatible /v1/models endpoint. */
 export interface OpenAiModel {
   id: string

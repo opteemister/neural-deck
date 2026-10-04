@@ -23,8 +23,10 @@ import httpx
 
 from ..errors import AppError
 from ..process.manager import ProcessManager
+from ..process.registry import RegisteredModel
 from ..schemas.instances import Instance
 from ..token_stats import RequestJournalService
+from .routes import RouteInfo, RouteManager, RuntimeModel
 
 _HOP_BY_HOP = {
     "connection",
@@ -42,6 +44,7 @@ _USAGE_STREAM_OPTION_ENGINES = frozenset({"vllm", "llama.cpp", "sglang", "ninfer
 _SSE_USAGE_BUFFER_LIMIT = 2 * 1024 * 1024
 logger = logging.getLogger(__name__)
 _request_tracking: ContextVar[dict[str, Any] | None] = ContextVar("request_tracking", default=None)
+_route_override: ContextVar[RegisteredModel | None] = ContextVar("route_override", default=None)
 
 
 @dataclass(slots=True)
@@ -57,11 +60,13 @@ class ProxyService:
         process_manager: ProcessManager,
         *,
         journal: RequestJournalService | None = None,
+        route_manager: RouteManager | None = None,
         client_factory: Callable[[], httpx.AsyncClient] | None = None,
         timeout: float = 120.0,
     ) -> None:
         self.process_manager = process_manager
         self.journal = journal
+        self.route_manager = route_manager
         self.client_factory = client_factory
         self.timeout = timeout
         self._models_lock = asyncio.Lock()
@@ -78,6 +83,51 @@ class ProxyService:
         return None
 
     async def models(self) -> dict[str, Any]:
+        if self.route_manager is not None:
+            _, instances, metadata, routes = await self._refresh_route_catalog()
+            route_names = {route.name for route in routes}
+            result: list[dict[str, Any]] = []
+            for route_info in routes:
+                if route_info.diagnostics:
+                    continue
+                candidate = next(iter(route_info.available_candidates()), None)
+                if candidate is None:
+                    continue
+                instance = instances.get(candidate.instance_id or "")
+                if instance is None:
+                    continue
+                result.append(
+                    {
+                        "id": route_info.name,
+                        "object": "model",
+                        "created": int(instance.observed_at.timestamp()),
+                        "owned_by": "llm-studio",
+                        "engine_id": candidate.engine_id,
+                        **candidate.metadata,
+                    }
+                )
+            for registered in sorted(
+                self.process_manager.model_registry().list(), key=lambda item: item.id
+            ):
+                if registered.profile_name is not None or registered.id in route_names:
+                    continue
+                engine_models = metadata.get(registered.instance_id, {})
+                if (
+                    registered.upstream_model is None
+                    or registered.upstream_model not in engine_models
+                ):
+                    continue
+                result.append(
+                    {
+                        "id": registered.id,
+                        "object": "model",
+                        "created": int(registered.observed_at.timestamp()),
+                        "owned_by": "llm-studio",
+                        "engine_id": registered.engine_id,
+                        **engine_models[registered.upstream_model],
+                    }
+                )
+            return {"object": "list", "data": result}
         async with self._models_lock:
             # Observe process identities on every request without probing ready engines.
             observed = await self.process_manager.refresh(probe_models=False)
@@ -122,6 +172,75 @@ class ProxyService:
                     }
                 )
             return {"object": "list", "data": result}
+
+    async def route_data(self) -> dict[str, Any]:
+        if self.route_manager is None:
+            return {"items": []}
+        _, _, _, routes = await self._refresh_route_catalog()
+        return {"items": [route.as_dict() for route in routes]}
+
+    async def create_alias(self, name: str, profile_ids: list[str]) -> dict[str, Any]:
+        if self.route_manager is None:
+            raise AppError("route_unavailable", "Управление маршрутами недоступно", status_code=503)
+        await asyncio.to_thread(self.route_manager.create_alias, name, profile_ids)
+        return await self._route_by_name(name)
+
+    async def delete_alias(self, name: str) -> None:
+        if self.route_manager is None:
+            raise AppError("route_unavailable", "Управление маршрутами недоступно", status_code=503)
+        await asyncio.to_thread(self.route_manager.delete_alias, name)
+
+    async def update_route_order(self, name: str, profile_ids: list[str]) -> dict[str, Any]:
+        if self.route_manager is None:
+            raise AppError("route_unavailable", "Управление маршрутами недоступно", status_code=503)
+        await asyncio.to_thread(self.route_manager.update_order, name, profile_ids)
+        return await self._route_by_name(name)
+
+    async def _route_by_name(self, name: str) -> dict[str, Any]:
+        _, _, _, routes = await self._refresh_route_catalog()
+        for route in routes:
+            if route.name == name:
+                return route.as_dict()
+        raise AppError("route_not_found", "Маршрут не найден", status_code=404)
+
+    async def _refresh_route_catalog(
+        self,
+    ) -> tuple[
+        Any,
+        dict[str, Instance],
+        dict[str, dict[str, dict[str, Any]]],
+        list[RouteInfo],
+    ]:
+        if self.route_manager is None:
+            raise RuntimeError("route manager is not configured")
+        async with self._models_lock:
+            observed = await self.process_manager.refresh(probe_models=False)
+            instances = {
+                item.id: item
+                for item in observed.items
+                if item.state not in {"exited", "error", "stopping"}
+                and (item.source == "managed" or item.identity_verified)
+            }
+            for instance_id in list(self._models_cache):
+                if instance_id not in instances:
+                    del self._models_cache[instance_id]
+            metadata = dict(
+                zip(
+                    instances,
+                    await asyncio.gather(
+                        *(self._cached_model_metadata(instance) for instance in instances.values())
+                    ),
+                    strict=True,
+                )
+            )
+            profiles = await asyncio.to_thread(self.route_manager.profiles)
+            runtime = {
+                instance.profile_name: RuntimeModel(instance, metadata.get(instance.id, {}))
+                for instance in instances.values()
+                if instance.source == "managed" and instance.profile_name
+            }
+            routes = await asyncio.to_thread(self.route_manager.snapshot, profiles, runtime)
+            return observed, instances, metadata, routes
 
     async def _cached_model_metadata(self, instance: Instance) -> dict[str, dict[str, Any]]:
         identity = (
@@ -289,8 +408,61 @@ class ProxyService:
                 error_code="invalid_model",
             )
             raise AppError("invalid_model", "Поле model обязательно", status_code=400)
+        if self.route_manager is not None and _route_override.get() is None:
+            _, _, _, routes = await self._refresh_route_catalog()
+            route_info = next((item for item in routes if item.name == model_name), None)
+            if route_info is not None:
+                if route_info.diagnostics or not route_info.available:
+                    await self._journal_without_target(
+                        request_id=request_id,
+                        route=route,
+                        model_name=model_name,
+                        status_code=503,
+                        started=started,
+                        error_code="route_unavailable",
+                    )
+                    raise AppError(
+                        "route_unavailable",
+                        "Маршрут модели временно недоступен",
+                        status_code=503,
+                        retryable=True,
+                        details={"model": model_name},
+                    )
+                last_error: AppError | None = None
+                for candidate in route_info.available_candidates():
+                    registered = RegisteredModel(
+                        id=route_info.name,
+                        upstream_model=candidate.upstream_model,
+                        instance_id=candidate.instance_id or "",
+                        engine_id=candidate.engine_id or "",
+                        profile_name=candidate.profile_name,
+                        observed_at=datetime.now(UTC),
+                    )
+                    token = _route_override.set(registered)
+                    try:
+                        return await self._forward(
+                            route=route,
+                            payload=payload,
+                            headers=headers,
+                            request_id=request_id,
+                            force_usage=force_usage,
+                        )
+                    except AppError as exc:
+                        if exc.code != "upstream_unavailable" or not exc.retryable:
+                            raise
+                        last_error = exc
+                    finally:
+                        _route_override.reset(token)
+                if last_error is not None:
+                    raise last_error
+                raise AppError(
+                    "route_unavailable",
+                    "Маршрут модели временно недоступен",
+                    status_code=503,
+                    retryable=True,
+                )
         await self.process_manager.refresh()
-        registered = self.process_manager.model_registry().get(model_name)
+        registered = _route_override.get() or self.process_manager.model_registry().get(model_name)
         if registered is None:
             await self._journal_without_target(
                 request_id=request_id,

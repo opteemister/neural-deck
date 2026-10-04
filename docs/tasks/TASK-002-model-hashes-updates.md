@@ -72,8 +72,8 @@
   показывается. Отдельные ручные действия проверки обновлений и пересчёта hash
   не добавляются; обычное сканирование переиспользует сохранённый hash, если
   fingerprint не изменился.
-
 - 2026-10-04 — реализация завершена в отдельном managed worktree
   `task-002-model-hashes`: sidecar schema v2, локальный hash cache, expanded HF
   metadata, фоновые remote checks и UI-состояния добавлены; целевые локальные
-  backend/frontend-проверки прошли. Commit/merge/deploy не выполнялись.
+  backend/frontend-проверки прошли. Коммит `3bdb46d` слит в
+  `codex/version-zero`; deploy не выполнялся.

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
-import { Activity, Boxes, Check, Clock, Copy, Cpu, FlaskConical, LayoutDashboard, Menu, MessageSquare, Settings2, Terminal, X } from 'lucide-react'
+import { Activity, Boxes, Check, Clock, Copy, Cpu, FlaskConical, LayoutDashboard, Menu, MessageSquare, Route, Settings2, Terminal, X } from 'lucide-react'
 import { LogsDrawerProvider, useLogsDrawer } from '@/components/logs-drawer'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
@@ -14,6 +14,7 @@ const navGroups = [
     { to: '/profiles', label: 'Профили', icon: Terminal },
     { to: '/models', label: 'Модели', icon: Boxes },
     { to: '/engines', label: 'Движки', icon: Cpu },
+    { to: '/proxy', label: 'Прокси', icon: Route },
   ] },
   { label: 'Наблюдение', items: [
     { to: '/status', label: 'Статус', icon: Activity },

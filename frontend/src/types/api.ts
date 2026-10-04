@@ -148,6 +148,31 @@ export interface LocalModelArtifact {
     scope?: 'snapshot' | 'selection' | null
     missing_files?: string[]
     unverified_files?: string[]
+    remote_check?: {
+      availability: 'success' | 'unavailable' | 'not_tracked'
+      last_attempted_at?: string | null
+      last_successful_at?: string | null
+      current_revision?: string | null
+      repository_date?: string | null
+      last_error?: string | null
+      stale?: boolean
+    } | null
+    remote_update?: {
+      status: 'up_to_date' | 'update_available' | 'unknown' | 'not_tracked'
+      changed_files: number
+    } | null
+    local_integrity?: {
+      baseline_status: 'matches_downloaded' | 'diverged_from_downloaded' | 'unknown' | 'unavailable'
+      remote_status: 'matches_current_remote' | 'differs_from_current_remote' | 'unknown' | 'unavailable'
+    } | null
+    changed_paths?: Array<{
+      path: string
+      status: 'changed' | 'added' | 'removed' | 'local_divergence'
+      downloaded_file_date?: string | null
+      remote_file_date?: string | null
+    }>
+    downloaded_revision_date?: string | null
+    remote_revision_date?: string | null
   }
   variants: Array<{ path: string; format: string; size_bytes: number | null }>
   auxiliary_files: Array<{ path: string; format: string; size_bytes: number | null }>
@@ -314,6 +339,8 @@ export interface HfFile {
   size: number | null
   etag?: string | null
   sha256?: string | null
+  hash_kind?: 'git_blob' | 'md5' | null
+  file_date?: string | null
 }
 
 export interface HfSearchData {
@@ -323,6 +350,7 @@ export interface HfSearchData {
 export interface HfRepoData {
   repo_id: string
   revision: string
+  revision_date?: string | null
   description?: string | null
   readme?: string | null
   files: HfFile[]

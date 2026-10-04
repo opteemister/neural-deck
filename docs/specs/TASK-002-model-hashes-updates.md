@@ -1,10 +1,11 @@
 # TASK-002 — Хэши файлов моделей и обновления Hugging Face
 
-**Статус: Черновик, не согласовано.**
+**Статус: Реализовано в worktree `task-002-model-hashes`; commit/merge/deploy не выполнялись.**
 
 Документ подготовлен по постановке пользователя и исследованию
-[TASK-002](../research/TASK-002-model-hashes-updates.md). Код, миграции,
-endpoint и UI в рамках этого черновика не изменялись.
+[TASK-002](../research/TASK-002-model-hashes-updates.md). Код, endpoint и UI
+реализованы отдельным изменением в worktree; текущий документ остаётся
+согласованным контрактом.
 
 ## Цель
 
@@ -23,8 +24,11 @@ endpoint и UI в рамках этого черновика не изменял
    fingerprint.
 4. После скачивания периодически сравнивать локальные файлы с соответствующими
    файлами на Hugging Face.
-5. Объявлять update только когда сравнимые hash различаются и есть
-   подтверждение, что remote файл новее.
+5. Объявлять update, когда remote hash отличается от локального и от
+   подтверждённого downloaded baseline. Если отличается только локальный файл,
+   показывать local divergence без уведомления об update. Дату версии
+   показывать отдельно как справочную информацию; отсутствие даты не блокирует
+   уведомление.
 6. Показывать заметный информационный цветной значок или уведомление, дату
    локальной версии и дату доступной remote версии. Если надёжная версия
    доступна, разрешается показать сокращённый revision дополнительно.
@@ -36,8 +40,8 @@ endpoint и UI в рамках этого черновика не изменял
 
 Сохранить существующий `<model-dir>/.llm-studio-hf.yaml` как источник связи
 модели с Hub. Для отдельного файла сохранить соседний sidecar, как описано в
-контрактах Version Zero. Версию формата следует поднять до 2 либо ввести
-явно согласованный additive migration; это открытый вопрос до реализации.
+контрактах Version Zero. Версию формата поднять до `schema_version: 2` через
+additive migration.
 
 Каждый entry `files[]` должен содержать remote metadata и локальный cache
 примерно следующего вида:
@@ -91,27 +95,27 @@ files:
   минимум `lfs_sha256` и `git_blob_sha1`. Hash не следует называть просто
   `sha256`, если источник отдаёт Git blob OID.
 - `downloaded_file_date` — дата commit, затронувшего именно этот baseline path
-  в `downloaded_revision`. Она нужна для сравнения с
-  `remote_snapshot.file_date`; `downloaded_revision_date` остаётся датой commit
-  всего repo и не заменяет per-file дату. Ни одна из них не вычисляется из
-  локального `mtime` или часов завершения download.
+  в `downloaded_revision`. Она нужна для пояснения пользователю, когда была
+  изменена версия файла; это не условие определения обновления.
+  `downloaded_revision_date` остаётся датой commit всего repo и также
+  используется только для отображения с ясной подписью. Обе даты получаются
+  из expanded metadata Hugging Face и не вычисляются из локального `mtime` или
+  часов завершения download.
 - Локально хранить raw SHA-256 для требования повторного использования hash и,
   когда нужен remote Git-файл, Git blob SHA-1. Оба digest можно получить за
   один проход по файлу. Для remote hash без известного алгоритма хранить
   metadata, но не объявлять файл проверенным.
-- Рекомендуемый первоначальный fingerprint — относительный path, `mtime_ns` и
-  размер: он прямо выполняет требование reuse и одинаково трактуется на
-  поддерживаемых файловых системах. Robust-вариант может дополнить его
-  `st_dev`, `st_ino` и `st_ctime_ns` для обнаружения замены с сохранёнными
-  mtime/размером, но может вызвать rehash при неизменном mtime и требует
-  отдельного решения. Поля расширенного варианта остаются optional до этого
-  решения.
+- Fingerprint — относительный path, `mtime_ns` и размер файла. Это простой
+  переносимый вариант для повторного использования hash. Замена файла с
+  сохранёнными одновременно path, `mtime_ns` и размером может остаться
+  незамеченной; дополнительная защита inode/ctime и отдельный force rehash в
+  эту задачу не входят.
 - `hash_calculated_at` — техническая дата вычисления. Она не является датой
   версии Hub и не должна называться «дата модели».
 - `downloaded_revision_date`, `downloaded_file_date` и
-  `remote_snapshot.file_date` сохраняются только после получения от Hub. При
-  отсутствии даты хранится `null`, а не придуманная
-  дата загрузки или текущий момент.
+  `remote_snapshot.file_date` сохраняются только после получения из expanded
+  metadata Hugging Face. Дата загрузки, локальный `mtime` и текущий момент не
+  используются как дата версии.
 
 Сохранение sidecar должно оставаться атомарным. Ошибка записи не должна
 удалять последнюю рабочую metadata; повреждённый или неизвестный формат
@@ -124,23 +128,23 @@ manifest переводит соответствующий update status в `unk
 - `downloaded_revision_date` — дата commit всего immutable repo revision для
   отображения и диагностики;
 - `downloaded_file_date` — дата commit, затронувшего именно этот path в
-  `downloaded_revision`, единственная дата baseline для правила «remote файл
-  новее».
+  `downloaded_revision`, дата baseline-файла для отображения возраста версии.
 
 При миграции старого manifest следует:
 
 1. сохранить известный `revision` как `downloaded_revision`, а известный remote
    hash — как `downloaded_remote_hash` только при подтверждённом алгоритме;
-2. запросить metadata paths на **этой же immutable revision** через cache или
-   `get_paths_info(..., expand=True)` и заполнить `downloaded_file_date`, если
-   Hub её вернул; repo date записать отдельно в `downloaded_revision_date`;
-3. при недоступности metadata оставить `downloaded_file_date: null` и
-   `unknown`, не подставлять repo date, локальный `mtime` или время download;
+2. запросить metadata paths на **этой же immutable revision** через
+   `get_paths_info(..., expand=True)` и заполнить `downloaded_file_date`;
+   repo date записать отдельно в `downloaded_revision_date`;
+3. при ошибке expanded metadata не завершать backfill как успешный и не
+   подставлять локальный `mtime` или время download. Последняя корректная
+   metadata сохраняется, а remote check получает состояние `unavailable`;
 4. не придумывать `tracking_ref` для старого manifest. Без явно сохранённого
    ref автоматическая проверка текущей ветки выключена (`not_tracked`);
 5. для ручной модели без подтверждённой downloaded revision не создавать
    baseline D из локального файла. Локальный L можно вычислить отдельно, но
-   update по одному отличию от remote не разрешён без baseline date.
+   результат без baseline показывать как неизвестное состояние.
 
 Миграция не должна считать текущую remote проверку успешной: после backfill
 `remote_check.last_successful_at` остаётся `null`, пока текущая tracked ref не
@@ -151,8 +155,8 @@ manifest переводит соответствующий update status в `unk
 Для каждого файла при сканировании:
 
 1. Без чтения содержимого получить `stat` и построить fingerprint из
-   относительного пути, `mtime_ns` и размера согласно выбранной политике
-   fingerprint. Ошибка `stat`, отсутствие файла или отказ в чтении атрибутов
+   относительного пути, `mtime_ns` и размера (`mtime_ns + size`). Ошибка
+   `stat`, отсутствие файла или отказ в чтении атрибутов
    дают для этой попытки `local_integrity.baseline_status: unavailable` и
    `local_integrity.remote_status: unavailable`; старый cache entry сохраняется
    и не перезаписывается.
@@ -171,15 +175,11 @@ manifest переводит соответствующий update status в `unk
    проверка защищает от объявления файла проверенным, если он изменился во
    время чтения.
 
-Рекомендуемая начальная политика — `mtime_ns + size`: изменение любого из них
-приводит к пересчёту, а повторный scan с теми же значениями использует cache.
-Robust-политика (`mtime_ns + size + st_dev + st_ino + st_ctime_ns`) лучше
-обнаруживает замену файла с сохранёнными mtime и размером, но может вызвать
-rehash при неизменном mtime; она не утверждается этим черновиком. Если
-файловая система не даёт надёжные признаки, следует использовать выбранные
-доступные поля и иметь явную команду принудительного пересчёта. Нельзя обещать
-обнаружение изменения, если внешний оператор смог подменить все сохранённые
-признаки.
+Изменение `mtime_ns` или размера приводит к пересчёту, а повторное
+сканирование с теми же значениями использует cache. Замена файла с сохранёнными
+`mtime_ns` и размером может быть не обнаружена; это принятое ограничение
+простого варианта. Отдельная команда принудительного пересчёта в задачу не
+входит.
 
 Путь к файлу проверяется относительно model root. Рекомендуемая политика —
 принимать только regular files, открывать их с запретом следования symlink
@@ -191,8 +191,8 @@ rehash при неизменном mtime; она не утверждается �
 
 Обычный `GET /api/v1/models/local` и startup scan могут читать только metadata
 и fingerprint. Явный «Сканировать» должен проверять hash, но для неизменившихся
-файлов также использовать cache. Полный force rehash — отдельное действие или
-режим для диагностики, если он понадобится.
+файлов также использовать cache. Отдельные ручные действия проверки remote
+обновлений или полного пересчёта hash не добавляются.
 
 ### 2.1. Конкурентная запись sidecar
 
@@ -238,29 +238,31 @@ check имеет `not_tracked`/`unknown`.
    Изменившийся fingerprint требует локального hash check, а race/ошибка дают
    обоим local integrity status значение `unknown`/`unavailable`, не
    `matches_current_remote` или `matches_downloaded`.
-4. Если revision отличается, получить metadata только для tracked paths.
-   Для даты файла использовать `list_repo_tree(..., expand=True)` или
-   `get_paths_info(..., expand=True)` с current revision. Для hash использовать
-   LFS SHA-256 или Git blob OID с сохранением `remote_snapshot.hash_kind`.
+4. При изменении revision получить expanded metadata только для tracked paths.
+   Дата каждого файла берётся из `last_commit.date` через
+   `list_repo_tree(..., expand=True)` или `get_paths_info(..., expand=True)` с
+   current revision. Для hash использовать LFS SHA-256 или Git blob OID с
+   сохранением `remote_snapshot.hash_kind`.
 5. Для каждого tracked path вычислить три значения: baseline `D` из
    `downloaded_remote_hash`, фактический локальный `L` и текущий remote `R` из
-   `remote_snapshot.hash`. Сравнение update делать по `R` против `L`, а дату
-   новизны брать из `remote_snapshot.file_date` против
-   `downloaded_file_date`. `downloaded_revision_date` (дата repo commit) и
-   локальный `mtime` для этого сравнения не подходят.
+   `remote_snapshot.hash`. Сравнение update делать по `R` против `L`.
+   `remote_snapshot.file_date` и `downloaded_file_date` показывать как возраст
+   версии; они не участвуют в решении о наличии update.
+   `downloaded_revision_date` и локальный `mtime` также не являются hash или
+   заменой даты файла.
 6. Сопоставить записи строго по relative path и применить scope/filter:
    `selection` сравнивает только сохранённые paths; добавленные в repo файлы
    за пределами selection игнорируются. `snapshot` учитывает исходный набор
    tracked paths, а появление/удаление компонента помечает структурное или
    частичное изменение без выдуманного hash.
 7. Сначала проверить наличие сравнимого `R`: отсутствующий remote hash или
-   несовместимый алгоритм дают `unknown`/`changed_without_date` и не считаются
-   отличием. Затем при `L == R` сразу выставить `remote_update: up_to_date`;
-   дата не нужна, даже если `D` отличается или дата remote неизвестна. Только
-   при `L != R` требуются сравнимые `remote_snapshot.file_date` и
-   `downloaded_file_date`, причём `remote_snapshot.file_date` должна быть
-   новее; при отсутствии/равенстве/старшинстве даты используется нейтральный
-   status (`changed_without_date` или `remote_older`).
+   несовместимый алгоритм дают `unknown` и не позволяют объявить update. При
+   `L == R` выставить `remote_update: up_to_date`. При `D == R != L` также
+   оставить `up_to_date`, но показать local divergence. Во всех случаях
+   `R != D` и `R != L` выставить `remote_update: update_available` независимо
+   от наличия даты; в подробностях показать дату commit файла. При отсутствии
+   `D` оставить `unknown`, поскольку нельзя подтвердить, что изменение
+   относится к remote версии после скачивания.
 8. Изменение только README, служебного файла или ancillary component не
    объявляется обновлением весов, если path не входит в согласованный
    `weights` filter. Если такой path входит в manifest, его изменение всё равно
@@ -273,12 +275,10 @@ check имеет `not_tracked`/`unknown`.
    локальный `downloaded` в `incomplete` и не доказывает отсутствие update.
 
 Обычная проверка должна сначала сравнивать revision, чтобы не запрашивать
-дорогие expanded данные без необходимости. Результаты можно кэшировать на
-интервал, но ручная «Проверить обновления» должна уметь обойти свежий cache.
-Remote check не обязан перечитывать все байты: stat tracked paths + reuse
-стабильных local hashes достаточны для обычного цикла. Полный обход и force
-rehash остаются отдельным действием. При rate limit нужен backoff и
-дедупликация параллельных запросов.
+дорогие expanded данные без необходимости. Remote check не обязан перечитывать
+все байты: stat tracked paths + reuse стабильных local hashes достаточны для
+обычного цикла. При rate limit нужен backoff и дедупликация параллельных
+запросов.
 
 #### Таблица решения D/L/R
 
@@ -289,33 +289,26 @@ rehash остаются отдельным действием. При rate limit
 | Случай | baseline status | remote status | `remote_update` | Интерпретация |
 | --- | --- | --- | --- | --- |
 | `D = L = R` | `matches_downloaded` | `matches_current_remote` | `up_to_date` | Локальный файл цел и remote update нет |
-| `D = L != R`, `R` новее `downloaded_file_date` | `matches_downloaded` | `differs_from_current_remote` | `update_available` | Доступен новый remote файл |
+| `D = L != R` | `matches_downloaded` | `differs_from_current_remote` | `update_available` | Remote hash изменился; дата показывается отдельно и может быть неизвестной |
 | `D != L = R` | `diverged_from_downloaded` | `matches_current_remote` | `up_to_date` | Локально уже лежит текущий remote digest; update не показывать |
 | `D = R != L` | `diverged_from_downloaded` | `differs_from_current_remote` | `up_to_date` | Remote прежний, локальный файл повреждён или заменён |
-| Все различны, `R` новее baseline | `diverged_from_downloaded` | `differs_from_current_remote` | `update_available` | Доступен update и одновременно есть local divergence |
-| Все различны, `R` старше baseline | `diverged_from_downloaded` | `differs_from_current_remote` | `remote_older` | Remote не доказывает update |
-| `L = R`, дата неизвестна | по `D/L`, если они проверены | `matches_current_remote` | `up_to_date` | Равенство hash достаточно, дата не нужна |
+| Все различны | `diverged_from_downloaded` | `differs_from_current_remote` | `update_available` | Remote hash изменился и одновременно есть local divergence |
 | `L != R`, `R`/hash неизвестен | по `D/L`, если они проверены | `unknown` | `unknown` | Update не объявлять |
-| `L != R`, дата неизвестна | по `D/L`, если они проверены | `differs_from_current_remote` | `changed_without_date` | Update не объявлять |
+| `L != R`, `D` отсутствует | `unknown` | `differs_from_current_remote` | `unknown` | Нет подтверждённого downloaded baseline |
 | Remote попытка недоступна | прежний status | прежний status, `stale: true` | прежний status | `availability: unavailable`, snapshot/status не затирать |
 
 В частности, `L = R` всегда запрещает `update_available`, даже если
-`D != L` и remote revision новее baseline: это ручное локальное обновление до
-текущего remote состояния, а не доступное обновление. Если у path нет `D`,
-`downloaded_file_date` или сравнимого hash, отсутствие baseline не заменяется
-локальным mtime; при `L != R` остаётся нейтральный `unknown`/
-`changed_without_date`.
+`D != L`: локальный файл уже соответствует текущему remote состоянию. Если у
+path нет `D`, отсутствие baseline не заменяется локальным mtime; при `L != R`
+остаётся нейтральный `unknown`. Отсутствие даты само по себе не меняет
+решение по update; дата показывается отдельно как дата commit файла.
 
-Короткие aggregate-примеры: для `selection` из двух weight paths изменение
+Короткие aggregate-примеры: для `selection` из двух tracked paths изменение
 README и добавление третьего кванта вне selection игнорируются; если один из
-двух tracked weights имеет `L != R` и более новую `remote_snapshot.file_date`,
-модель получает `update_available` для этого path. Для `snapshot` добавленный
-shard без baseline `D` получает path-level `structural_change`/
-`changed_without_date`, а удалённый tracked shard — path-level `remote_missing`;
-ни один из этих случаев без
-сравнимых hash не получает `update_available`. Изменение tracked config или
-tokenizer показывается отдельной ролью и не меняет aggregate `weights` badge,
-если `tracked_filter: weights`.
+двух tracked paths имеет подтверждённое отличие remote hash от локального,
+модель получает `update_available` и список изменившихся paths. Для `snapshot`
+добавленный или удалённый tracked shard показывается как структурное/частичное
+изменение; изменение tracked config или tokenizer также перечисляется отдельно.
 
 ### 4. Периодичность и API
 
@@ -338,15 +331,16 @@ tokenizer показывается отдельной ролью и не мен�
 POST /api/v1/models/local/check-updates
 ```
 
-Ответ содержит локальные модели и update state, включая `attempted_at`,
-`successful_at`, текущую revision, даты и changed paths. `attempted_at` меняется
-на каждой попытке; `successful_at` меняется только после полного успешного
+Ответ содержит локальные модели и update state, включая
+`last_attempted_at`, `last_successful_at`, текущую revision, даты и changed
+paths. `last_attempted_at` меняется на каждой попытке;
+`last_successful_at` меняется только после полного успешного
 получения и атомарного сохранения remote snapshot. При ошибке ответ может
 содержать `availability: unavailable` и `stale: true`, но прежние успешные
-hash/date/status сохраняются. Название, envelope и возможность фильтровать
-`model_id` требуют согласования. `POST /api/v1/models/local/scan` должен
-  сохранить текущую семантику локального сканирования с reuse cache; проверка
-  сети может вызываться отдельно планировщиком и ручной кнопкой.
+hash/date/status сохраняются. Endpoint используется планировщиком; отдельная
+кнопка ручной проверки в UI не добавляется. `POST
+/api/v1/models/local/scan` сохраняет текущую семантику локального
+сканирования с reuse cache.
 
 Состояния должны быть разделены и ортогональны `hf_match.status`:
 
@@ -359,8 +353,7 @@ success | unavailable
 - `remote_update.status` (результат последнего успешного snapshot):
 
 ```text
-up_to_date | update_available | remote_older | changed_without_date |
-unknown | not_tracked
+up_to_date | update_available | unknown | not_tracked
 ```
 
 - `local_integrity.baseline_status` (сравнение фактического `L` с baseline `D`):
@@ -393,7 +386,6 @@ matches_current_remote | differs_from_current_remote | unknown | unavailable
 На карточке локальной модели показать компактный цветной информационный badge:
 
 - `Доступно обновление` — заметный цвет и количество изменившихся файлов;
-- `Изменения на HF, дата не подтверждена` — нейтральное предупреждение;
 - `Проверка HF недоступна` — stale/unknown с временем последней успешной
   проверки;
 - отсутствие badge для `remote_update: up_to_date` и `not_tracked`, если это не
@@ -404,17 +396,16 @@ matches_current_remote | differs_from_current_remote | unknown | unavailable
 
 - `Локальная версия HF: {short downloaded_revision} · {downloaded_revision_date}`;
 - `Доступная версия HF: {short current_revision} · {remote_snapshot.file_date}`;
-- `Проверка: попытка {attempted_at} · успех {successful_at}` с пометкой
+- `Проверка: попытка {last_attempted_at} · успех {last_successful_at}` с пометкой
   `данные могут быть устаревшими`, если последняя попытка неуспешна;
-- для диагностики `Локальный файл изменён: {local_mtime}` и `Hash рассчитан:
-  {hash_calculated_at}`;
+- для диагностики `Локальный файл изменён: {local_mtime}` и `Локальная
+  проверка файла: {hash_calculated_at}`;
 - список конкретных changed/missing/added paths и их component/group.
 
-Дата должна иметь подпись происхождения. Если Hub дал только дату последнего
-commit репозитория, показывать её как дату репозитория, не как дату конкретного
-файла. Если `L != R` и per-file дата отсутствует, показывать «дата неизвестна»
-и не объявлять обновление по одному отличию hash; при `L == R` равенство hash
-по-прежнему даёт `up_to_date` без даты.
+Дата должна иметь подпись происхождения. Для файла показывается
+`last_commit.date`; дата `ModelInfo.last_modified` показывается отдельно как
+дата последнего commit репозитория и не подписывается как дата файла. При
+`L == R` равенство hash даёт `up_to_date`.
 
 Для `scope: selection` проверять только сохранённые выбранные paths; добавление
 другого кванта в тот же repo не должно внезапно пометить выбранную локальную
@@ -437,7 +428,7 @@ commit репозитория, показывать её как дату реп�
    повтора для 429/5xx с `Retry-After`, без повторов для 401/403/404 и не более
    одного одновременного запроса на `repo_id`/`tracking_ref`. Это ограничивает
    нагрузку Hub и предотвращает дублирование одинаковой работы.
-4. Разделить `attempted_at` и `successful_at`; remote snapshot, baseline и
+4. Разделить `last_attempted_at` и `last_successful_at`; remote snapshot, baseline и
    последний успешный status заменять только после полностью успешной проверки.
    Ошибку показывать через `availability: unavailable` и `stale`, сохраняя
    последнюю успешную оценку.
@@ -450,25 +441,28 @@ commit репозитория, показывать её как дату реп�
    remote snapshot. Добавление новой auth-политики для private/gated repo не
    входит в задачу, но существующие token paths нельзя удалять или обходить.
 7. Для старых manifest делать backfill `downloaded_file_date` только по
-   immutable `downloaded_revision`; при недоступности Hub оставлять `null` и
-   neutral status. Не использовать local mtime, дату запуска или repo date как
-   подмену per-file baseline.
+   immutable `downloaded_revision` через expanded file metadata. При ошибке
+   backfill не считается успешным, а local mtime и дата запуска не
+   используются как дата версии. Repo date показывать только с подписью
+   «дата последнего commit репозитория».
 
-## Оставшиеся вопросы, требующие решения продукта
+## Согласованные продуктовые решения
 
-1. Выбрать начальную политику fingerprint: рекомендуемые переносимые
-   `mtime_ns + size` или robust `+ device/inode/ctime`, который лучше ловит
-   replacement, но может вызвать rehash при неизменном mtime.
-2. Подтвердить, что отсутствие per-file `last_commit.date` всегда оставляет
-   `changed_without_date`/`unknown`, даже если repo-level date новее. Это самый
-   честный вариант для требования «remote файл новее».
-3. Согласовать aggregate badge для `snapshot`, когда добавлен/удалён shard или
-   изменён ancillary/config path без сравнимого D/L/R; предлагаем показывать
-   `структурное изменение` отдельно и не называть его `update_available`.
-4. Уточнить цвет, место badge и необходимость видимого `remote_hash`; поля
-   дат и stale-признак остаются обязательными для диагностики.
-5. Подтвердить отдельное действие `force rehash`; оно полезно для случаев, где
-   filesystem сохранила все fingerprint признаки при изменении содержимого.
+1. Для повторного использования hash используется простой fingerprint
+   `mtime_ns + size`. Более сложная проверка replacement и force rehash не
+   добавляются.
+2. Дата Hugging Face берётся из `last_commit.date` expanded metadata каждого
+   tracked файла и отображает возраст remote версии. Отличающийся сопоставимый
+   hash является достаточным основанием для уведомления; дата не участвует в
+   этом решении.
+3. Для `selection` проверяются только сохранённые paths. Для `snapshot`
+   изменившиеся, добавленные и удалённые tracked paths показываются как
+   частичное/структурное изменение с перечнем файлов.
+4. На карточке модели показывается цветной badge, в деталях — даты, revision,
+   stale-состояние и список paths. Значение hash пользователю не показывается.
+5. Отдельные ручные действия «Проверить обновления» и «Пересчитать hash» не
+   добавляются. Пользовательское «Сканировать» остаётся обычным сканированием
+   с reuse hash по неизменившемуся fingerprint.
 
 ## Критерии приёмки для будущей реализации
 
@@ -476,10 +470,9 @@ commit репозитория, показывать её как дату реп�
   проверяемого локального файла только после стабильной проверки path/FD до и
   после чтения; повторный scan с тем же выбранным fingerprint не читает байты
   этого файла.
-- Изменение `mtime_ns` или размера приводит к пересчёту. Если будет выбран
-  robust fingerprint, замена с сохранёнными mtime/размером и новым
-  inode/device/ctime также приводит к пересчёту; при простой политике такая
-  гарантия не заявляется.
+- Изменение `mtime_ns` или размера приводит к пересчёту. При сохранении обоих
+  признаков замена файла может быть не обнаружена — это принятое ограничение
+  простого fingerprint.
 - Ошибка `stat`/чтения, исчезновение файла или изменение fingerprint во время
   чтения не перезаписывают старый cache entry и дают `unavailable`/`unknown`;
   digest после race не используется.
@@ -497,25 +490,25 @@ commit репозитория, показывать её как дату реп�
   необходимости expanded file metadata.
 - При совпавшей remote revision local check переиспользует стабильные hashes и
   не перечитывает байты. `L = R` не даёт update даже при `D != L`; `D = R != L`
-  даёт local divergence без remote update. `D = L != R` с более новой
-  per-file date даёт `update_available`; все различия и remote older/unknown
-  дают соответственно update с local divergence либо neutral status.
+  даёт local divergence без remote update. `D = L != R` даёт
+  `update_available` независимо от наличия даты; все даты показываются только
+  как справочная информация.
 - Недоступность Hub не выдаётся за отсутствие обновлений и не меняет локальную
-  полноту; `attempted_at` обновляется, `successful_at` и последний успешный
+  полноту; `last_attempted_at` обновляется, `last_successful_at` и последний успешный
   snapshot/status сохраняются, а ответ содержит `availability: unavailable` и
   `stale: true`.
-- Миграция не подставляет local mtime или repo-level date в
-  `downloaded_file_date`; старый manifest без ref остаётся `not_tracked`.
+- Миграция не подставляет local mtime или дату запуска в `downloaded_file_date`;
+  repo-level date хранится и показывается с явной подписью происхождения.
 - Для многокомпонентной модели видны изменившиеся paths и частичный статус;
   selection не сравнивается с незагруженными файлами repo, а added/removed
-  snapshot components и README/ancillary paths не получают `update_available`
-  без сравнимых D/L/R.
+  snapshot components перечисляются как структурное изменение.
 - Existing HF credential/token paths продолжают использоваться; secrets не
   попадают в sidecar, remote snapshot или scheduler logs.
 - UI показывает локальную и remote даты с ясными подписями и заметный badge,
   а автоматическая загрузка или замена файлов отсутствует.
 - Тесты покрывают reuse cache, replacement с сохранённой датой, Git/LFS hash,
-  равные hash, remote newer/unknown date, недоступный Hub и частичный набор.
+  равные hash, remote difference и получение expanded file date, недоступный
+  Hub и частичный набор.
 
 ## Границы
 
@@ -527,5 +520,6 @@ private/gated repos. Существующие HF credential/token paths долж
 профилей запуска, удалённое развёртывание и серверная диагностика. Эти решения
 могут быть отдельными задачами после утверждения настоящей спецификации.
 
-До ответа на открытые вопросы документ остаётся черновиком и реализация не
-начинается.
+Реализация может начинаться отдельным этапом после проверки согласованной
+спецификации; настоящим документом скачивание или автоматическая замена файлов
+не разрешаются.

@@ -7,11 +7,12 @@ import { ModelsPage } from '@/pages/models'
 
 afterEach(() => vi.unstubAllGlobals())
 
-it('requests active downloads and removes finished tasks across page reloads', async () => {
+it('keeps finished downloads visible until the user closes the panel', async () => {
   let active = true
   const task = { id: 'download_1', kind: 'download', state: 'running', label: 'Test download', target_id: 'org/model', created_at: '2026-10-01T00:00:00Z', started_at: null, finished_at: null, progress: null, error: null }
   const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) => {
     const url = String(input)
+    if (url === '/api/v1/operations/download_1') return Promise.resolve(new Response(JSON.stringify({ data: { ...task, state: 'succeeded', finished_at: '2026-10-01T00:01:00Z', progress: { files_total: 1, files_completed: 1, bytes_total: 100, bytes_completed: 100, current_file: null } } })))
     const items = url === '/api/v1/operations?kind=download&active=true' && active ? [task] : []
     return Promise.resolve(new Response(JSON.stringify({ data: { items } })))
   })
@@ -23,9 +24,11 @@ it('requests active downloads and removes finished tasks across page reloads', a
   }
   const first = mount()
   expect(await screen.findByText('Test download', { exact: false })).toBeInTheDocument()
-  fireEvent.click(screen.getByRole('button', { name: 'Свернуть загрузки' }))
   active = false
   await first.client.invalidateQueries({ queryKey: queryKeys.downloads })
+  await waitFor(() => expect(screen.getByText('Test download', { exact: false })).toBeInTheDocument())
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Закрыть блок загрузок' })).toBeInTheDocument())
+  fireEvent.click(screen.getByRole('button', { name: 'Закрыть блок загрузок' }))
   await waitFor(() => expect(screen.queryByText('Загрузки')).not.toBeInTheDocument())
   expect(fetchMock).toHaveBeenCalledWith('/api/v1/operations?kind=download&active=true', expect.anything())
   first.view.unmount()

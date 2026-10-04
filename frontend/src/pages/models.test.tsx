@@ -40,4 +40,21 @@ describe('Models workflow', () => {
     expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith('/api/v1/models'))).toBe(false)
     expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith('/api/v1/models/local'))).toBe(true)
   })
+
+  it('shows remote update state and dates without rendering hash values', async () => {
+    const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/models/local')) return Promise.resolve(new Response(envelope({ items: [{ id: 'local_1', path: '/models/qwen', kind: 'directory', format: 'transformers', compatibility: 'vllm', size_bytes: 100, hf_match: { status: 'downloaded', repo_id: 'org/qwen', scope: 'snapshot', downloaded_revision_date: '2026-10-01T12:00:00Z', remote_revision_date: '2026-10-03T12:00:00Z', remote_check: { availability: 'success', last_attempted_at: '2026-10-04T10:00:00Z', last_successful_at: '2026-10-04T10:00:01Z' }, remote_update: { status: 'update_available', changed_files: 1 }, changed_paths: [{ path: 'weights.gguf', status: 'changed', remote_file_date: '2026-10-03T11:00:00Z' }] } }] }), { status: 200 }))
+      return Promise.resolve(new Response(envelope({ items: [] }), { status: 200 }))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    renderPage()
+
+    expect(await screen.findByText('Доступно обновление · 1 файлов')).toBeInTheDocument()
+    const hfLink = screen.getByRole('link', { name: 'Открыть модель на Hugging Face' })
+    expect(hfLink.nextElementSibling).toHaveTextContent('Доступно обновление · 1 файлов')
+    expect(screen.queryByText('Сведения об обновлении')).not.toBeInTheDocument()
+    expect(screen.queryByText('Проверка HF недоступна')).not.toBeInTheDocument()
+    expect(screen.queryByText(/sha256|etag|hash/i)).not.toBeInTheDocument()
+  })
 })

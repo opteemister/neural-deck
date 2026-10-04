@@ -12,6 +12,45 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from ..operations import ensure_safe_relative_path
 
 
+class RemoteCheckState(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    availability: Literal["success", "unavailable", "not_tracked"]
+    last_attempted_at: str | None = None
+    last_successful_at: str | None = None
+    current_revision: str | None = None
+    repository_date: str | None = None
+    last_error: str | None = None
+    stale: bool = False
+
+
+class RemoteUpdateState(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["up_to_date", "update_available", "unknown", "not_tracked"]
+    changed_files: int = Field(default=0, ge=0)
+
+
+class LocalIntegrityState(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    baseline_status: Literal[
+        "matches_downloaded", "diverged_from_downloaded", "unknown", "unavailable"
+    ] = "unknown"
+    remote_status: Literal[
+        "matches_current_remote", "differs_from_current_remote", "unknown", "unavailable"
+    ] = "unknown"
+
+
+class ChangedPath(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str
+    status: Literal["changed", "added", "removed", "local_divergence"]
+    downloaded_file_date: str | None = None
+    remote_file_date: str | None = None
+
+
 class HfMatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -21,6 +60,12 @@ class HfMatch(BaseModel):
     scope: Literal["snapshot", "selection"] | None = None
     missing_files: list[str] = Field(default_factory=list)
     unverified_files: list[str] = Field(default_factory=list)
+    remote_check: RemoteCheckState | None = None
+    remote_update: RemoteUpdateState | None = None
+    local_integrity: LocalIntegrityState | None = None
+    changed_paths: list[ChangedPath] = Field(default_factory=list)
+    downloaded_revision_date: str | None = None
+    remote_revision_date: str | None = None
 
 
 class LocalModelFile(BaseModel):
@@ -118,7 +163,8 @@ class HfFile(BaseModel):
     # A regular Hub file exposes a Git blob id rather than a content hash.
     # Keep that distinction in manifests so an explicit sync can verify it
     # with Git's blob hashing rules without treating an LFS oid as SHA-1 data.
-    hash_kind: Literal["git_blob"] | None = None
+    hash_kind: Literal["git_blob", "md5"] | None = None
+    file_date: str | None = None
 
     @field_validator("path")
     @classmethod
@@ -131,6 +177,7 @@ class HfRepoData(BaseModel):
 
     repo_id: str
     revision: str
+    revision_date: str | None = None
     description: str | None = None
     readme: str | None = None
     files: list[HfFile]
@@ -164,14 +211,18 @@ class DownloadRequest(BaseModel):
 
 __all__ = [
     "DownloadRequest",
+    "ChangedPath",
     "HfFile",
     "HfMatch",
     "HfRepoData",
     "HfSearchData",
+    "LocalIntegrityState",
     "LocalModel",
     "LocalModelFile",
     "LocalModelGroup",
     "LocalModelList",
     "ModelRegistryData",
     "ModelRegistryItem",
+    "RemoteCheckState",
+    "RemoteUpdateState",
 ]

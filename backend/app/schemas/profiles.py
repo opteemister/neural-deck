@@ -68,6 +68,9 @@ class ProfileData(BaseModel):
     environment: dict[StrictStr, StrictStr] = Field(default_factory=dict)
     autostart: StrictBool = False
     enable_metrics: StrictBool = True
+    input_price_usd_per_million_tokens: float | None = Field(default=None, ge=0)
+    output_price_usd_per_million_tokens: float | None = Field(default=None, ge=0)
+    cached_input_price_usd_per_million_tokens: float | None = Field(default=None, ge=0)
 
     @model_validator(mode="after")
     def draft_placeholder_has_path(self) -> ProfileData:

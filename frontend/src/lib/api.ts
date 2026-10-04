@@ -25,6 +25,7 @@ import type {
   ProxyRoutesData,
   SettingsData,
   StatusData,
+  StatisticsData,
   SystemData,
   TokenStatsData,
 } from '@/types/api'
@@ -291,6 +292,12 @@ export const api = {
     const suffix = query.toString() ? `?${query.toString()}` : ''
     return request<TokenStatsData>(`/api/v1/token-stats${suffix}`)
   },
+  getStatistics: (filters: { period?: 'week' | 'month' | 'quarter' | 'half_year' | 'year'; model_name?: string; profile_name?: string } = {}) => {
+    const query = new URLSearchParams({ period: filters.period ?? 'month' })
+    if (filters.model_name) query.set('model_name', filters.model_name)
+    if (filters.profile_name) query.set('profile_name', filters.profile_name)
+    return request<StatisticsData>(`/api/v1/statistics?${query}`)
+  },
   getOpenAiModels: async (): Promise<OpenAiModelsData> => {
     const response = await openAiRequest<{ data: OpenAiModel[] }>('/models')
     return { items: response.data }
@@ -313,6 +320,7 @@ export const queryKeys = {
   proxyRoutes: ['proxy-routes'] as const,
   instances: ['instances'] as const,
   tokens: ['token-stats'] as const,
+  statistics: (filters: { period?: 'week' | 'month' | 'quarter' | 'half_year' | 'year'; model_name?: string; profile_name?: string } = {}) => ['statistics', filters] as const,
   openAiModels: ['openai-models'] as const,
   logs: ['logs'] as const,
   log: (id: string) => ['log', id] as const,

@@ -132,6 +132,18 @@ class RequestJournalService:
             await session.commit()
             return row.id
 
+    async def records(self) -> list[RequestJournalRecord]:
+        """Return journal rows for read-only aggregate/reporting services."""
+
+        async with self._session_factory() as session:
+            return list(
+                (
+                    await session.scalars(
+                        select(RequestJournalRecord).order_by(RequestJournalRecord.created_at)
+                    )
+                ).all()
+            )
+
     async def interrupt_pending(self) -> None:
         from sqlalchemy import update
 

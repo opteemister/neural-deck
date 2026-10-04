@@ -12,7 +12,7 @@ const series = [
 ] as const
 const format = (number: number | null) => number === null ? '—' : number.toLocaleString('ru-RU', { maximumFractionDigits: 0 })
 const compact = new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 })
-const time = (at?: string) => at ? new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''
+const time = (at?: string) => at ? new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' }) : ''
 
 export function TokenHistoryChart({ instance }: { instance?: Instance }) {
   const query = useQuery({ queryKey: ['token-history', instance?.profile_name ?? instance?.id ?? 'all'],

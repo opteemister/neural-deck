@@ -21,6 +21,7 @@ from ..profiles.service import ProfileService
 if TYPE_CHECKING:
     from ..metrics.service import MetricsService
     from ..proxy.service import ProxyService
+    from ..statistics import StatisticsService
     from ..token_stats import RequestJournalService
 
 
@@ -78,3 +79,7 @@ def get_proxy_service(request: Request) -> ProxyService:
 
 def get_metrics_service(request: Request) -> MetricsService:
     return get_runtime(request).metrics_service
+
+
+def get_statistics_service(request: Request) -> StatisticsService:
+    return get_runtime(request).statistics_service

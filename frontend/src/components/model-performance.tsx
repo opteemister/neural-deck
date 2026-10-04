@@ -54,7 +54,7 @@ export function ModelPerformance({ instance, data }: { instance?: Instance; data
   const measurementNote = (name: string) => {
     const item = items.get(name)
     if (!item || (name !== 'ttft_mean_ms' && numeric(currentItems.get(name)) !== null)) return ''
-    return `${currentItems.get(name)?.state === 'stale' ? 'Данные устарели · ' : ''}Последнее измерение: ${new Date(item.observed_at).toLocaleTimeString()}`
+    return `${currentItems.get(name)?.state === 'stale' ? 'Данные устарели · ' : ''}Последнее измерение: ${new Date(item.observed_at).toLocaleTimeString([], { timeZone: 'UTC' })} UTC`
   }
   useEffect(() => {
     // Retention affects only scalar display. Charts keep the original samples.

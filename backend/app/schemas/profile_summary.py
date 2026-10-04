@@ -40,6 +40,7 @@ class ProfileMemorySummary(BaseModel):
 
     disk_bytes: SummaryMetric
     vram_current_bytes: SummaryMetric
+    vram_last_bytes: SummaryMetric
     vram_avg_bytes: SummaryMetric
     vram_peak_bytes: SummaryMetric
 

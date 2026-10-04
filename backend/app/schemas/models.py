@@ -117,6 +117,8 @@ class LocalModelList(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     items: list[LocalModel]
+    scanning: bool = False
+    scan_error: str | None = None
 
 
 class ModelRegistryItem(BaseModel):

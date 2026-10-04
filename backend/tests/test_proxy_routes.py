@@ -99,10 +99,23 @@ def test_auto_routes_group_profiles_and_report_runtime_availability(tmp_path: Pa
 
     public = next(route for route in routes if route.name == "public-model")
     assert public.kind == "auto"
-    assert public.candidate_profile_ids == ("first", "second")
+    assert public.candidate_profile_ids == ("first",)
     assert public.available is True
     assert public.candidates[0].upstream_model == "upstream-first"
-    assert public.candidates[1].reason == "profile_not_running"
+
+    manager.update_order("public-model", ["second", "first"])
+    ordered = next(
+        route
+        for route in manager.snapshot(
+            [first, second, other],
+            {
+                "first": RuntimeModel(instance("first", 8000), {"upstream-first": {}}),
+                "second": RuntimeModel(instance("second", 8001), {"upstream-second": {}}),
+            },
+        )
+        if route.name == "public-model"
+    )
+    assert ordered.candidate_profile_ids == ("second", "first")
 
 
 def test_alias_order_is_persisted_and_collisions_are_rejected(tmp_path: Path) -> None:
@@ -120,6 +133,8 @@ def test_alias_order_is_persisted_and_collisions_are_rejected(tmp_path: Path) ->
         manager.create_alias("public-model", ["first"])
     with pytest.raises(AppError, match="ASCII"):
         manager.create_alias("русский", ["first"])
+    with pytest.raises(AppError, match="хотя бы один"):
+        manager.create_alias("empty", [])
 
 
 @pytest.mark.asyncio

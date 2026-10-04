@@ -71,6 +71,12 @@ async def test_profile_summary_uses_disk_size_metrics_limit_and_default_port():
     )
 
     class Storage:
+        async def last_vram(self, profile_name):
+            return 3_000_000_000.0 if profile_name == "second" else None
+
+        async def all_time_active_requests_max(self, profile_name):
+            return 8.0 if profile_name == "first" else None
+
         async def aggregates(self, *, profile_name, **_kwargs):
             return {
                 "first": {
@@ -125,7 +131,7 @@ async def test_profile_summary_uses_disk_size_metrics_limit_and_default_port():
     assert first_summary.performance.prefill_tps.value == 10
     assert first_summary.memory.disk_bytes.value == 4_000_000_000
     assert first_summary.memory.vram_current_bytes.value == 1_500_000_000
-    assert first_summary.concurrency.limit.value == 4
+    assert first_summary.concurrency.limit.value == 8
     assert first_summary.concurrency.optimal.state == "not_measured"
     assert first_summary.endpoint.port == 9100
     assert first_summary.endpoint.conflict is False
@@ -136,4 +142,5 @@ async def test_profile_summary_uses_disk_size_metrics_limit_and_default_port():
     assert third_summary.endpoint.conflict_with == ["second"]
     assert second_summary.memory.disk_bytes.state == "unavailable"
     assert second_summary.memory.vram_current_bytes.state == "unavailable"
+    assert second_summary.memory.vram_last_bytes.value == 3_000_000_000
     assert result.period.model_dump(mode="json", by_alias=True)["from"] == "2026-10-04T00:00:00Z"

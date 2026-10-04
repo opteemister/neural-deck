@@ -378,7 +378,11 @@ async def operation_detail(
 async def local_models(
     request: Request, catalogue: ModelCatalogue = Depends(get_model_catalogue)
 ) -> JSONResponse:
-    return success(request, {"items": await asyncio.to_thread(catalogue.items)})
+    return success(request, {
+        "items": await asyncio.to_thread(catalogue.items),
+        "scanning": catalogue.scanning,
+        "scan_error": catalogue.scan_error,
+    })
 
 
 @router.delete("/models/local/{model_id}", response_model=SuccessEnvelope[LocalModelList])
@@ -450,7 +454,11 @@ async def scan_local_models(
     # model files.
     return success(
         request,
-        {"items": await asyncio.to_thread(catalogue.scan, verify_hashes=True)},
+        {
+            "items": await asyncio.to_thread(catalogue.scan, verify_hashes=True),
+            "scanning": catalogue.scanning,
+            "scan_error": catalogue.scan_error,
+        },
     )
 
 

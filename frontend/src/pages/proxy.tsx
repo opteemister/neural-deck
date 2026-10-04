@@ -1,12 +1,13 @@
 import { useMemo, useState, type DragEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, ChevronDown, ChevronUp, GripVertical, Plus, RefreshCw, Trash2 } from 'lucide-react'
-import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Input } from '@/components/ui/input'
+import { AlertTriangle, GripVertical, Pencil, Plus, RefreshCw, Trash2, X } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent } from '@/components/ui/card'
+import { Dialog } from '@/components/ui/dialog'
+import { Input } from '@/components/ui/input'
 import { PageHeader } from '@/components/page-header'
-import { QueryEmpty, QueryError, QueryLoading } from '@/components/query-state'
+import { QueryError, QueryLoading } from '@/components/query-state'
 import { api, queryKeys } from '@/lib/api'
 import type { ProfileData, ProxyRoute } from '@/types/api'
 
@@ -18,6 +19,9 @@ export function ProxyPage() {
   const profiles = useQuery({ queryKey: queryKeys.profiles, queryFn: api.getProfiles })
   const [aliasName, setAliasName] = useState('')
   const [selectedProfiles, setSelectedProfiles] = useState<string[]>([])
+  const [aliasDialog, setAliasDialog] = useState<{ kind: 'new' } | { kind: 'edit'; route: ProxyRoute } | null>(null)
+  const [dragTarget, setDragTarget] = useState<{ route: string; index: number } | null>(null)
+  const [dragSource, setDragSource] = useState<{ route: string; index: number } | null>(null)
 
   const invalidateRoutes = () => {
     void queryClient.invalidateQueries({ queryKey: queryKeys.proxyRoutes })
@@ -25,7 +29,7 @@ export function ProxyPage() {
   }
   const createAlias = useMutation({
     mutationFn: api.createProxyAlias,
-    onSuccess: () => { setAliasName(''); setSelectedProfiles([]); invalidateRoutes() },
+    onSuccess: () => { closeAliasDialog(); invalidateRoutes() },
   })
   const updateRoute = useMutation({
     mutationFn: ({ name, profileIds }: { name: string; profileIds: string[] }) => api.updateProxyRoute(name, profileIds),
@@ -36,64 +40,116 @@ export function ProxyPage() {
     onSuccess: invalidateRoutes,
   })
 
+  const editingRoute = aliasDialog?.kind === 'edit' ? aliasDialog.route : null
   const routeNames = useMemo(() => new Set(routes.data?.items.map((route) => route.name) ?? []), [routes.data?.items])
-  const aliasError = aliasName.length === 0
+  const aliasError = editingRoute
     ? null
-    : !aliasPattern.test(aliasName)
-      ? 'Используйте 1–128 ASCII-символов: буквы, цифры, точку, дефис или подчёркивание.'
-      : routeNames.has(aliasName) || (profiles.data?.items ?? []).some((profile) => profile.model_name === aliasName)
-        ? 'Это имя уже занято маршрутом или публичным именем модели.'
-        : null
+    : aliasName.length === 0
+      ? null
+      : !aliasPattern.test(aliasName)
+        ? 'Используйте 1–128 ASCII-символов: буквы, цифры, точку, дефис или подчёркивание.'
+        : routeNames.has(aliasName) || (profiles.data?.items ?? []).some((profile) => profile.model_name === aliasName)
+          ? 'Это имя уже занято маршрутом или публичным именем модели.'
+          : null
   const mutationError = createAlias.error ?? updateRoute.error ?? deleteAlias.error
+  const visibleRoutes = routes.data?.items.filter((route) => route.kind === 'alias' || (route.available && route.diagnostics.length === 0)) ?? []
 
   function toggleProfile(name: string) {
     setSelectedProfiles((current) => current.includes(name) ? current.filter((item) => item !== name) : [...current, name])
   }
 
+  function openNewAlias() {
+    setAliasName('')
+    setSelectedProfiles([])
+    setAliasDialog({ kind: 'new' })
+  }
+
+  function openEditAlias(route: ProxyRoute) {
+    setAliasName(route.name)
+    setSelectedProfiles([...route.candidate_profile_ids])
+    setAliasDialog({ kind: 'edit', route })
+  }
+
+  function closeAliasDialog() {
+    setAliasName('')
+    setSelectedProfiles([])
+    setAliasDialog(null)
+  }
+
+  function submitAlias() {
+    if (!aliasName || aliasError || selectedProfiles.length === 0) return
+    if (editingRoute) {
+      updateRoute.mutate(
+        { name: editingRoute.name, profileIds: selectedProfiles },
+        { onSuccess: closeAliasDialog },
+      )
+      return
+    }
+    createAlias.mutate({ name: aliasName, profile_ids: selectedProfiles })
+  }
+
   function reorder(route: ProxyRoute, from: number, to: number) {
-    if (to < 0 || to >= route.candidate_profile_ids.length || from === to) return
+    if (!Number.isInteger(to) || to < 0 || to > route.candidate_profile_ids.length || from === to || from + 1 === to) return
     const profileIds = [...route.candidate_profile_ids]
     const [item] = profileIds.splice(from, 1)
-    profileIds.splice(to, 0, item)
+    profileIds.splice(from < to ? to - 1 : to, 0, item)
     updateRoute.mutate({ name: route.name, profileIds })
   }
 
-  function drop(route: ProxyRoute, event: DragEvent<HTMLDivElement>) {
+  function drop(route: ProxyRoute, event: DragEvent<HTMLDivElement>, to: number) {
     event.preventDefault()
     const profileId = event.dataTransfer.getData('text/plain')
     const from = route.candidate_profile_ids.indexOf(profileId)
-    if (from >= 0) reorder(route, from, Number(event.currentTarget.dataset.index))
+    if (from >= 0 && dragSource?.route === route.name) reorder(route, from, to)
+    setDragTarget(null)
+    setDragSource(null)
   }
 
   return <div>
-    <PageHeader title="Прокси" action={<Button variant="secondary" size="sm" onClick={() => { void routes.refetch(); void profiles.refetch() }}><RefreshCw className="size-3.5" />Обновить</Button>} />
-    <div className="mb-6 grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,24rem)]">
-      <Card>
-        <CardContent className="space-y-3">
-          {routes.isLoading ? <QueryLoading label="Читаем маршруты" /> : routes.isError ? <QueryError error={routes.error} retry={() => void routes.refetch()} label="Маршруты недоступны" /> : routes.data?.items.length === 0 ? <QueryEmpty title="Маршрутов пока нет" description="Создайте профиль — auto-route появится автоматически." /> : routes.data?.items.map((route) => <RouteCard key={`${route.kind}:${route.name}`} route={route} onMove={reorder} onDrop={drop} onDelete={() => deleteAlias.mutate(route.name)} deleting={deleteAlias.isPending && deleteAlias.variables === route.name} />)}
-        </CardContent>
-      </Card>
-
-      <Card className="h-fit">
-        <CardHeader><CardTitle>Новый алиас</CardTitle></CardHeader>
-        <CardContent>
-          <div className="space-y-4">
-            <div><label htmlFor="proxy-alias-name" className="text-xs text-foreground">Имя алиаса</label><Input id="proxy-alias-name" className="mt-1.5" value={aliasName} onChange={(event) => setAliasName(event.target.value)} placeholder="my-chat-model" aria-invalid={Boolean(aliasError)} />{aliasError && <p className="mt-1.5 text-[11px] text-[#d09b87]">{aliasError}</p>}</div>
-            <div><p className="text-xs text-foreground">Профили-кандидаты</p><div className="mt-1.5 max-h-64 space-y-1 overflow-auto rounded-md border border-border bg-secondary p-2">{profiles.isLoading ? <p className="px-2 py-3 text-xs text-muted-foreground">Читаем профили…</p> : profiles.data?.items.length === 0 ? <p className="px-2 py-3 text-xs text-muted-foreground">Сначала создайте профиль.</p> : profiles.data?.items.map((profile) => <ProfileCheckbox key={profile.name} profile={profile} checked={selectedProfiles.includes(profile.name)} onChange={() => toggleProfile(profile.name)} />)}</div></div>
-            <Button variant="primary" className="w-full" disabled={!aliasName || Boolean(aliasError) || selectedProfiles.length === 0 || createAlias.isPending} onClick={() => createAlias.mutate({ name: aliasName, profile_ids: selectedProfiles })}><Plus className="size-3.5" />{createAlias.isPending ? 'Сохраняем…' : 'Добавить алиас'}</Button>
-          </div>
-        </CardContent>
-      </Card>
+    <PageHeader title="Прокси" action={<div className="flex gap-2"><Button variant="secondary" size="sm" onClick={() => { void routes.refetch(); void profiles.refetch() }}><RefreshCw className="size-3.5" />Обновить</Button><Button variant="primary" size="sm" onClick={openNewAlias}><Plus className="size-3.5" />Новый алиас</Button></div>} />
+    <div className="mb-6">
+      {routes.isLoading ? <QueryLoading label="Читаем маршруты" /> : routes.isError ? <QueryError error={routes.error} retry={() => void routes.refetch()} label="Маршруты недоступны" /> : visibleRoutes.length > 0 && <Card><CardContent className="space-y-3">{visibleRoutes.map((route) => <RouteCard key={`${route.kind}:${route.name}`} route={route} dragSource={dragSource} onDragSource={setDragSource} dragTarget={dragTarget} onDragTarget={setDragTarget} onDrop={drop} onDelete={() => deleteAlias.mutate(route.name)} onEdit={() => openEditAlias(route)} onRemove={(profileId) => updateRoute.mutate({ name: route.name, profileIds: route.candidate_profile_ids.filter((item) => item !== profileId) })} updating={updateRoute.isPending} deleting={deleteAlias.isPending && deleteAlias.variables === route.name} />)}</CardContent></Card>}
     </div>
+    <Dialog open={aliasDialog !== null} title={editingRoute ? 'Изменить алиас' : 'Новый алиас'} onOpenChange={(open) => { if (!open) closeAliasDialog() }}><div className="space-y-4 px-4 py-4"><div><label htmlFor="proxy-alias-name" className="text-xs text-foreground">Имя алиаса</label><Input id="proxy-alias-name" className="mt-1.5" value={aliasName} onChange={(event) => setAliasName(event.target.value)} placeholder="my-chat-model" readOnly={Boolean(editingRoute)} aria-invalid={Boolean(aliasError)} />{aliasError && <p className="mt-1.5 text-[11px] text-[#d09b87]">{aliasError}</p>}</div><div><p className="text-xs text-foreground">Профили-кандидаты</p><div className="mt-1.5 max-h-64 space-y-1 overflow-auto rounded-md border border-border bg-secondary p-2">{profiles.isLoading ? <p className="px-2 py-3 text-xs text-muted-foreground">Читаем профили…</p> : profiles.data?.items.length === 0 ? <p className="px-2 py-3 text-xs text-muted-foreground">Сначала создайте профиль.</p> : profiles.data?.items.map((profile) => <ProfileCheckbox key={profile.name} profile={profile} checked={selectedProfiles.includes(profile.name)} onChange={() => toggleProfile(profile.name)} />)}</div></div><div className="flex justify-end gap-2"><Button variant="ghost" onClick={closeAliasDialog}>Отмена</Button><Button variant="primary" disabled={!aliasName || Boolean(aliasError) || selectedProfiles.length === 0 || createAlias.isPending || updateRoute.isPending} onClick={submitAlias}>{editingRoute ? <Pencil className="size-3.5" /> : <Plus className="size-3.5" />}{editingRoute ? 'Сохранить' : createAlias.isPending ? 'Сохраняем…' : 'Добавить алиас'}</Button></div></div></Dialog>
     {mutationError && <QueryError error={mutationError} label="Изменение маршрута не сохранено" />}
   </div>
 }
 
-function RouteCard({ route, onMove, onDrop, onDelete, deleting }: { route: ProxyRoute; onMove: (route: ProxyRoute, from: number, to: number) => void; onDrop: (route: ProxyRoute, event: DragEvent<HTMLDivElement>) => void; onDelete: () => void; deleting: boolean }) {
-  return <div className="rounded-md border border-border bg-secondary/40">
-    <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2.5"><h3 className="font-mono text-xs text-foreground">{route.name}</h3><Badge>{route.kind === 'auto' ? 'auto-route' : 'алиас'}</Badge><Badge className={route.available ? 'border-[#596c4b] text-[#b2c995]' : 'border-[#72544a] text-[#d0a390]'}>{route.available ? 'доступен' : 'скрыт из /v1/models'}</Badge>{route.kind === 'alias' && <Button variant="danger" size="icon-sm" iconOnly className="ml-auto" aria-label={`Удалить алиас ${route.name}`} title="Удалить алиас" onClick={onDelete} disabled={deleting}><Trash2 className="size-3.5" /></Button>}</div>
+function RouteCard({ route, dragSource, onDragSource, dragTarget, onDragTarget, onDrop, onDelete, onEdit, onRemove, updating, deleting }: { route: ProxyRoute; dragSource: { route: string; index: number } | null; onDragSource: (source: { route: string; index: number } | null) => void; dragTarget: { route: string; index: number } | null; onDragTarget: (target: { route: string; index: number } | null) => void; onDrop: (route: ProxyRoute, event: DragEvent<HTMLDivElement>, to: number) => void; onDelete: () => void; onEdit: () => void; onRemove: (profileId: string) => void; updating: boolean; deleting: boolean }) {
+  function insertionIndex(index: number) {
+    if (dragSource?.route !== route.name || updating) return null
+    if (index === dragSource.index) return null
+    return index > dragSource.index ? index + 1 : index
+  }
+
+  return <div className="rounded-md border border-border bg-secondary/40" onDragLeave={(event) => {
+    if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) onDragTarget(null)
+  }}>
+    <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2.5"><h3 className="font-mono text-xs text-foreground">{route.name}</h3><Badge>{route.kind === 'auto' ? 'автоматический' : 'ручной'}</Badge><Badge className={route.available ? 'border-[#596c4b] text-[#b2c995]' : 'border-[#72544a] text-[#d0a390]'}>{route.available ? 'доступен' : route.kind === 'alias' ? 'ожидает профиль' : 'скрыт из /v1/models'}</Badge>{route.kind === 'alias' && <div className="ml-auto flex gap-1"><Button variant="ghost" size="icon-sm" iconOnly aria-label={`Изменить алиас ${route.name}`} title="Изменить алиас" onClick={onEdit}><Pencil className="size-3.5" /></Button><Button variant="danger" size="icon-sm" iconOnly aria-label={`Удалить алиас ${route.name}`} title="Удалить алиас" onClick={onDelete} disabled={deleting}><Trash2 className="size-3.5" /></Button></div>}</div>
     {route.diagnostics.map((diagnostic) => <p key={diagnostic} className="flex items-center gap-1.5 border-b border-border px-3 py-2 text-[11px] text-[#d09b87]"><AlertTriangle className="size-3.5" />{diagnosticText(diagnostic)}</p>)}
-    <div className="divide-y divide-border">{route.candidates.length === 0 ? <p className="px-3 py-3 text-xs text-muted-foreground">Кандидаты не настроены.</p> : route.candidates.map((candidate, index) => <div key={`${candidate.profile_id}-${index}`} data-index={index} draggable={route.candidates.length > 1} onDragStart={(event) => { event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', candidate.profile_id); (event.currentTarget as HTMLDivElement).dataset.dragging = 'true' }} onDragEnd={(event) => { delete (event.currentTarget as HTMLDivElement).dataset.dragging }} onDragOver={(event) => event.preventDefault()} onDrop={(event) => onDrop(route, event)} className="flex items-center gap-2 px-3 py-2.5 transition-colors data-[dragging=true]:opacity-50"><GripVertical className="size-4 shrink-0 cursor-grab text-muted-foreground" aria-label="Перетащить кандидата" /><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-x-2 gap-y-1"><span className="text-xs text-foreground">{candidate.profile_name ?? candidate.profile_id}</span>{candidate.upstream_model && <span className="font-mono text-[10px] text-muted-foreground">→ {candidate.upstream_model}</span>}</div><p className="mt-0.5 text-[10px] text-muted-foreground">{candidate.engine_id ?? '—'} · порт {candidate.port ?? '—'} · {candidate.state}</p>{!candidate.available && <p className="mt-1 text-[11px] text-[#d09b87]">{reasonText(candidate.reason)}</p>}</div><span className={`size-2 shrink-0 rounded-full ${candidate.available ? 'bg-[#9ab77b]' : 'bg-[#8d665c]'}`} title={candidate.available ? 'Кандидат доступен' : 'Кандидат недоступен'} /><div className="flex shrink-0 gap-1"><Button variant="ghost" size="icon-sm" iconOnly aria-label="Поднять кандидата" title="Поднять" onClick={() => onMove(route, index, index - 1)} disabled={index === 0}><ChevronUp className="size-3.5" /></Button><Button variant="ghost" size="icon-sm" iconOnly aria-label="Опустить кандидата" title="Опустить" onClick={() => onMove(route, index, index + 1)} disabled={index === route.candidates.length - 1}><ChevronDown className="size-3.5" /></Button></div></div>)}</div>
+    <div className="divide-y divide-border">{route.candidates.length === 0 ? <p className="px-3 py-3 text-xs text-muted-foreground">Кандидаты не настроены.</p> : <>{route.candidates.map((candidate, index) => {
+      const isDropTarget = dragTarget?.route === route.name && dragTarget.index === index
+      const isBottomTarget = index === route.candidates.length - 1 && dragTarget?.route === route.name && dragTarget.index === route.candidates.length
+      return <div key={candidate.profile_id} data-index={index} onDragOver={(event) => {
+        const to = insertionIndex(index)
+        event.preventDefault()
+        event.dataTransfer.dropEffect = to === null ? 'none' : 'move'
+        onDragTarget(to === null ? null : { route: route.name, index: to })
+      }} onDrop={(event) => {
+        const to = insertionIndex(index)
+        event.preventDefault()
+        if (to !== null) onDrop(route, event, to)
+        onDragTarget(null)
+      }} className="relative">
+        {isDropTarget && <div data-drop-indicator="before" className="pointer-events-none absolute -top-px left-3 right-3 z-10 h-0.5 rounded-full bg-copper shadow-[0_0_8px_rgba(197,128,85,0.85)]" />}
+        {isBottomTarget && <div data-drop-indicator="after" className="pointer-events-none absolute bottom-0 left-3 right-3 z-10 h-0.5 rounded-full bg-copper shadow-[0_0_8px_rgba(197,128,85,0.85)]" />}
+        <div draggable={route.candidates.length > 1 && !updating} onDragStart={(event) => { event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', candidate.profile_id); onDragSource({ route: route.name, index }); onDragTarget(null) }} onDragEnd={() => { onDragTarget(null); onDragSource(null) }} className="flex items-center gap-2 px-3 py-2.5 transition-colors">
+          <GripVertical className="size-4 shrink-0 cursor-grab text-muted-foreground" aria-label="Перетащить кандидата" />
+          <div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-x-2 gap-y-1"><span className={`size-2 shrink-0 rounded-full ${candidate.available ? 'bg-[#9ab77b]' : 'bg-[#8d665c]'}`} title={candidate.available ? 'Кандидат доступен' : 'Кандидат недоступен'} /><span className="text-xs text-foreground">{candidate.profile_name ?? candidate.profile_id}</span>{candidate.upstream_model && <span className="font-mono text-[10px] text-muted-foreground">→ {candidate.upstream_model}</span>}</div><p className="mt-0.5 text-[10px] text-muted-foreground">{candidate.engine_id ?? '—'} · порт {candidate.port ?? '—'}</p>{!candidate.available && candidate.reason !== 'profile_not_running' && <p className="mt-1 text-[11px] text-[#d09b87]">{reasonText(candidate.reason)}</p>}</div>
+          {route.kind === 'alias' && <Button variant="ghost" size="icon-sm" iconOnly aria-label={`Удалить ${candidate.profile_name ?? candidate.profile_id} из алиаса`} title={route.candidates.length > 1 ? 'Убрать из алиаса' : 'В алиасе должен остаться профиль'} onClick={() => onRemove(candidate.profile_id)} disabled={route.candidates.length <= 1 || updating}><X className="size-3.5" /></Button>}
+        </div>
+      </div>
+    })}</>}</div>
   </div>
 }
 
@@ -102,4 +158,4 @@ function ProfileCheckbox({ profile, checked, onChange }: { profile: ProfileData;
 }
 
 function diagnosticText(value: string): string { return value === 'route_name_collision' ? 'Имя маршрута конфликтует с auto-route или моделью.' : value }
-function reasonText(value: string | null): string { return ({ profile_missing: 'Профиль не найден.', profile_not_running: 'Профиль не запущен.', identity_unverified: 'Идентичность процесса не подтверждена.', port_unconfirmed: 'Порт ещё не подтверждён.', engine_not_ready: 'Движок ещё не готов.', model_metadata_unavailable: 'Метаданные модели ещё не получены.', multiple_upstream_models: 'Движок сообщил несколько моделей без точного совпадения.' } as Record<string, string>)[value ?? ''] ?? 'Кандидат недоступен.' }
+function reasonText(value: string | null): string { return ({ profile_missing: 'Профиль не найден.', identity_unverified: 'Идентичность процесса не подтверждена.', port_unconfirmed: 'Порт ещё не подтверждён.', engine_not_ready: 'Движок ещё не готов.', model_metadata_unavailable: 'Метаданные модели ещё не получены.', multiple_upstream_models: 'Движок сообщил несколько моделей без точного совпадения.' } as Record<string, string>)[value ?? ''] ?? 'Кандидат недоступен.' }

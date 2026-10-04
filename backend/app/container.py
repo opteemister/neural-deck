@@ -8,6 +8,8 @@ instances together.  FastAPI dependencies expose the same objects through
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -70,6 +72,7 @@ class AppContainer:
     external_discovery: ExternalDiscovery = discover_external
     diagnostics: list[RuntimeDiagnostic] = field(default_factory=list)
     mcp_server: Any | None = None
+    startup_task: asyncio.Task[None] | None = None
 
     def add_diagnostic(self, component: str, code: str, message: str) -> None:
         if any(
@@ -124,6 +127,11 @@ class AppContainer:
         # send signals to managed processes, because shutdown must not kill
         # model servers that can outlive this web process.
         try:
+            if self.startup_task is not None:
+                self.startup_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self.startup_task
+                self.startup_task = None
             await self.model_catalogue.stop_update_scheduler()
             await self.metrics_service.close()
             await self.proxy_service.close()

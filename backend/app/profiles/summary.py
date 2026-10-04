@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import UTC, datetime, time
 from pathlib import Path
 from typing import Any
@@ -176,20 +177,41 @@ async def build_profile_summary(
         if metrics.storage is None:
             return {}
         try:
-            return await metrics.storage.aggregates(
+            result = await metrics.storage.aggregates(
                 start=start, end=end, profile_name=profile_name
             )
+            peak = await metrics.storage.all_time_active_requests_max(profile_name)
+            result.pop("active_requests", None)
+            if peak is not None:
+                result["active_requests"] = {"max": peak}
+            return result
         except Exception:
             # A card can still show model size, endpoint and unavailable
             # states when the historical store is temporarily unreadable.
             return {}
 
+    async def last_vram_for(profile_name: str) -> SummaryMetric:
+        value = None
+        if metrics.storage is not None:
+            try:
+                value = await metrics.storage.last_vram(profile_name)
+            except Exception:
+                logging.getLogger(__name__).exception("Не удалось прочитать сохранённый VRAM профиля %s", profile_name)
+        return _metric(
+            value, unit="bytes", state="ok" if value is not None else "unavailable",
+            source="sqlite" if value is not None else "unavailable",
+            reason="last_observed" if value is not None else "no_valid_samples",
+        )
+
+    last_vram_results = await asyncio.gather(*(last_vram_for(p.name) for p in profiles))
     aggregate_results = await asyncio.gather(
         *(aggregates_for(profile.name) for profile in profiles)
     )
     period = SummaryPeriod.model_validate({"from": start, "to": end, "timezone": "UTC"})
     result: list[ProfileSummary] = []
-    for profile, aggregates in zip(profiles, aggregate_results, strict=True):
+    for profile, aggregates, last_vram in zip(
+        profiles, aggregate_results, last_vram_results, strict=True
+    ):
         current_vram = _current_metric(
             current_by_profile.get(profile.name), "vram_bytes", unit="bytes"
         )
@@ -209,6 +231,7 @@ async def build_profile_summary(
                 memory=ProfileMemorySummary(
                     disk_bytes=_disk_metric(profile, catalogue_items),
                     vram_current_bytes=current_vram,
+                    vram_last_bytes=last_vram,
                     vram_avg_bytes=vram_avg,
                     vram_peak_bytes=vram_peak,
                 ),

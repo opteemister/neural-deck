@@ -13,7 +13,7 @@ import shutil
 import sys
 import tempfile
 import threading
-from datetime import date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -70,11 +70,13 @@ class ModelCatalogue:
         self.operations = operations or OperationManager(paths.operations_log_dir)
         self._items: list[LocalModel] | None = None
         self.scan_error: str | None = None
+        self.scanning = False
+        self._scan_lock = threading.Lock()
         self._manifest_lock = _MANIFEST_LOCK
         self._update_task: asyncio.Task[None] | None = None
         self._update_check_lock = asyncio.Lock()
 
-    async def start_update_scheduler(self, interval_seconds: int = 6 * 60 * 60) -> None:
+    async def start_update_scheduler(self, interval_seconds: int | None = None) -> None:
         """Start the non-blocking Hugging Face update loop."""
 
         if self._update_task is None or self._update_task.done():
@@ -92,9 +94,15 @@ class ModelCatalogue:
         with contextlib.suppress(asyncio.CancelledError):
             await task
 
-    async def _update_loop(self, interval_seconds: int) -> None:
+    async def _update_loop(self, interval_seconds: int | None) -> None:
         while True:
-            await asyncio.sleep(interval_seconds)
+            now = datetime.now(UTC)
+            next_midnight = datetime.combine(now.date() + timedelta(days=1), datetime.min.time(), UTC)
+            delay = (
+                interval_seconds if interval_seconds is not None
+                else (next_midnight - now).total_seconds()
+            )
+            await asyncio.sleep(delay)
             try:
                 await self.check_updates()
             except asyncio.CancelledError:
@@ -106,7 +114,30 @@ class ModelCatalogue:
         await self.stop_update_scheduler()
         await self.operations.close()
 
+    def prepare_background_scan(self) -> None:
+        """Serve the current snapshot while startup discovery runs in the background."""
+
+        if self._items is None:
+            self._items = []
+        self.scanning = True
+
     def scan(self, *, verify_hashes: bool = False) -> list[LocalModel]:
+        # A manual scan during startup must not hash the same files in parallel.
+        if not self._scan_lock.acquire(blocking=False):
+            return self._items or []
+        self.scanning = True
+        try:
+            result = self._scan(verify_hashes=verify_hashes)
+            logger.info("Локальный каталог готов: моделей=%d; неизменённые файлы пропущены", len(result))
+            return result
+        except Exception as exc:
+            self.scan_error = str(exc)
+            raise
+        finally:
+            self.scanning = False
+            self._scan_lock.release()
+
+    def _scan(self, *, verify_hashes: bool) -> list[LocalModel]:
         root = self.paths.models_root
         try:
             if not root.exists():
@@ -124,9 +155,6 @@ class ModelCatalogue:
         ]
         model_directories = _model_directories(root, directories)
         model_directory_set = set(model_directories)
-        for path in model_directories:
-            _reconcile_local_manifest(root, path)
-            _refresh_local_hash_cache(path)
         standalone_files = [
             path
             for path in paths
@@ -135,6 +163,13 @@ class ModelCatalogue:
             and path.suffix.lower() in MODEL_EXTENSIONS
             and not any(parent in model_directory_set for parent in path.parents)
         ]
+        # Publish file metadata before any remote lookup or large-file hashing.
+        self._items = [
+            self._describe(path, verify_hashes=False)
+            for path in [*model_directories, *standalone_files]
+        ]
+        for path in model_directories:
+            _refresh_local_hash_cache(path)
         for path in standalone_files:
             _refresh_local_hash_cache(path)
         items = [
@@ -149,7 +184,8 @@ class ModelCatalogue:
         """Keep local model reads available after a non-fatal startup failure."""
 
         self.scan_error = str(error)
-        self._items = []
+        if self._items is None:
+            self._items = []
 
     def items(self) -> list[LocalModel]:
         return self._items if self._items is not None else self.scan()
@@ -551,9 +587,11 @@ class ModelCatalogue:
         """Check tracked model manifests without downloading or replacing files."""
 
         async with self._update_check_lock:
-            await asyncio.to_thread(self.scan)
+            # Compare saved local digests with remote metadata. This operation
+            # must not walk the disk or read model contents.
             entries: dict[tuple[str, str], list[Path]] = {}
-            for item in self.items():
+            local_items = self._items or []
+            for item in local_items:
                 manifest = _read_manifest(item.path)
                 if manifest is None:
                     continue
@@ -565,7 +603,10 @@ class ModelCatalogue:
             async with httpx.AsyncClient(base_url="https://huggingface.co", timeout=8) as client:
                 for (repo_id, tracking_ref), paths in entries.items():
                     await self._check_repo_updates(client, repo_id, tracking_ref, paths)
-            return await asyncio.to_thread(self.scan)
+            self._items = await asyncio.to_thread(
+                lambda: [self._describe(item.path) for item in local_items]
+            )
+            return self._items
 
     async def _check_repo_updates(
         self,
@@ -1185,93 +1226,135 @@ def _refresh_manifest_hashes(path: Path) -> None:
         return
 
 
-def _refresh_local_hash_cache(path: Path) -> None:
-    """Calculate local digests once and reuse them while ``mtime_ns + size`` is stable."""
+def _last_hash_check_ns(value: dict[str, Any]) -> int | None:
+    checked = value.get("last_hash_check_at")
+    if checked is None:
+        return None
+    if not isinstance(checked, str):
+        raise ValueError("invalid last_hash_check_at")
+    stamp = datetime.fromisoformat(checked.replace("Z", "+00:00"))
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=UTC)
+    return int(stamp.timestamp() * 1_000_000_000)
 
+
+def _saved_hash_present(item: dict[str, Any]) -> bool:
+    local = item.get("local") if isinstance(item.get("local"), dict) else {}
+    return any(isinstance(value, str) and bool(value) for value in (
+        local.get("sha256"), local.get("git_blob_sha1"), local.get("md5"),
+        item.get("sha256"), item.get("etag"), item.get("downloaded_remote_hash"),
+    ))
+
+
+def _persist_local_manifest_item(path: Path, item: dict[str, Any]) -> None:
+    # Merge into the latest manifest so a nightly remote check or a completed
+    # download cannot lose metadata while a large file is being hashed.
+    with _MANIFEST_LOCK:
+        current = _read_manifest(path)
+        if current is None:
+            raise OSError("model manifest disappeared during hashing")
+        for entry in current["files"]:
+            if entry["path"] != item["path"]:
+                continue
+            if "local" in item:
+                entry["local"] = item["local"]
+            if "local_error" in item:
+                entry["local_error"] = item["local_error"]
+            else:
+                entry.pop("local_error", None)
+            for key in ("downloaded_remote_hash", "downloaded_remote_hash_kind", "downloaded_file_date"):
+                if key in item and key not in entry:
+                    entry[key] = item[key]
+            break
+        else:
+            raise OSError("manifest file entry disappeared during hashing")
+        current["schema_version"] = 2
+        sidecar = path / SIDECAR_DIR if path.is_dir() else Path(f"{path}{SIDECAR_DIR}")
+        _atomic_write_text_sync(sidecar, yaml.safe_dump(current, sort_keys=False))
+
+
+def _refresh_local_hash_cache(path: Path) -> None:
+    """Hash only missing digests or files modified since the last catalogue check."""
     manifest = _read_manifest(path)
     if manifest is None:
+        _refresh_untracked_hash_cache(path)
         return
-    updated = dict(manifest)
-    updated["schema_version"] = 2
-    files: list[dict[str, Any]] = []
-    changed = manifest.get("schema_version") != 2
-    for raw_item in manifest.get("files", []):
-        if not isinstance(raw_item, dict) or not isinstance(raw_item.get("path"), str):
-            files.append(raw_item)
-            continue
+    started = utc_now().isoformat()
+    last_check_ns = _last_hash_check_ns(manifest)
+    failed = False
+    for raw_item in manifest["files"]:
         item = dict(raw_item)
-        baseline_hash = item.get("downloaded_remote_hash")
-        if not isinstance(baseline_hash, str):
-            baseline_hash = item.get("sha256") or item.get("etag")
-            if isinstance(baseline_hash, str):
-                item["downloaded_remote_hash"] = baseline_hash
-                item["downloaded_remote_hash_kind"] = (
-                    "lfs_sha256"
-                    if len(baseline_hash) == 64 and item.get("sha256")
-                    else "git_blob"
-                    if len(baseline_hash) == 40 and item.get("etag")
-                    else item.get("hash_kind")
-                )
-                if item.get("file_date") and not item.get("downloaded_file_date"):
-                    item["downloaded_file_date"] = item["file_date"]
-                changed = True
-        if (
-            isinstance(baseline_hash, str)
-            and not isinstance(item.get("downloaded_remote_hash_kind"), str)
-        ):
-            inferred_kind = _hash_kind_from_value(baseline_hash, item)
-            if inferred_kind:
-                item["downloaded_remote_hash_kind"] = inferred_kind
-                changed = True
         candidate = path / item["path"] if path.is_dir() else path
-        local = item.get("local") if isinstance(item.get("local"), dict) else None
+        baseline = item.get("downloaded_remote_hash") or item.get("sha256") or item.get("etag")
+        if isinstance(baseline, str):
+            item.setdefault("downloaded_remote_hash", baseline)
+            kind = _hash_kind_from_value(baseline, item)
+            if kind:
+                item.setdefault("downloaded_remote_hash_kind", kind)
+            if item.get("file_date"):
+                item.setdefault("downloaded_file_date", item["file_date"])
         try:
-            stat = candidate.stat()
-            fingerprint = {
-                "fingerprint_policy": "mtime_size",
-                "size_bytes": stat.st_size,
-                "mtime_ns": stat.st_mtime_ns,
-            }
-            expected_kind = (
-                item.get("downloaded_remote_hash_kind")
-                or item.get("hash_kind")
-                or _hash_kind_from_value(item.get("downloaded_remote_hash"))
-            )
-            cached_digest_available = (
-                isinstance(local.get("git_blob_sha1"), str)
-                if expected_kind == "git_blob"
-                else isinstance(local.get("md5"), str)
-                if expected_kind == "md5"
-                else isinstance(local.get("sha256"), str)
-            ) if local is not None else False
-            reusable = (
-                local is not None
-                and local.get("fingerprint_policy") == "mtime_size"
-                and local.get("size_bytes") == stat.st_size
-                and local.get("mtime_ns") == stat.st_mtime_ns
-                and cached_digest_available
-            )
-            if reusable:
-                item["local"] = {**local, **fingerprint}
-            else:
-                item["local"] = {**fingerprint, **_compute_local_digests(candidate)}
-            if item.get("local_error") is not None:
-                item.pop("local_error", None)
-            changed = item != raw_item or changed
+            modified = last_check_ns is not None and candidate.stat().st_mtime_ns > last_check_ns
+            if not _saved_hash_present(item) or modified:
+                item["local"] = _compute_local_digests(candidate)
+            elif isinstance(item.get("local"), dict):
+                item["local"] = {
+                    key: value for key, value in item["local"].items()
+                    if key not in {"fingerprint_policy", "mtime_ns", "size_bytes"}
+                }
+            item.pop("local_error", None)
         except (OSError, RuntimeError) as exc:
             item["local_error"] = str(exc)[:200]
-            changed = item != raw_item or changed
-        files.append(item)
-    updated["files"] = files
-    if not changed:
-        return
-    try:
-        _atomic_write_text_sync(path / SIDECAR_DIR, yaml.safe_dump(updated, sort_keys=False))
-    except OSError:
-        return
+            failed = True
+        if item != raw_item:
+            # Each completed file is durable before starting the next one.
+            _persist_local_manifest_item(path, item)
+    if not failed:
+        with _MANIFEST_LOCK:
+            current = _read_manifest(path)
+            if current is None:
+                raise OSError("model manifest disappeared during hashing")
+            current["schema_version"] = 2
+            # Use the start time: edits during this pass must remain eligible
+            # for recomputation on the next pass.
+            current["last_hash_check_at"] = started
+            sidecar = path / SIDECAR_DIR if path.is_dir() else Path(f"{path}{SIDECAR_DIR}")
+            _atomic_write_text_sync(sidecar, yaml.safe_dump(current, sort_keys=False))
+
+
+def _refresh_untracked_hash_cache(path: Path) -> None:
+    """Persist each local digest immediately with one check date per sidecar."""
+    sidecar = path / ".llm-studio-hashes.yaml" if path.is_dir() else Path(f"{path}.llm-studio-hashes.yaml")
+    saved: dict[str, Any] = {"schema_version": 1, "files": {}}
+    if sidecar.exists():
+        loaded = yaml.safe_load(sidecar.read_text(encoding="utf-8"))
+        if not isinstance(loaded, dict) or not isinstance(loaded.get("files"), dict):
+            raise ValueError("invalid local hash cache")
+        saved = loaded
+    last_check_ns = _last_hash_check_ns(saved)
+    started = utc_now().isoformat()
+    candidates = (
+        [item for item in path.rglob("*") if item.is_file() and _visible_relative(item, path)]
+        if path.is_dir() else [path]
+    )
+    for candidate in candidates:
+        relative = candidate.relative_to(path).as_posix() if path.is_dir() else candidate.name
+        cached = saved["files"].get(relative)
+        modified = last_check_ns is not None and candidate.stat().st_mtime_ns > last_check_ns
+        if isinstance(cached, dict) and isinstance(cached.get("sha256"), str) and not modified:
+            clean = {k: v for k, v in cached.items() if k not in {"mtime_ns", "size_bytes"}}
+            if clean == cached:
+                continue
+            saved["files"][relative] = clean
+        else:
+            saved["files"][relative] = _compute_local_digests(candidate)
+        _atomic_write_text_sync(sidecar, yaml.safe_dump(saved, sort_keys=False))
+    saved["last_hash_check_at"] = started
+    _atomic_write_text_sync(sidecar, yaml.safe_dump(saved, sort_keys=False))
 
 
 def _compute_local_digests(path: Path) -> dict[str, str]:
+    logger.info("Вычисление хеша отсутствующего или изменённого файла: %s", path)
     before = path.stat()
     sha256 = hashlib.sha256()
     md5 = hashlib.md5()  # noqa: S324 - legacy HF ETag compatibility
@@ -1301,6 +1384,19 @@ def _compute_local_digests(path: Path) -> dict[str, str]:
         "git_blob_sha1": git_blob_sha1.hexdigest(),
         "hash_calculated_at": utc_now().isoformat(),
     }
+
+
+def _remote_date_is_newer(remote: Any, downloaded: Any) -> bool:
+    if not isinstance(remote, str) or not isinstance(downloaded, str):
+        return False
+    try:
+        dates = [datetime.fromisoformat(value.replace("Z", "+00:00")) for value in (remote, downloaded)]
+        remote_at, downloaded_at = [
+            value.replace(tzinfo=UTC) if value.tzinfo is None else value for value in dates
+        ]
+        return remote_at > downloaded_at
+    except ValueError:
+        return False
 
 
 def _apply_remote_snapshot(
@@ -1367,12 +1463,18 @@ def _apply_remote_snapshot(
                         "remote_file_date": None,
                     }
                 )
-                update_available = True
+                update_available = update_available or _remote_date_is_newer(
+                    repo_date, current.get("downloaded_revision_date"),
+                )
                 remote_statuses.append("differs_from_current_remote")
                 continue
 
             remote_hash, remote_kind = _remote_hash(metadata)
             remote_local_hash = _local_hash_for_kind(local, remote_kind)
+            if remote_local_hash is None and remote_kind == downloaded_kind:
+                # Existing download manifests already contain the saved file
+                # hash. Comparing it with HF does not imply a fresh disk check.
+                remote_local_hash = downloaded_hash
             if not isinstance(remote_hash, str):
                 unknown = True
                 remote_statuses.append("unknown")
@@ -1409,7 +1511,10 @@ def _apply_remote_snapshot(
                     if not isinstance(remote_local_hash, str):
                         unknown = True
                     elif not _same_hash(remote_local_hash, remote_kind, remote_hash, remote_kind):
-                        update_available = True
+                        update_available = update_available or _remote_date_is_newer(
+                            metadata.get("file_date") or repo_date,
+                            item.get("downloaded_file_date") or current.get("downloaded_revision_date"),
+                        )
                 elif isinstance(remote_local_hash, str) and not _same_hash(
                     remote_local_hash, remote_kind, remote_hash, remote_kind
                 ):
@@ -1435,7 +1540,9 @@ def _apply_remote_snapshot(
                         "remote_file_date": metadata.get("file_date"),
                     }
                 )
-                update_available = True
+                update_available = update_available or _remote_date_is_newer(
+                    repo_date, current.get("downloaded_revision_date"),
+                )
 
         if unknown and not update_available:
             remote_update_status = "unknown"
@@ -1945,24 +2052,12 @@ def _hash_matches(
     verify_hashes: bool = False,
     local: dict[str, Any] | None = None,
 ) -> bool | None:
-    if local is not None:
-        try:
-            current = path.stat()
-        except OSError:
-            return None
-        if (
-            local.get("size_bytes") != current.st_size
-            or local.get("mtime_ns") != current.st_mtime_ns
-        ):
-            local = None
     expected = expected.removeprefix("sha256:")
     if len(expected) == 64:
         actual = local.get("sha256") if local else None
         if isinstance(actual, str):
             return actual == expected
-        if not verify_hashes:
-            return None
-        return _sha256(path) == expected
+        return None
     if len(expected) == 40:
         # A regular Hub file's oid is the SHA-1 of a Git blob (header plus
         # bytes), not the SHA-1 of the payload. Only calculate it for metadata
@@ -1972,22 +2067,12 @@ def _hash_matches(
             actual = local.get("git_blob_sha1") if local else None
             if isinstance(actual, str):
                 return actual == expected
-        if verify_hashes and hash_kind == "git_blob":
-            return _git_blob_sha1(path) == expected
         return None
     if len(expected) == 32:
         actual = local.get("md5") if local else None
         if isinstance(actual, str):
             return actual == expected
-        if not verify_hashes:
-            return None
-        if not isinstance(actual, str):
-            digest = hashlib.md5()  # noqa: S324 - HF ETag may be an MD5 value
-            with path.open("rb") as stream:
-                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                    digest.update(chunk)
-            actual = digest.hexdigest()
-        return actual == expected
+        return None
     # An opaque ETag can still be useful metadata but cannot be verified from
     # local bytes without provider-specific semantics.
     return None

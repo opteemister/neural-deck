@@ -625,3 +625,99 @@ def test_remote_daily_summary_ignores_cumulative_means_and_duplicate_measurement
     samples = [row(10, 100, 3), row(10, 100, 3), row(11, 300, 1), row(12, 0, 100)]
     result = summarize_window(samples, end - timedelta(hours=24), end, False)
     assert result["ttft_mean_ms"] == {"avg": 150, "max": 300}
+
+
+async def test_last_vram_updates_only_on_change_and_survives_cleanup(database):
+    from app.metrics.entities import ProfileStatistics
+
+    storage = MetricsStorage(database)
+    at = datetime.now(UTC) - timedelta(days=30)
+    assert await storage.last_vram("profile") is None
+    await storage.remember_vram("profile", metric("vram_bytes", 8000, at))
+    await storage.remember_vram("profile", metric("vram_bytes", 8000, at + timedelta(seconds=5)))
+    async with database() as session:
+        row = await session.get(ProfileStatistics, "profile")
+        assert row.vram_observed_at.replace(tzinfo=UTC) == at
+    await storage.remember_vram("profile", metric("vram_bytes", 6000, at + timedelta(seconds=10)))
+    await storage.remember_vram("profile", metric("vram_bytes", 9000, at))
+    await storage.remember_vram("profile", metric("vram_bytes", 0))
+    await storage.remember_vram("profile", metric("vram_bytes", 10000, state="stale"))
+    await storage.cleanup(set())
+    assert await MetricsStorage(database).last_vram("profile") == 6000
+    assert await storage.last_vram("another") is None
+
+
+async def test_last_vram_migration_restores_latest_valid_sample(tmp_path):
+    from app.metrics.entities import ProfileStatistics
+
+    settings = Settings(data_root=tmp_path / "data", host="127.0.0.1", port=3000, _env_file=None)
+    paths = build_paths(settings)
+    prepare_data_dirs(paths)
+    config = Config(str(Path(__file__).parents[1] / "alembic.ini"))
+    config.attributes["llm_studio_settings"] = settings
+    config.attributes["configure_logging"] = False
+    await asyncio.to_thread(command.upgrade, config, "0007_daily_metrics")
+    engine = create_engine(paths.sqlite_path)
+    sessions = create_session_factory(engine)
+    storage = MetricsStorage(sessions)
+    old = datetime.now(UTC) - timedelta(days=2)
+    await storage.write([(instance(), MetricList(items=[metric("vram_bytes", 8000, old)]))], {})
+    await storage.write([(instance(pid=20), MetricList(items=[metric(
+        "vram_bytes", 6000, old + timedelta(seconds=5),
+    )]))], {})
+    await storage.write([(instance(pid=20), MetricList(items=[metric(
+        "vram_bytes", 9000, old + timedelta(seconds=10), state="stale",
+    )]))], {})
+    try:
+        await migrate_database(settings, paths)
+        await migrate_database(settings, paths)
+        async with sessions() as session:
+            assert (await session.get(ProfileStatistics, "profile")).vram_bytes == 6000
+    finally:
+        await engine.dispose()
+
+
+async def test_local_metric_read_persists_vram_before_background_sample(database, monkeypatch):
+    manager = _Manager()
+    storage = MetricsStorage(database)
+    service = MetricsService(manager, storage=storage)
+
+    async def collect(_instance_id):
+        return MetricList(items=[metric("vram_bytes", 4096)])
+
+    monkeypatch.setattr(service, "_collect_local", collect)
+    try:
+        await service.local(manager.instance.id)
+        assert await MetricsStorage(database).last_vram("profile") == 4096
+    finally:
+        await service.close()
+
+
+async def test_profile_statistics_rename_preserves_existing_vram(tmp_path):
+    settings = Settings(data_root=tmp_path / "data", host="127.0.0.1", port=3000, _env_file=None)
+    paths = build_paths(settings)
+    prepare_data_dirs(paths)
+    config = Config(str(Path(__file__).parents[1] / "alembic.ini"))
+    config.attributes["llm_studio_settings"] = settings
+    config.attributes["configure_logging"] = False
+    await asyncio.to_thread(command.upgrade, config, "0008_profile_last_vram")
+    engine = create_engine(paths.sqlite_path)
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(text(
+                "INSERT INTO profile_last_vram (profile_name, value_bytes, observed_at) "
+                "VALUES ('profile', 4096, '2026-10-04 13:00:00')"
+            ))
+        await migrate_database(settings, paths)
+        await migrate_database(settings, paths)
+        storage = MetricsStorage(create_session_factory(engine))
+        assert await storage.last_vram("profile") == 4096
+        async with engine.connect() as connection:
+            assert await connection.scalar(text(
+                "SELECT count(*) FROM sqlite_master WHERE name='profile_last_vram'"
+            )) == 0
+            assert await connection.scalar(text(
+                "SELECT vram_observed_at FROM profile_statistics WHERE profile_name='profile'"
+            )) == "2026-10-04 13:00:00"
+    finally:
+        await engine.dispose()

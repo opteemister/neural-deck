@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from threading import Event
 
 import pytest
 from app.config import Settings
@@ -10,6 +11,10 @@ from app.models.catalogue import ModelCatalogue
 from app.process.manager import ProcessManager
 from app.profiles.service import ProfileService
 from fastapi.testclient import TestClient
+
+
+async def wait_for_startup_scan(app) -> None:
+    await app.state.runtime.startup_task
 
 
 @pytest.mark.version_zero
@@ -52,12 +57,13 @@ def test_lifespan_composes_one_runtime_and_runs_discovery(
 
     settings = Settings(data_root=tmp_path / "data", host="127.0.0.1", port=8080)
     app = create_app(settings, frontend_dist=tmp_path / "missing-dist")
-    with TestClient(app):
+    with TestClient(app) as client:
         runtime = app.state.runtime
         assert runtime.engine_service is app.state.engine_service
         assert runtime.model_catalogue is app.state.model_catalogue
         assert runtime.profile_service is app.state.profile_service
         assert runtime.process_manager is app.state.process_manager
+        client.portal.call(wait_for_startup_scan, app)
 
     assert calls == ["migrate", "engines", "models", "processes", "autostart"]
 
@@ -92,11 +98,45 @@ def test_failed_optional_scanners_are_reported_as_degraded(
     settings = Settings(data_root=tmp_path / "data", host="127.0.0.1", port=8080)
     app = create_app(settings, frontend_dist=tmp_path / "missing-dist")
     with TestClient(app) as client:
+        client.portal.call(wait_for_startup_scan, app)
         response = client.get("/api/v1/status").json()["data"]["components"]
         components = {item["name"]: item for item in response}
 
     assert components["engine_discovery"]["state"] == "degraded"
     assert components["model_catalogue"]["state"] == "degraded"
+
+
+@pytest.mark.version_zero
+def test_slow_startup_scan_does_not_block_health_or_trigger_another_scan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entered, release = Event(), Event()
+    calls: list[str] = []
+
+    def slow_scan(self: ModelCatalogue) -> list[object]:
+        calls.append("scan")
+        entered.set()
+        assert release.wait(timeout=10), "test did not release the scanner"
+        self._items = []
+        return []
+
+    monkeypatch.setattr(EngineService, "scan", lambda self: None)
+    monkeypatch.setattr(ModelCatalogue, "scan", slow_scan)
+    settings = Settings(data_root=tmp_path / "data", host="127.0.0.1", port=8080)
+    app = create_app(settings, frontend_dist=tmp_path / "missing-dist")
+
+    with TestClient(app) as client:
+        try:
+            assert entered.wait(timeout=5)
+            assert not app.state.runtime.startup_task.done()
+            assert client.get("/health").status_code == 200
+            assert client.get("/api/v1/status").status_code == 200
+            assert app.state.runtime.model_catalogue.items() == []
+            assert client.get("/api/v1/models/local").json()["data"]["scanning"] is True
+            assert calls == ["scan"]
+        finally:
+            release.set()
+            client.portal.call(wait_for_startup_scan, app)
 
 
 @pytest.mark.version_zero
@@ -162,3 +202,32 @@ def test_composed_services_and_mcp_mount_are_available_before_spa_fallback(
         )
         assert initialize.status_code == 200
         assert initialize.json()["result"]["serverInfo"]["name"] == "LLM Studio"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("autostart_fails", [False, True])
+async def test_background_catalogue_scan_runs_after_core_startup(autostart_fails):
+    from types import SimpleNamespace
+    from app.main import _scan_startup
+
+    calls = []
+    diagnostics = []
+
+    async def refresh():
+        calls.append("processes")
+
+    async def autostart():
+        calls.append("autostart")
+        if autostart_fails:
+            raise RuntimeError("test autostart failure")
+
+    runtime = SimpleNamespace(
+        engine_service=SimpleNamespace(scan=lambda: calls.append("engines")),
+        process_manager=SimpleNamespace(refresh=refresh, discovery_error=None),
+        profile_service=SimpleNamespace(autostart_once=autostart, autostart_issues=[]),
+        model_catalogue=SimpleNamespace(scan=lambda: calls.append("catalogue")),
+        add_diagnostic=lambda *args: diagnostics.append(args),
+    )
+    await _scan_startup(runtime)
+    assert calls == ["engines", "processes", "autostart", "catalogue"]
+    assert bool(diagnostics) is autostart_fails

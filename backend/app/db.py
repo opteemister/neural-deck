@@ -45,8 +45,17 @@ def create_engine(sqlite_path: Path, *, echo: bool = False) -> AsyncEngine:
         future=True,
         hide_parameters=True,
         pool_pre_ping=True,
-        connect_args={"check_same_thread": False},
+        connect_args={"check_same_thread": False, "timeout": 30},
     )
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def configure_sqlite(connection: Any, _record: Any) -> None:
+        # Readers of history must not prevent the metrics writer from committing.
+        cursor = connection.cursor()
+        try:
+            cursor.execute("PRAGMA journal_mode=WAL")
+        finally:
+            cursor.close()
 
     @event.listens_for(engine.sync_engine, "handle_error")
     def report_connection_error(context: ExceptionContext) -> None:

@@ -195,3 +195,20 @@ async def test_migration_keeps_samples_and_prevents_id_reuse(tmp_path):
         current = await session.scalar(select(MetricSample))
         assert current.id > old_id
     await engine.dispose()
+
+
+async def test_all_time_concurrency_peak_survives_archive_and_new_launch(database):
+    storage = MetricsStorage(database)
+    old = datetime.now(UTC) - timedelta(days=30)
+    await write(storage, old, requests=8, pid=10)
+    await write(storage, datetime.now(UTC), requests=1, pid=20)
+    assert await storage.all_time_active_requests_max("profile") == 8
+    assert await storage.all_time_active_requests_max("other-profile") is None
+
+    await storage.cleanup(set())
+    async with database() as session:
+        assert await session.scalar(select(func.count()).select_from(MetricSample)) == 1
+    assert await storage.all_time_active_requests_max("profile") == 8
+
+    await write(storage, datetime.now(UTC), requests=12, pid=30)
+    assert await storage.all_time_active_requests_max("profile") == 12

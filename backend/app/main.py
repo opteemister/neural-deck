@@ -213,7 +213,7 @@ def _publish_runtime(app: FastAPI, runtime: AppContainer) -> None:
 
 
 async def _scan_startup(runtime: AppContainer) -> None:
-    """Run all best-effort discovery steps before the app accepts requests."""
+    """Run best-effort discovery in the background, preserving dependency order."""
 
     logger.info("Startup: обнаружение установленных движков")
     try:
@@ -221,13 +221,6 @@ async def _scan_startup(runtime: AppContainer) -> None:
     except Exception as exc:  # noqa: BLE001 - scanner boundary is non-fatal
         runtime.engine_service.mark_scan_failed(exc)
         runtime.add_diagnostic("engine_discovery", "scan_failed", str(exc))
-
-    logger.info("Startup: сканирование локальных моделей без проверки хешей")
-    try:
-        await asyncio.to_thread(runtime.model_catalogue.scan)
-    except Exception as exc:  # noqa: BLE001 - scanner boundary is non-fatal
-        runtime.model_catalogue.mark_scan_failed(exc)
-        runtime.add_diagnostic("model_catalogue", "scan_failed", str(exc))
 
     logger.info("Startup: обнаружение процессов")
     try:
@@ -251,6 +244,13 @@ async def _scan_startup(runtime: AppContainer) -> None:
             issue.get("code", "autostart_failed"),
             f"{issue.get('profile', 'unknown')}: {issue.get('message', '')}".strip(),
         )
+
+    logger.info("Фоновое сканирование моделей: повторное использование сохранённых хешей")
+    try:
+        await asyncio.to_thread(runtime.model_catalogue.scan)
+    except Exception as exc:  # noqa: BLE001 - scanner boundary is non-fatal
+        runtime.model_catalogue.mark_scan_failed(exc)
+        runtime.add_diagnostic("model_catalogue", "scan_failed", str(exc))
 
 
 @asynccontextmanager
@@ -344,7 +344,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             mcp_server=getattr(app.state, "mcp_server", None),
         )
         _publish_runtime(app, runtime)
-        await _scan_startup(runtime)
+        model_catalogue.prepare_background_scan()
         await model_catalogue.start_update_scheduler()
         await metrics_service.start()
         logger.info("LLM Studio backend: готов принимать запросы %s", service_url)
@@ -366,6 +366,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 logger.info("OpenAI API: %s/v1", _service_url(settings.host, settings.openai_port))
             if runtime.mcp_server is not None:
                 await stack.enter_async_context(mcp_lifespan(runtime.mcp_server))
+            runtime.startup_task = asyncio.create_task(
+                _scan_startup(runtime), name="studio-startup-discovery"
+            )
             yield
     finally:
         await runtime.close()

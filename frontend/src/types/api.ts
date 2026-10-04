@@ -202,6 +202,8 @@ export interface LocalModelArtifact {
 }
 
 export interface LocalModelsData {
+  scanning?: boolean
+  scan_error?: string | null
   items: LocalModelArtifact[]
 }
 
@@ -314,6 +316,7 @@ export interface ProfileSummary {
   memory: {
     disk_bytes: ProfileSummaryMetric
     vram_current_bytes: ProfileSummaryMetric
+    vram_last_bytes: ProfileSummaryMetric
     vram_avg_bytes: ProfileSummaryMetric
     vram_peak_bytes: ProfileSummaryMetric
   }

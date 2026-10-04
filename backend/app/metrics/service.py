@@ -95,6 +95,10 @@ class MetricsService:
                         peaks[item.name] = min(peaks.get(item.name, item.value), item.value)
                         peaks["ttft_max_ms"] = max(peaks.get("ttft_max_ms", item.value), item.value)
                 data.peaks = dict(peaks)
+                if self.storage:
+                    vram = next((item for item in data.items if item.name == "vram_bytes"), None)
+                    if vram is not None:
+                        await self.storage.remember_vram(instance.profile_name, vram)
             self._cache[instance_id] = (time.monotonic(), instance, data)
             return data
 

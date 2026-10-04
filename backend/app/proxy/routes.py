@@ -227,6 +227,7 @@ class RouteManager:
             refs = self._ordered(
                 config["auto_routes"].get(name, []), grouped.get(name, [])
             )
+            refs = [profile_id for profile_id in refs if profile_id in runtime]
             routes.append(self._build_route(name, "auto", refs, by_name, runtime))
 
         auto_names = set(route_names)
@@ -276,6 +277,7 @@ class RouteManager:
         config = self.config.load()
         by_name = {profile.name: profile for profile in profiles}
         if name in config["aliases"]:
+            self._validate_alias_members(profile_ids)
             self._validate_profile_ids(profile_ids, by_name)
             config["aliases"][name] = list(profile_ids)
         else:
@@ -317,7 +319,17 @@ class RouteManager:
                 status_code=409,
                 details={"name": name},
             )
+        self._validate_alias_members(profile_ids)
         self._validate_profile_ids(profile_ids, by_name)
+
+    @staticmethod
+    def _validate_alias_members(profile_ids: list[str]) -> None:
+        if not profile_ids:
+            raise AppError(
+                "route_membership_invalid",
+                "Алиас должен содержать хотя бы один профиль",
+                status_code=422,
+            )
 
     @staticmethod
     def _validate_profile_ids(profile_ids: list[str], profiles: Mapping[str, ProfileData]) -> None:

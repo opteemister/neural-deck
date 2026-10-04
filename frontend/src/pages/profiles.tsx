@@ -1,7 +1,7 @@
 import { FormEvent, ReactNode, useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useLogsDrawer } from '@/components/logs-drawer'
-import { Check, ChevronDown, FileWarning, FolderOpen, Info, Pencil, Play, Plus, RefreshCw, Save, Square, Trash2, WandSparkles, X } from 'lucide-react'
+import { Check, ChevronDown, FileWarning, FolderOpen, Info, Pencil, Play, Plus, RefreshCw, Save, Square, Trash2, TriangleAlert, WandSparkles, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -14,7 +14,7 @@ import { api, queryKeys, StudioApiError } from '@/lib/api'
 import { profileModelOptions } from '@/lib/profile-model-options'
 import { ProfileGpuPicker } from '@/components/profile-gpu-picker'
 import { previewProfileEnvironment } from '@/lib/profile-preview'
-import type { Instance, LocalModelArtifact, ProfileData, SystemData } from '@/types/api'
+import type { Instance, LocalModelArtifact, ProfileData, ProfileSummary, SystemData } from '@/types/api'
 
 type FormState = { name: string; modelName: string; installationId: string; modelPath: string; draftPath: string; command: string; environment: string; autostart: boolean; enableMetrics: boolean }
 type EditorState = { kind: 'new' } | { kind: 'edit'; name: string }
@@ -30,6 +30,7 @@ export function ProfilesPage() {
   const selectedName = editor?.kind === 'edit' ? editor.name : null
   const settings = useQuery({ queryKey: queryKeys.settings, queryFn: api.getSettings })
   const profiles = useQuery({ queryKey: queryKeys.profiles, queryFn: api.getProfiles })
+  const summaries = useQuery({ queryKey: queryKeys.profileSummary, queryFn: api.getProfileSummary })
   const engines = useQuery({ queryKey: queryKeys.engines, queryFn: api.getEngines })
   const localModels = useQuery({ queryKey: queryKeys.localModels, queryFn: api.getLocalModels })
   const system = useQuery({ queryKey: queryKeys.system, queryFn: api.getSystem, refetchInterval: 5_000 })
@@ -37,12 +38,12 @@ export function ProfilesPage() {
   const [form, setForm] = useState<FormState>(emptyForm)
   const [saved, setSaved] = useState(false)
   const readyInstallations = useMemo(() => engines.data?.items.flatMap((engine) => engine.installations.filter((installation) => installation.status === 'ready').map((installation) => ({ ...installation, displayName: engine.display_name, commandTemplate: engine.command_template }))) ?? [], [engines.data])
-  const create = useMutation({ mutationFn: (body: ProfileData) => api.createProfile(body), onSuccess: () => { setSaved(true); setEditor(null); void queryClient.invalidateQueries({ queryKey: queryKeys.profiles }); setTimeout(() => setSaved(false), 2000) } })
-  const update = useMutation({ mutationFn: ({ name, body }: { name: string; body: ProfileData }) => api.updateProfile(name, body), onSuccess: () => { setSaved(true); setEditor(null); void queryClient.invalidateQueries({ queryKey: queryKeys.profiles }); void detail.refetch(); setTimeout(() => setSaved(false), 2000) } })
-  const remove = useMutation({ mutationFn: api.deleteProfile, onSuccess: (_, name) => { if (selectedName === name) setEditor(null); void queryClient.invalidateQueries({ queryKey: queryKeys.profiles }); void queryClient.invalidateQueries({ queryKey: queryKeys.system }) } })
+  const create = useMutation({ mutationFn: (body: ProfileData) => api.createProfile(body), onSuccess: () => { setSaved(true); setEditor(null); void queryClient.invalidateQueries({ queryKey: queryKeys.profiles }); void queryClient.invalidateQueries({ queryKey: queryKeys.profileSummary }); setTimeout(() => setSaved(false), 2000) } })
+  const update = useMutation({ mutationFn: ({ name, body }: { name: string; body: ProfileData }) => api.updateProfile(name, body), onSuccess: () => { setSaved(true); setEditor(null); void queryClient.invalidateQueries({ queryKey: queryKeys.profiles }); void queryClient.invalidateQueries({ queryKey: queryKeys.profileSummary }); void detail.refetch(); setTimeout(() => setSaved(false), 2000) } })
+  const remove = useMutation({ mutationFn: api.deleteProfile, onSuccess: (_, name) => { if (selectedName === name) setEditor(null); void queryClient.invalidateQueries({ queryKey: queryKeys.profiles }); void queryClient.invalidateQueries({ queryKey: queryKeys.profileSummary }); void queryClient.invalidateQueries({ queryKey: queryKeys.system }) } })
   const format = useMutation({ mutationFn: () => api.formatScript(form.command), onSuccess: (data) => setForm((current) => ({ ...current, command: data.script })) })
-  const start = useMutation({ mutationFn: ({ name, configuration }: { name: string; configuration?: ProfileData }) => configuration ? api.startProfileConfiguration(configuration) : api.startProfile(name), onSuccess: (instance, variables) => { if (variables.configuration) { void queryClient.invalidateQueries({ queryKey: queryKeys.logs }); openLogs(variables.name) } queryClient.setQueryData<SystemData>(queryKeys.system, (current) => current ? { ...current, instances: [...current.instances.filter((item) => item.id !== instance.id), instance] } : current); void queryClient.invalidateQueries({ queryKey: queryKeys.system }); void queryClient.invalidateQueries({ queryKey: queryKeys.instances }); void queryClient.invalidateQueries({ queryKey: queryKeys.models }) } })
-  const stop = useMutation({ mutationFn: api.stopInstance, onSuccess: () => { void queryClient.invalidateQueries({ queryKey: queryKeys.system }); void queryClient.invalidateQueries({ queryKey: queryKeys.instances }); void queryClient.invalidateQueries({ queryKey: queryKeys.models }) } })
+  const start = useMutation({ mutationFn: ({ name, configuration }: { name: string; configuration?: ProfileData }) => configuration ? api.startProfileConfiguration(configuration) : api.startProfile(name), onSuccess: (instance, variables) => { if (variables.configuration) { void queryClient.invalidateQueries({ queryKey: queryKeys.logs }); openLogs(variables.name) } queryClient.setQueryData<SystemData>(queryKeys.system, (current) => current ? { ...current, instances: [...current.instances.filter((item) => item.id !== instance.id), instance] } : current); void queryClient.invalidateQueries({ queryKey: queryKeys.system }); void queryClient.invalidateQueries({ queryKey: queryKeys.instances }); void queryClient.invalidateQueries({ queryKey: queryKeys.models }); void queryClient.invalidateQueries({ queryKey: queryKeys.profileSummary }) } })
+  const stop = useMutation({ mutationFn: api.stopInstance, onSuccess: () => { void queryClient.invalidateQueries({ queryKey: queryKeys.system }); void queryClient.invalidateQueries({ queryKey: queryKeys.instances }); void queryClient.invalidateQueries({ queryKey: queryKeys.models }); void queryClient.invalidateQueries({ queryKey: queryKeys.profileSummary }) } })
   const runtimeInstances = useMemo(() => system.data?.instances ?? [], [system.data?.instances])
   const orderedProfiles = useMemo(() => [...(profiles.data?.items ?? [])].sort((left, right) => Number(profileRuntimeStatus(right.name, runtimeInstances).processPresent) - Number(profileRuntimeStatus(left.name, runtimeInstances).processPresent)), [profiles.data?.items, runtimeInstances])
 
@@ -84,7 +85,7 @@ export function ProfilesPage() {
   }
   function requestDelete(name: string) { if (window.confirm(`Удалить профиль «${name}»? Файл конфигурации будет удалён. Запущенный процесс остановлен не будет.`)) void remove.mutate(name) }
 
-  return <div><PageHeader eyebrow="Студия / управление" title="Профили" description="Редактируемый YAML-профиль: модель, конкретная установка, команда, окружение и автозапуск." action={<div className="flex gap-2"><Button variant="secondary" size="sm" onClick={() => { void profiles.refetch(); void engines.refetch(); void localModels.refetch(); void system.refetch() }}><RefreshCw className="size-3.5" />Обновить</Button><Button variant="primary" size="sm" onClick={openNew}><Plus className="size-3.5" />Новый профиль</Button></div>} />
+  return <div><PageHeader eyebrow="Студия / управление" title="Профили" description="Редактируемый YAML-профиль: модель, конкретная установка, команда, окружение и автозапуск." action={<div className="flex gap-2"><Button variant="secondary" size="sm" onClick={() => { void profiles.refetch(); void summaries.refetch(); void engines.refetch(); void localModels.refetch(); void system.refetch() }}><RefreshCw className="size-3.5" />Обновить</Button><Button variant="primary" size="sm" onClick={openNew}><Plus className="size-3.5" />Новый профиль</Button></div>} />
     {isNew && <ProfileEditor form={form} updateForm={updateForm} localModels={localModels.data?.items ?? []} gpus={system.data?.gpus ?? []} readyInstallations={readyInstallations} nameLocked={false} onSubmit={submit} onCancel={closeEditor} saving={create.isPending || update.isPending} error={create.error ?? update.error} format={() => void format.mutate()} formatting={format.isPending} formatted={format.data?.changed} formatReason={format.data?.reason} saved={saved} />}
     {start.isError && <div className="mb-4"><QueryError error={start.error} label="Запуск профиля не выполнен" /></div>}
     {stop.isError && <div className="mb-4"><QueryError error={stop.error} label="Остановка профиля не выполнена" /></div>}
@@ -92,7 +93,7 @@ export function ProfilesPage() {
     {profiles.isLoading ? <QueryLoading label="Читаем YAML-профили" /> : profiles.isError ? <QueryError error={profiles.error} retry={() => void profiles.refetch()} label="Список профилей недоступен" /> : !profiles.data ? <QueryLoading label="Ожидаем профили" /> : <div className="space-y-2">{profiles.data.issues.length > 0 && <Issues issues={profiles.data.issues} />}{orderedProfiles.length === 0 ? <QueryEmpty title="Профилей нет" description="Создайте первый профиль, чтобы запускать локальные модели." /> : orderedProfiles.map((profile) => {
       const isEditing = selectedName === profile.name
       const editor = isEditing ? (detail.isLoading ? <QueryLoading label="Получаем профиль" /> : detail.isError ? <QueryError error={detail.error} retry={() => void detail.refetch()} label="Профиль недоступен" /> : <ProfileEditor embedded form={form} updateForm={updateForm} localModels={localModels.data?.items ?? []} gpus={system.data?.gpus ?? []} readyInstallations={readyInstallations} nameLocked onSubmit={submit} onCancel={closeEditor} saving={create.isPending || update.isPending} error={create.error ?? update.error} format={() => void format.mutate()} formatting={format.isPending} formatted={format.data?.changed} formatReason={format.data?.reason} saved={saved} />) : undefined
-      return <ProfileCard key={profile.name} profile={profile} modelsRoot={settings.data?.models_root} installation={readyInstallations.find((item) => item.id === profile.engine.installation_id)} runtime={system.isLoading ? { label: 'Проверяем…', tone: 'idle', processPresent: false } : profileRuntimeStatus(profile.name, runtimeInstances)} edit={() => openEdit(profile.name)} cancel={closeEditor} editing={isEditing} editor={editor} start={() => requestStart(profile.name, isEditing)} starting={start.isPending && start.variables?.name === profile.name} startDisabled={start.isPending || (isEditing && (!detail.data || detail.isLoading || detail.isError || !formConfiguration()))} stop={(id) => stop.mutate(id)} stoppingId={stop.isPending ? stop.variables : undefined} remove={() => requestDelete(profile.name)} removing={remove.isPending && remove.variables === profile.name} />
+      return <ProfileCard key={profile.name} profile={profile} summary={summaries.data?.items.find((item) => item.profile_name === profile.name)} summaryLoading={summaries.isLoading} modelsRoot={settings.data?.models_root} installation={readyInstallations.find((item) => item.id === profile.engine.installation_id)} runtime={system.isLoading ? { label: 'Проверяем…', tone: 'idle', processPresent: false } : profileRuntimeStatus(profile.name, runtimeInstances)} edit={() => openEdit(profile.name)} cancel={closeEditor} editing={isEditing} editor={editor} start={() => requestStart(profile.name, isEditing)} starting={start.isPending && start.variables?.name === profile.name} startDisabled={start.isPending || (isEditing && (!detail.data || detail.isLoading || detail.isError || !formConfiguration()))} stop={(id) => stop.mutate(id)} stoppingId={stop.isPending ? stop.variables : undefined} remove={() => requestDelete(profile.name)} removing={remove.isPending && remove.variables === profile.name} />
     })}</div>}
   </div>
 }
@@ -126,7 +127,7 @@ function profileToForm(profile: ProfileData): FormState { return { name: profile
 function parseEnvironment(value: string): Record<string, string> { return Object.fromEntries(value.split('\n').map((line) => line.trim()).filter(Boolean).map((line) => { const separator = line.indexOf('='); return separator > 0 ? [line.slice(0, separator).trim(), line.slice(separator + 1)] : [line, ''] })) }
 function Issues({ issues }: { issues: Array<{ file: string; code: string; message: string }> }) { return <Card><CardHeader><CardTitle className="flex items-center gap-2"><FileWarning className="size-4 text-copper" />Ошибки файлов профилей</CardTitle><CardDescription>Исправьте YAML и обновите список. Остальные профили остаются доступными.</CardDescription></CardHeader><CardContent className="space-y-2">{issues.map((issue) => <div key={`${issue.file}-${issue.code}`} className="rounded-md border border-[#72544a] bg-secondary px-3 py-2 text-xs"><p className="font-mono text-[#d0a390]">{issue.file}</p><p className="mt-1 text-muted-foreground">{issue.message}</p><p className="mt-1 text-[10px] text-muted-foreground">{issue.code}</p></div>)}</CardContent></Card> }
 
-function ProfileCard({ profile, modelsRoot, installation, runtime, edit, cancel, editing, editor, start, starting, startDisabled, stop, stoppingId, remove, removing }: { profile: ProfileData; modelsRoot?: string; installation?: { executable_path: string; displayName: string; version: string | null }; runtime: RuntimeStatus; edit: () => void; cancel: () => void; editing: boolean; editor?: ReactNode; start: () => void; starting: boolean; startDisabled: boolean; stop: (id: string) => void; stoppingId?: string; remove: () => void; removing: boolean }) {
+function ProfileCard({ profile, summary, summaryLoading, modelsRoot, installation, runtime, edit, cancel, editing, editor, start, starting, startDisabled, stop, stoppingId, remove, removing }: { profile: ProfileData; summary?: ProfileSummary; summaryLoading: boolean; modelsRoot?: string; installation?: { executable_path: string; displayName: string; version: string | null }; runtime: RuntimeStatus; edit: () => void; cancel: () => void; editing: boolean; editor?: ReactNode; start: () => void; starting: boolean; startDisabled: boolean; stop: (id: string) => void; stoppingId?: string; remove: () => void; removing: boolean }) {
   const [expanded, setExpanded] = useState(false)
   const commandPreview = useQuery({
     queryKey: ['profile-command-preview', profile],
@@ -142,21 +143,55 @@ function ProfileCard({ profile, modelsRoot, installation, runtime, edit, cancel,
 
   useEffect(() => { if (editing) setExpanded(false) }, [editing])
 
-  return <Card className="overflow-hidden"><div className="grid gap-3 px-4 py-3 md:grid-cols-[minmax(0,1fr)_120px_96px_100px_auto] md:items-center">
+  return <Card className="overflow-hidden"><div className="grid gap-x-3 gap-y-2 px-4 py-2.5 xl:grid-cols-[minmax(400px,3fr)_minmax(96px,1.1fr)_repeat(7,minmax(0,1fr))_auto] xl:items-center">
     <div className="flex min-w-0 items-center gap-3"><Button variant="secondary" size="sm" iconOnly aria-label={visibleExpanded ? 'Свернуть' : 'Развернуть'} title={editing ? 'Недоступно во время редактирования' : visibleExpanded ? 'Свернуть' : 'Развернуть'} aria-expanded={visibleExpanded} onClick={() => setExpanded((value) => !value)} disabled={editing}><ChevronDown className={`size-3.5 transition-transform ${visibleExpanded ? 'rotate-180' : ''}`} /></Button><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-x-2 gap-y-1"><h2 className="text-sm font-medium">{profile.name}</h2><span className="text-muted-foreground">—</span><span className="text-sm text-foreground">{profile.model_name}</span></div><a href={`/models?local_q=${encodeURIComponent(profile.model.path)}`} title={profile.model.path} className="mt-1.5 flex min-w-0 items-center gap-1.5 break-all font-mono text-[11px] text-copper underline-offset-2 hover:underline"><FolderOpen className="size-3.5 shrink-0" />{modelLabel}</a></div></div>
-    <div className="min-w-0"><p className="text-[10px] uppercase tracking-[0.16em] text-muted-foreground">Статус</p><div className="mt-1"><RuntimeStatus status={runtime} profileName={profile.name} /></div></div>
-    <div className="min-w-0"><p className="text-[10px] uppercase tracking-[0.16em] text-muted-foreground">А.Запуск</p><div className="mt-1 flex h-4 items-center text-xs text-muted-foreground" aria-label={profile.autostart ? 'Автозапуск включён' : 'Автозапуск выключен'}>{profile.autostart ? 'Вкл' : 'Откл'}</div></div>
-    <div className="min-w-0"><p className="text-[10px] uppercase tracking-[0.16em] text-muted-foreground">Engine</p><p className="mt-1 truncate text-xs text-foreground" title={engineName}>{engineName}</p></div>
-    <div className="flex shrink-0 items-center gap-2 md:justify-self-end"><Button variant="secondary" size="sm" iconOnly aria-label={editing ? 'Отмена' : 'Изменить'} title={editing ? 'Отмена' : 'Изменить'} onClick={editing ? cancel : edit}>{editing ? <X className="size-3.5" /> : <Pencil className="size-3.5" />}</Button><Button variant="primary" size="sm" iconOnly aria-label={runtime.processPresent ? 'Остановить' : 'Запустить'} title={runtime.processPresent ? 'Остановить' : 'Запустить'} onClick={() => runtime.processPresent && runtime.instance ? stop(runtime.instance.id) : start()} disabled={starting || (!runtime.processPresent && startDisabled) || (runtime.processPresent && (!runtime.instance?.can_stop || !runtime.instance.identity_verified || runtime.tone === 'stopping' || stoppingId === runtime.instance.id))}>{runtime.processPresent ? <Square className="size-3.5" /> : <Play className="size-3.5" />}</Button></div>
+    <SummaryCell label="Статус" value={<RuntimeStatus status={runtime} profileName={profile.name} />} title={`Логи профиля «${profile.name}»`} />
+    <SummaryCell label="Порт" value={summaryLoading ? '…' : formatPort(summary?.endpoint)} warning={Boolean(summary?.endpoint.conflict)} title={summary?.endpoint.conflict ? `Порт совпадает с: ${summary.endpoint.conflict_with.join(', ')}` : 'Effective port из command или default engine'} />
+    <SummaryCell label="Engine" value={<span className="block truncate">{engineName}</span>} title={engineName} />
+    <ProfileSummaryCells summary={summary} loading={summaryLoading} />
+    <SummaryCell label="А.Запуск" value={<span aria-label={profile.autostart ? 'Автозапуск включён' : 'Автозапуск выключен'}>{profile.autostart ? 'Вкл' : 'Откл'}</span>} title={profile.autostart ? 'Автозапуск включён' : 'Автозапуск выключен'} />
+    <div className="flex shrink-0 items-center gap-2 xl:justify-self-end"><Button variant="secondary" size="sm" iconOnly aria-label={editing ? 'Отмена' : 'Изменить'} title={editing ? 'Отмена' : 'Изменить'} onClick={editing ? cancel : edit}>{editing ? <X className="size-3.5" /> : <Pencil className="size-3.5" />}</Button><Button variant="primary" size="sm" iconOnly aria-label={runtime.processPresent ? 'Остановить' : 'Запустить'} title={runtime.processPresent ? 'Остановить' : 'Запустить'} onClick={() => runtime.processPresent && runtime.instance ? stop(runtime.instance.id) : start()} disabled={starting || (!runtime.processPresent && startDisabled) || (runtime.processPresent && (!runtime.instance?.can_stop || !runtime.instance.identity_verified || runtime.tone === 'stopping' || stoppingId === runtime.instance.id))}>{runtime.processPresent ? <Square className="size-3.5" /> : <Play className="size-3.5" />}</Button></div>
   </div>{editing ? editor : visibleExpanded && <div className="border-t border-border px-4 py-3"><div className="grid gap-3 lg:grid-cols-2"><CommandPanel title="Шаблон команды" value={profile.command} /><div className="flex items-end gap-3"><div className="min-w-0 flex-1"><p className="text-[11px] text-muted-foreground">Фактическая команда</p>{preview.ok ? <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded-md border border-copper/60 bg-background p-3 font-mono text-[11px] leading-5">{environmentPreview && <><span className="text-muted-foreground">{environmentPreview}</span>{'\n\n'}</>}{preview.command}</pre> : <p className="mt-1 text-xs text-[#d0a390]">{preview.error}</p>}</div><Button variant="danger" size="sm" iconOnly aria-label="Удалить" title="Удалить" onClick={remove} disabled={removing}><Trash2 className="size-3.5" /></Button></div></div></div>}</Card>
 }
+
+function ProfileSummaryCells({ summary, loading }: { summary?: ProfileSummary; loading: boolean }) {
+  const vram = summary && [summary.memory.vram_current_bytes, summary.memory.vram_peak_bytes, summary.memory.vram_avg_bytes].find((item) => item.state === 'ok' || item.state === 'stale')
+  return <>
+    <SummaryCell label="Prefill" value={loading ? '…' : formatRate(summary?.performance.prefill_tps)} title="Средняя скорость prefill за UTC-сутки" />
+    <SummaryCell label="Decode" value={loading ? '…' : formatRate(summary?.performance.decode_tps)} title="Средняя скорость decode за UTC-сутки" />
+    <SummaryCell label="VRAM" value={loading ? '…' : formatBytes(vram)} title="VRAM процесса; текущее значение, затем пик или среднее за сутки" />
+    <SummaryCell label="Max req." value={loading ? '…' : formatMaxRequests(summary?.concurrency)} title="Maximum number of simultaneous requests observed in metrics" />
+  </>
+}
+
+function SummaryCell({ label, value, title, warning = false }: { label: string; value: ReactNode; title: string; warning?: boolean }) {
+  return <div className="min-w-0 overflow-hidden" title={title}><p className="h-3 whitespace-nowrap text-[10px] uppercase leading-3 tracking-[0.16em] text-muted-foreground">{label}</p><div className="mt-1 flex min-h-4 items-center gap-1 overflow-hidden whitespace-nowrap text-xs leading-4 tabular-nums text-foreground">{warning && <TriangleAlert className="size-3.5 shrink-0 text-[#d4a85b]" aria-label="Совпадение порта" />}{value}</div></div>
+}
+
+function formatRate(metric?: ProfileSummary['performance']['prefill_tps']): string {
+  return metric?.state === 'ok' && metric.value !== null ? `${formatNumber(metric.value)} tok/s` : '—'
+}
+function formatBytes(metric?: ProfileSummary['memory']['disk_bytes']): string {
+  if (!metric || !['ok', 'stale'].includes(metric.state) || metric.value === null) return '—'
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
+  let value = metric.value
+  let index = 0
+  while (value >= 1024 && index < units.length - 1) { value /= 1024; index += 1 }
+  return `${formatNumber(value)} ${units[index]}`
+}
+function formatMaxRequests(concurrency?: ProfileSummary['concurrency']): string {
+  if (!concurrency) return '—'
+  return concurrency.limit.state === 'ok' && concurrency.limit.value !== null ? String(Math.round(concurrency.limit.value)) : '—'
+}
+function formatPort(endpoint?: ProfileSummary['endpoint']): string { return endpoint?.state === 'ok' && endpoint.port !== null ? String(endpoint.port) : '—' }
+function formatNumber(value: number): string { return new Intl.NumberFormat('ru-RU', { maximumFractionDigits: value >= 100 ? 0 : 1 }).format(value) }
 
 function CommandPanel({ title, value }: { title: string; value: string }) { return <div><p className="text-[11px] text-muted-foreground">{title}</p><pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded-md bg-secondary p-3 font-mono text-[11px] leading-5 text-muted-foreground">{value}</pre></div> }
 function RuntimeStatus({ status, profileName }: { status: RuntimeStatus; profileName: string }) {
   const openLogs = useLogsDrawer()
   const dot = status.tone === 'active' ? 'bg-[#9ab77b]' : status.tone === 'starting' ? 'bg-copper' : status.tone === 'error' ? 'bg-[#d09b87]' : 'bg-muted-foreground'
   const content = <><span className={`size-2 rounded-full ${dot}`} aria-hidden="true" />{status.label}</>
-  const className = 'inline-flex items-center gap-1.5 text-[11px] text-muted-foreground'
+  const className = 'inline-flex items-center gap-1.5 text-inherit'
   return <button type="button" onClick={() => openLogs(profileName)} className={`${className} rounded-sm underline underline-offset-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-copper`} aria-label={`${status.label}: открыть логи профиля «${profileName}»`} title={`Логи профиля «${profileName}»`}>{content}</button>
 }
 function profileRuntimeStatus(name: string, instances: Instance[]): RuntimeStatus {

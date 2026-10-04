@@ -6,20 +6,24 @@ import asyncio
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, Query, Request, status
 from fastapi.responses import JSONResponse
 
+from ..metrics.service import MetricsService
+from ..models.catalogue import ModelCatalogue
 from ..profiles.formatting import enable_command_metrics
 from ..profiles.service import ProfileService
+from ..profiles.summary import build_profile_summary, utc_day_window
 from ..schemas.common import SuccessEnvelope
 from ..schemas.instances import Instance
+from ..schemas.profile_summary import ProfileSummaryData
 from ..schemas.profiles import (
     FormatScriptRequest,
     FormatScriptResult,
     ProfileData,
     ProfileListData,
 )
-from .dependencies import get_profile_service
+from .dependencies import get_metrics_service, get_model_catalogue, get_profile_service
 from .management import success
 
 router = APIRouter(prefix="/api/v1/profiles", tags=["profiles"])
@@ -90,6 +94,31 @@ async def start_configuration(
     )
     instance = await service.start_configuration(profile)
     return success(request, instance, status_code=status.HTTP_202_ACCEPTED)
+
+
+@router.get("/summary", response_model=SuccessEnvelope[ProfileSummaryData])
+async def profile_summary(
+    request: Request,
+    profile_names: list[str] | None = Query(default=None),
+    service: ProfileService = Depends(get_profile_service),
+    metrics: MetricsService = Depends(get_metrics_service),
+    catalogue: ModelCatalogue = Depends(get_model_catalogue),
+) -> JSONResponse:
+    profile_list = await asyncio.to_thread(service.list)
+    selected_names = set(profile_names) if profile_names is not None else None
+    selected = (
+        profile_list.items
+        if selected_names is None
+        else [profile for profile in profile_list.items if profile.name in selected_names]
+    )
+    start, end = utc_day_window()
+    summary = await build_profile_summary(
+        selected, metrics=metrics, catalogue=catalogue, start=start, end=end
+    )
+    return success(
+        request,
+        summary.model_dump(mode="json", by_alias=True),
+    )
 
 
 @router.get("/{profile_name}", response_model=SuccessEnvelope[ProfileData])

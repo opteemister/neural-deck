@@ -17,7 +17,7 @@ from .entities import MetricLaunchExtrema, MetricSample
 from .performance import FIELDS, UNITS
 
 AGGREGATE_FIELDS = (
-    "prefill_tps", "decode_tps", "active_requests", "ttft_mean_ms",
+    "prefill_tps", "decode_tps", "active_requests", "vram_bytes", "ttft_mean_ms",
     "prefix_cache_hit_percent", "spec_acceptance_percent", "kv_cache_percent", "queue_requests",
 )
 

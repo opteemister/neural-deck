@@ -245,6 +245,50 @@ export interface ProfileListData {
   issues: ProfileIssue[]
 }
 
+export type ProfileSummaryState = 'ok' | 'unavailable' | 'stale' | 'unknown' | 'not_measured'
+
+export interface ProfileSummaryMetric {
+  value: number | null
+  unit: string
+  state: ProfileSummaryState
+  source: string
+  reason?: string | null
+}
+
+export interface ProfileSummary {
+  profile_name: string
+  period: { from: string; to: string; timezone: 'UTC' }
+  performance: { prefill_tps: ProfileSummaryMetric; decode_tps: ProfileSummaryMetric }
+  memory: {
+    disk_bytes: ProfileSummaryMetric
+    vram_current_bytes: ProfileSummaryMetric
+    vram_avg_bytes: ProfileSummaryMetric
+    vram_peak_bytes: ProfileSummaryMetric
+  }
+  concurrency: {
+    optimal: ProfileSummaryMetric
+    limit: ProfileSummaryMetric
+    observed_max: ProfileSummaryMetric
+    limit_source: string
+    benchmark_state: 'not_measured' | 'measured'
+  }
+  load: { percent: ProfileSummaryMetric }
+  endpoint: {
+    port: number | null
+    state: 'ok' | 'unknown'
+    source: string
+    conflict: boolean
+    conflict_with: string[]
+    reason?: string | null
+  }
+}
+
+export interface ProfileSummaryData {
+  items: ProfileSummary[]
+  period: { from: string; to: string; timezone: 'UTC' }
+  source: string
+}
+
 export interface Metric {
   metadata?: Record<string, unknown>
   name: string

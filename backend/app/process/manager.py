@@ -22,6 +22,7 @@ import psutil
 
 from ..errors import AppError
 from ..profiles.formatting import substitute_placeholders
+from ..profiles.ports import resolve_effective_port
 from ..schemas.instances import (
     Instance,
     InstanceList,
@@ -226,7 +227,7 @@ class ProcessManager:
                 model_name=profile.model_name,
                 model_draft=str(profile.model.draft_path) if profile.model.draft_path else None,
             )
-            port = _extract_port(command)
+            port = resolve_effective_port(profile.engine.id, command).port
             if port is not None and (
                 any(item.instance.port == port for item in active)
                 or any(item.port == port for item in active_external)
@@ -747,16 +748,6 @@ async def _terminate_process_group_and_wait(process: Any, *, pgid: int | None = 
     if getattr(process, "returncode", None) is None:
         with contextlib.suppress(asyncio.TimeoutError, OSError, ProcessLookupError):
             await asyncio.wait_for(process.wait(), timeout=1.0)
-
-
-def _extract_port(command: str) -> int | None:
-    import re
-
-    match = re.search(r"(?:--port(?:=|\s+)|(?:^|\s)-p\s+)(\d{1,5})(?:\s|$)", command)
-    if not match:
-        return None
-    value = int(match.group(1))
-    return value if 1 <= value <= 65535 else None
 
 
 __all__ = ["ProcessManager"]

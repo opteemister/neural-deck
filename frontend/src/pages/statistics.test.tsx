@@ -24,6 +24,38 @@ function fixture(period: string): StatisticsData {
 }
 afterEach(() => vi.restoreAllMocks())
 describe('Statistics page', () => {
+  it('marks partial cost in the summary and both tables with the excluded request count', async () => {
+    vi.spyOn(api, 'getStatistics').mockImplementation(async filters => {
+      const data = fixture(filters?.period ?? 'month')
+      const partial = { ...aggregate, cost: { ...aggregate.cost, usd: 1.875, state: 'partial' as const, unknown_requests: 2 } }
+      data.totals = partial
+      data.profiles = [{ ...partial, profile_name: 'test-profile', model_name: 'test-model',
+        load: { percent: 0, active_seconds: 0, period_seconds: 10000,
+          max_concurrency: 8, basis: 'engine_active_requests', state: 'ok' } }]
+      data.clients = [{ ...partial, client_id: 1, label: 'test-client', profiles: ['test-profile'] }]
+      return data
+    })
+    render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><StatisticsPage /></QueryClientProvider>)
+    await screen.findByText('test-client')
+    const costs = screen.getAllByTitle(/Не удалось оценить 2 запросов/)
+    expect(costs).toHaveLength(3)
+    costs.forEach(cost => expect(cost).toHaveTextContent('$1.8750*'))
+  })
+  it('shows small engine load and keeps its explanation in the header tooltip', async () => {
+    vi.spyOn(api, 'getStatistics').mockImplementation(async filters => {
+      const data = fixture(filters?.period ?? 'month')
+      data.profiles = [{ ...aggregate, profile_name: 'test-profile', model_name: 'test-model',
+        performance: { ...aggregate.performance, prefill_tps: 1500, decode_tps: 150 },
+        load: { percent: 0.04, active_seconds: 10, period_seconds: 10000,
+          max_concurrency: 8, basis: 'engine_active_requests', state: 'ok' } }]
+      return data
+    })
+    render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><StatisticsPage /></QueryClientProvider>)
+    expect(await screen.findByText('0,04%')).toBeInTheDocument()
+    expect(screen.getByText(/1500\.0 \/ 150\.0/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Как рассчитывается Load' })).toHaveAttribute('title', expect.stringContaining('исторического максимума'))
+    expect(screen.queryByText(/^Load —/)).not.toBeInTheDocument()
+  })
   it('shows the entire current Monday–Sunday column even on Monday', () => {
     const data = fixture('year')
     data.period.from = '2025-10-06T00:00:00Z'

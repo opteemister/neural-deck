@@ -326,7 +326,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             prometheus_token=settings.prometheus_token,
             studio_id=identity_path.read_text().strip(),
         )
-        statistics_service = StatisticsService(journal_service, profile_service)
+        statistics_service = StatisticsService(journal_service, profile_service, metrics_service.storage)
         runtime = AppContainer(
             settings=settings,
             paths=paths,

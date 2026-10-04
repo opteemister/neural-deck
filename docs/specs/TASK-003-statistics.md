@@ -38,12 +38,22 @@ date: 2026-10-04
 - Cached input является частью input. На профиле задаются три цены в USD за 1
   млн токенов: input, cached input и output. Стоимость считается как
   `(input-cached)*input_price + cached*cached_price + output*output_price`.
-- В totals входят успешные, failed, interrupted и unknown запросы. Их статусы
+- В totals входят успешные, failed и unknown запросы. Их статусы
   показываются отдельно.
+  Прерванные (`interrupted`, `client_disconnected`) исключены из request-расчётов,
+  включая токены, признаки неполных данных, стоимость и activity heatmap.
+  Загруженность движка независимо учитывает фактически наблюдаемую работу.
 - Benchmark traffic входит в totals, tokens и cost; benchmark interval — только
   overlay/маркер и не фильтрует обычную статистику.
 - Load — time-weighted active concurrency / historical max concurrency профиля.
-  Historical max — максимальное число параллельных запросов за всю историю.
+  Historical max — максимальное число параллельных запросов из метрик движка
+  за всю историю. Prefill и Decode — взвешенные средние измерений движка за
+  выбранные календарные дни, с объединением дневного архива и сырых измерений
+  без двойного счёта. Журнал запросов не является источником этих скоростей.
+  Load интегрирует число активных запросов между свежими измерениями движка;
+  разрывы более 15 секунд не интерполируются. Старый архив без длительностей
+  даёт unavailable, а не ложный ноль. Малые проценты (например 0,04%) сохраняются
+  в отображении; пояснение находится у заголовка колонки.
   Процесс в памяти без активного запроса даёт 0%.
 - Выпадающие списки должны повторять текущий Select формы создания профиля;
   эталон — `frontend/src/components/ui/select.tsx`.
@@ -67,7 +77,7 @@ date: 2026-10-04
    queue и native engine throughput. Pure phase speed требует совместимых phase
    tokens/time; snapshots сохраняют native source/semantic/weight.
 3. `request_event_time = finished_at` для terminal rows (включая failed/partial)
-   и `started_at` для interrupted/unknown. Один logical request целиком попадает
+   и `started_at` для unknown. Прерванные запросы исключены. Один logical request целиком попадает
    в один bucket, период `[from,to)`, `usage_received_at` остаётся provenance.
    TASK-003 использует UTC для day/hour и absolute bucket keys; на месячном
    экране основной bucket — календарный день. DST в UI не возникает.
@@ -91,7 +101,7 @@ TASK-005.
   основным графиком месячного экрана.
 - Валюта статистики — USD. Для расчёта берётся текущая ставка, указанная в
   профиле на момент чтения статистики; исторические ставки не восстанавливаются.
-- В requests входят успешные, terminal failed/HTTP-error и interrupted rows.
+- В requests входят успешные, terminal failed/HTTP-error и unknown rows.
   Ошибочные состояния показываются отдельными счётчиками/цветами; неизвестные
   tokens и стоимость не превращаются в ноль.
 - Benchmark traffic входит в общие tokens, requests и cost. Benchmark не
@@ -191,6 +201,7 @@ External/unmanaged rows без profile identity показываются отд�
 requests, status counters и cost, а также список фактически обслуживших
 профилей. Profile-only поля load и engine performance для клиента показываются
 только при наличии корректной attribution; иначе имеют `unavailable`.
+Вместо «Клиент #N» показывается API-токен клиента, для анонимного клиента — IP.
 
 Итоги за период выводятся внутри заголовка/подвала соответствующей таблицы.
 Известные суммы не включают unknown values, а недоступная стоимость не
@@ -299,7 +310,7 @@ requests, status counters, cost и список served profiles. Profile-only п
 в RFC 3339/JSON согласно общему контракту `docs/specs/2026-09-29-version-zero-contracts.md`.
 
 Рекомендуемый temporal contract: terminal row (success, HTTP error, failed или
-partial usage) получает bucket по `finished_at`; interrupted/unknown row без
+partial usage) получает bucket по `finished_at`; unknown row без
 `finished_at` — по `started_at` и помечается unknown. `usage_received_at` только
 фиксирует момент получения usage. Одна logical row не дробится при crossing
 midnight/period; если `event_time == to`, она исключена из `[from,to)`. In-flight
@@ -315,11 +326,11 @@ intervals пересекаются с bucket и period; разрывы набл�
 ### 5.1. Tokens и запросы
 
 - `requests.total` — число логических request rows с terminal или явно
-  зафиксированным interrupted/unknown исходом, включённых
+  зафиксированным unknown исходом, включённых
   выбранным `request_event_time` и фильтрами. Рекомендуемая граница периода
   `[from,to)` и единое правило применяются к таблице, totals и heatmap.
-- Failed/HTTP-error rows и interrupted rows входят в requests и получают
-  отдельные status counters (`failed`, `interrupted`, `unknown`). Tokens и cost
+- Failed/HTTP-error rows входят в requests и получают
+  отдельные status counters (`failed`, `unknown`). Tokens и cost
   для них учитываются только при подтверждённом usage. Attempts не считаются
   дополнительными логическими запросами.
 - `input_tokens.known_total` и `output_tokens.known_total` — суммы только
@@ -381,11 +392,17 @@ input subset; если cached rate не утверждён, result остаёт�
 Исходные cached tokens отображаются как subset input, вычитаются из обычного
 input и оплачиваются по отдельной cached-input ставке. UI и API хранят все три
 token counters и состояние стоимости, если ставка или usage неизвестны.
+При неполных данных показывается сумма по запросам с известными input,
+cached input, output и всеми тремя ценами, с `state: partial`, звёздочкой и
+числом неоценённых запросов в подсказке. Неизвестный cached input не считается
+нулём. Если не удалось оценить ни одного запроса, показывается прочерк;
+пустой период имеет стоимость $0. Правило одинаково для сводки и обеих таблиц.
 
 ### 5.6. Busy/load (решено)
 
-Numerator — time-weighted сумма фактических request intervals из журнала.
-Denominator — UTC-период, умноженный на historical max concurrency профиля за
+Numerator — интеграл `active_requests` из метрик движка по свежим наблюдениям,
+с сохранением длительностей в дневном архиве. Журнал не определяет Load.
+Denominator — UTC-период, умноженный на historical max concurrency из метрик движка за
 всю доступную историю. Профиль в памяти без active request не считается
 загруженным.
 

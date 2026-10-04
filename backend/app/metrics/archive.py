@@ -103,6 +103,30 @@ def fold(row: MetricSample, daily: dict, curves: dict, baselines: dict) -> None:
     run = json.dumps([*identity, row.pid])
     state = baselines.setdefault(run, {"seen": {}, "histograms": {}})
     state["last_at"] = at.isoformat()
+    # Integrate engine concurrency only between fresh observations. Never
+    # stretch an active sample over downtime or gaps in monitoring.
+    active_meta = row.metric_meta.get("active_requests", {})
+    active_at = datetime.fromisoformat(active_meta.get("observed_at", at.isoformat()))
+    active_at = active_at.replace(tzinfo=UTC) if active_at.tzinfo is None else active_at.astimezone(UTC)
+    previous_active = state.get("active_time")
+    valid_active = (active_meta.get("state") == "ok" and row.active_requests is not None
+                    and row.active_requests >= 0 and abs((at - active_at).total_seconds()) <= 5)
+    if valid_active:
+        if previous_active is not None:
+            left = datetime.fromisoformat(previous_active["at"])
+            elapsed = (active_at - left).total_seconds()
+            if 0 < elapsed <= 15 and previous_active["requests"] > 0:
+                while left < active_at:
+                    right = min(active_at, left.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1))
+                    interval_key = (left.date().isoformat(), *identity)
+                    interval_day = daily.setdefault(interval_key, {"statistics": {}, "distributions": {}})
+                    add_measurement(interval_day["statistics"].setdefault("active_requests_time", {}),
+                                    previous_active["requests"], (right - left).total_seconds())
+                    left = right
+        if previous_active is None or active_at > datetime.fromisoformat(previous_active["at"]):
+            state["active_time"] = {"at": active_at.isoformat(), "requests": row.active_requests}
+    else:
+        state.pop("active_time", None)
     for field in FIELDS:
         value = getattr(row, field)
         meta = row.metric_meta.get(field, {})
@@ -165,6 +189,7 @@ def fold(row: MetricSample, daily: dict, curves: dict, baselines: dict) -> None:
 
 async def load_and_fold(
     session: AsyncSession, *, first_day: str | None = None, profile_name: str | None = None,
+    end: datetime | None = None,
 ) -> tuple[dict, dict, dict, int]:
     checkpoint = await session.get(MetricArchiveCheckpoint, 1)
     cursor = checkpoint.last_sample_id if checkpoint else 0
@@ -172,11 +197,16 @@ async def load_and_fold(
     query = select(MetricSample).where(MetricSample.id > cursor).order_by(MetricSample.id)
     if profile_name is not None:
         query = query.where(MetricSample.profile_name == profile_name)
+    if end is not None:
+        query = query.where(MetricSample.observed_at < end)
     rows = (await session.scalars(query)).all()
     touched_days = {
         (r.observed_at.replace(tzinfo=UTC) if r.observed_at.tzinfo is None
         else r.observed_at).astimezone(UTC).date().isoformat() for r in rows
     }
+    # A short observed interval can cross midnight into the preceding day.
+    touched_days.update((datetime.fromisoformat(day).date() - timedelta(days=1)).isoformat()
+                        for day in list(touched_days))
     daily_query, curve_query = select(MetricDaily), select(MetricConcurrencyDaily)
     if first_day is not None:
         daily_query = daily_query.where(MetricDaily.day >= first_day)

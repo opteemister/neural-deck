@@ -10,6 +10,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from .journal import RequestJournalRecord
+from .metrics.storage import MetricsStorage
 from .profiles.service import ProfileService
 from .schemas.profiles import ProfileData
 from .token_stats import RequestJournalService
@@ -163,40 +164,40 @@ def _prices(profile: ProfileData | None) -> dict[str, float | None]:
 
 def _cost(rows: list[RequestJournalRecord], profile: ProfileData | None) -> dict[str, Any]:
     rates = _prices(profile)
+    return _calculate_cost([(row, rates) for row in rows], rates)
+
+
+def _calculate_cost(
+    entries: list[tuple[RequestJournalRecord, dict[str, float | None]]],
+    prices: dict[str, float | None],
+) -> dict[str, Any]:
     total = 0.0
     unknown_requests = 0
-    for row in rows:
-        if (
-            row.input_tokens is None
-            or row.cached_input_tokens is None
-            or row.output_tokens is None
-            or row.cached_input_tokens < 0
-            or row.cached_input_tokens > row.input_tokens
-        ):
-            unknown_requests += 1
-            continue
-        if any(rate is None for rate in rates.values()):
-            return {
-                "usd": None,
-                "state": "unavailable",
-                "unknown_requests": unknown_requests,
-                "prices": rates,
-            }
-        total += (
-            max(0, row.input_tokens - row.cached_input_tokens)
-            * float(rates["input"] or 0)
-            / 1_000_000
-            + row.cached_input_tokens * float(rates["cached_input"] or 0) / 1_000_000
-            + row.output_tokens * float(rates["output"] or 0) / 1_000_000
+    priced_components = 0
+    missing_usage = False
+    for row, rates in entries:
+        components = (
+            (None if row.input_tokens is None else
+             max(0, row.input_tokens - (row.cached_input_tokens or 0)), rates["input"]),
+            (row.cached_input_tokens, rates["cached_input"]),
+            (row.output_tokens, rates["output"]),
         )
-    if unknown_requests:
-        return {
-            "usd": None,
-            "state": "unknown",
-            "unknown_requests": unknown_requests,
-            "prices": rates,
-        }
-    return {"usd": round(total, 8), "state": "ok", "unknown_requests": 0, "prices": rates}
+        incomplete = False
+        for tokens, rate in components:
+            if tokens is None or rate is None:
+                incomplete = True
+                missing_usage = missing_usage or tokens is None
+                continue
+            total += tokens * rate / 1_000_000
+            priced_components += 1
+        unknown_requests += int(incomplete)
+    return {
+        "usd": round(total, 8) if priced_components or not entries else None,
+        "state": "partial" if priced_components and unknown_requests else
+        "unknown" if missing_usage else "unavailable" if unknown_requests else "ok",
+        "unknown_requests": unknown_requests,
+        "prices": prices,
+    }
 
 
 def _cost_by_profile(
@@ -204,40 +205,10 @@ def _cost_by_profile(
 ) -> dict[str, Any]:
     """Calculate a mixed-profile total without pretending one price is global."""
 
-    total = 0.0
-    unknown_requests = 0
-    for row in rows:
-        profile = profiles.get(_profile_key(row))
-        rates = _prices(profile)
-        if (
-            row.input_tokens is None
-            or row.cached_input_tokens is None
-            or row.output_tokens is None
-            or row.cached_input_tokens < 0
-            or row.cached_input_tokens > row.input_tokens
-        ):
-            unknown_requests += 1
-            continue
-        if any(rate is None for rate in rates.values()):
-            return {
-                "usd": None,
-                "state": "unavailable",
-                "unknown_requests": unknown_requests,
-                "prices": {"input": None, "cached_input": None, "output": None},
-            }
-        total += (
-            max(0, row.input_tokens - row.cached_input_tokens)
-            * float(rates["input"] or 0)
-            / 1_000_000
-            + row.cached_input_tokens * float(rates["cached_input"] or 0) / 1_000_000
-            + row.output_tokens * float(rates["output"] or 0) / 1_000_000
-        )
-    return {
-        "usd": None if unknown_requests else round(total, 8),
-        "state": "unknown" if unknown_requests else "ok",
-        "unknown_requests": unknown_requests,
-        "prices": {"input": None, "cached_input": None, "output": None},
-    }
+    return _calculate_cost(
+        [(row, _prices(profiles.get(_profile_key(row)))) for row in rows],
+        {"input": None, "cached_input": None, "output": None},
+    )
 
 
 def _aggregate(rows: list[RequestJournalRecord], profile: ProfileData | None) -> dict[str, Any]:
@@ -282,9 +253,11 @@ def _activity(
 
 
 class StatisticsService:
-    def __init__(self, journal: RequestJournalService, profiles: ProfileService) -> None:
+    def __init__(self, journal: RequestJournalService, profiles: ProfileService,
+                 storage: MetricsStorage | None = None) -> None:
         self.journal = journal
         self.profiles = profiles
+        self.storage = storage
 
     async def read(
         self,
@@ -312,7 +285,13 @@ class StatisticsService:
         if end <= start:
             raise ValueError("граница to должна быть позже from")
 
-        all_rows = await self.journal.records()
+        # Interrupted requests are excluded from every statistic, including
+        # missing usage, costs, activity and historical concurrency.
+        all_rows = [
+            row for row in await self.journal.records()
+            if row.error_code not in {"interrupted", "client_disconnected"}
+        ]
+        client_labels = await self.journal.client_labels()
         configured = await asyncio.to_thread(self.profiles.list)
         profile_map = {profile.name: profile for profile in configured.items}
         period_rows = [
@@ -336,6 +315,18 @@ class StatisticsService:
             rows = [row for row in period_rows if _profile_key(row) == name]
             profile = profile_map.get(name)
             item = _aggregate(rows, profile)
+            engine = await self.storage.statistics_window(start=start, end=end, profile_name=name) if self.storage else {}
+            maximum = await self.storage.all_time_active_requests_max(name) if self.storage else None
+            maximum = int(maximum or 0)
+            item["performance"].update({field: engine.get(field) for field in ("prefill_tps", "decode_tps")})
+            seconds = engine.get("active_seconds", 0.0)
+            period_seconds = (end - start).total_seconds()
+            load = {
+                "percent": seconds / period_seconds / maximum * 100 if maximum else 0.0,
+                "active_seconds": seconds, "period_seconds": period_seconds,
+                "max_concurrency": maximum, "basis": "engine_active_requests",
+                "state": "ok" if engine.get("load_known") else "unknown",
+            }
             item.update({
                 "profile_name": name,
                 "model_name": (
@@ -345,7 +336,7 @@ class StatisticsService:
                     if rows
                     else None
                 ),
-                "load": _load(all_rows, name, start, end, _max_concurrency(all_rows, name)),
+                "load": load,
             })
             profiles.append(item)
 
@@ -358,7 +349,8 @@ class StatisticsService:
             item["cost"] = _cost_by_profile(rows, profile_map)
             item.update({
                 "client_id": None if client_id == "unknown" else int(client_id),
-                "label": "Неизвестный клиент" if client_id == "unknown" else f"Клиент #{client_id}",
+                "label": client_labels.get(int(client_id), "Неизвестный клиент")
+                if client_id != "unknown" else "Неизвестный клиент",
                 "profiles": sorted({_profile_key(row) for row in rows}),
             })
             clients.append(item)
@@ -402,7 +394,7 @@ class StatisticsService:
             "profiles": profiles,
             "clients": clients,
             "benchmarks": {"intervals": [], "traffic_included": True, "state": "not_recorded"},
-            "source": "sqlite.request_journal",
+            "source": "sqlite.request_journal+engine_metrics",
         }
 
 

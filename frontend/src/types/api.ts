@@ -373,7 +373,7 @@ export interface StatisticsAggregate {
   }
   cost: {
     usd: number | null
-    state: 'ok' | 'unknown' | 'unavailable'
+    state: 'ok' | 'partial' | 'unknown' | 'unavailable'
     unknown_requests: number
     prices: { input: number | null; cached_input: number | null; output: number | null }
   }
@@ -387,8 +387,8 @@ export interface StatisticsProfile extends StatisticsAggregate {
     active_seconds: number
     period_seconds: number
     max_concurrency: number
-    basis: 'active_requests'
-    state: 'ok'
+    basis: 'engine_active_requests'
+    state: 'ok' | 'unknown'
   }
 }
 

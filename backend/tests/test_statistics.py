@@ -6,7 +6,7 @@ from app.journal import RequestJournalRecord
 from app.profiles.repository import ProfileRepository
 from app.profiles.service import ProfileService
 from app.schemas.profiles import ProfileData, ProfileEngine, ProfileModel
-from app.statistics import StatisticsService, _cost, _load
+from app.statistics import StatisticsService, _cost, _cost_by_profile, _load
 from app.token_stats import RequestJournalService
 
 
@@ -51,16 +51,18 @@ def row(index: str, start: datetime, finish: datetime | None, **values):
 
 async def test_statistics_uses_utc_daily_buckets_and_time_weighted_load(database, tmp_path):
     start = datetime(2026, 10, 1, 10, tzinfo=UTC)
+    journal = RequestJournalService(session_factory=database)
+    client_id = await journal.identify_client("Bearer test-client", "127.0.0.1")
     async with database() as session:
         session.add_all([
             row(
                 "one", start, start + timedelta(minutes=10), status_code=200,
-                input_tokens=100, cached_input_tokens=20, output_tokens=50, client_id=1,
+                input_tokens=100, cached_input_tokens=20, output_tokens=50, client_id=client_id,
             ),
             row(
                 "two", start + timedelta(minutes=5), start + timedelta(minutes=15),
                 status_code=500, error_code="upstream_error", input_tokens=100,
-                cached_input_tokens=10, output_tokens=20, client_id=1,
+                cached_input_tokens=10, output_tokens=20, client_id=client_id,
             ),
         ])
         await session.commit()
@@ -80,10 +82,10 @@ async def test_statistics_uses_utc_daily_buckets_and_time_weighted_load(database
     assert result["period"]["timezone"] == "UTC"
     assert result["period"]["bucket"] == "day"
     assert result["totals"]["requests"]["failed"] == 1
-    assert result["clients"][0]["label"] == "Клиент #1"
-    assert item["load"]["max_concurrency"] == 2
-    assert item["load"]["active_seconds"] == 1200.0
-    assert item["load"]["percent"] == pytest.approx(1.389, abs=0.001)
+    assert result["clients"][0]["label"] == "test-client"
+    # Journal concurrency must not masquerade as engine measurements.
+    assert item["load"]["max_concurrency"] == 0
+    assert item["load"]["state"] == "unknown"
     assert result["activity"][0]["requests"]["total"] == 2
     assert result["summary"]["active_days"] == 1
     assert result["summary"]["success_rate"] == 50
@@ -103,6 +105,78 @@ def test_cost_subtracts_cached_input_from_regular_input_price():
     assert cost["usd"] == pytest.approx(1.875)
 
 
+@pytest.mark.parametrize("error_code", ["interrupted", "client_disconnected"])
+@pytest.mark.parametrize("tokens", [None, 1000])
+async def test_cancelled_requests_are_excluded_everywhere(database, tmp_path, error_code, tokens):
+    start = datetime(2026, 10, 1, 10, tzinfo=UTC)
+    journal = RequestJournalService(session_factory=database)
+    client_id = await journal.identify_client("Bearer test-client", "127.0.0.1")
+    async with database() as session:
+        session.add_all([
+            row("success", start, start + timedelta(seconds=10), status_code=200,
+                input_tokens=100, cached_input_tokens=20, output_tokens=50, client_id=client_id),
+            row("cancelled", start, start + timedelta(seconds=20), status_code=200,
+                error_code=error_code, input_tokens=tokens, cached_input_tokens=tokens,
+                output_tokens=tokens, client_id=client_id),
+            row("cancelled-day", start - timedelta(days=1), start - timedelta(days=1) + timedelta(seconds=20),
+                error_code=error_code, input_tokens=tokens, output_tokens=tokens, client_id=99),
+        ])
+        await session.commit()
+    repository = ProfileRepository(tmp_path / "profiles")
+    repository.create(profile())
+    result = await StatisticsService(journal, ProfileService(
+        tmp_path / "profiles", repository=repository, process_manager=object(),
+    )).read(period="custom", from_=start - timedelta(days=2), to=start + timedelta(hours=1))
+    assert len(result["clients"]) == 1
+    for aggregate in [result["totals"], result["profiles"][0], result["clients"][0], result["activity"][-1]]:
+        assert aggregate["requests"] == {"total": 1, "success": 1, "failed": 0, "interrupted": 0, "unknown": 0}
+        assert aggregate["tokens"]["input"] == {"known_total": 100, "unknown_requests": 0}
+        assert aggregate["tokens"]["output"] == {"known_total": 50, "unknown_requests": 0}
+        assert aggregate["tokens"]["cached_input"] == {"known_total": 20, "unknown_requests": 0}
+    assert result["totals"]["cost"]["state"] == "ok"
+    assert result["totals"]["cost"]["usd"] == pytest.approx(0.00019)
+    assert result["summary"]["active_days"] == 1
+    assert result["summary"]["success_rate"] == 100
+    assert result["totals"]["performance"]["latency_ms"] == 10_000
+    assert result["profiles"][0]["load"]["state"] == "unknown"
+
+
+async def test_client_labels_use_token_or_anonymous_ip(database):
+    journal = RequestJournalService(session_factory=database)
+    token_id = await journal.identify_client("Bearer test-client", "127.0.0.1")
+    anonymous_id = await journal.identify_client(None, "127.0.0.2")
+    assert await journal.client_labels() == {token_id: "test-client", anonymous_id: "127.0.0.2"}
+
+
+async def test_profile_performance_and_load_use_engine_metrics(database, tmp_path):
+    from app.metrics.storage import MetricsStorage
+    from app.schemas.instances import Instance, Metric, MetricList
+
+    start = datetime(2026, 10, 1, tzinfo=UTC)
+    storage = MetricsStorage(database)
+    instance = Instance(id="managed/qwen/10", profile_name="qwen", source="managed",
+                        engine_id="vllm", pid=10, state="ready", observed_at=start)
+    for seconds, prefill, decode, concurrency in [(0, 1000, 100, 2), (5, 2000, 200, 2), (10, 0, 0, 0)]:
+        at = start + timedelta(seconds=seconds)
+        await storage.write([(instance, MetricList(items=[
+            Metric(name=name, value=value, observed_at=at, source="test", state="ok")
+            for name, value in [("prefill_tps", prefill), ("decode_tps", decode), ("active_requests", concurrency)]
+        ]))], {})
+    repository = ProfileRepository(tmp_path / "profiles")
+    repository.create(profile())
+    result = await StatisticsService(RequestJournalService(session_factory=database),
+        ProfileService(tmp_path / "profiles", repository=repository, process_manager=object()),
+        storage).read(period="custom", from_=start, to=start + timedelta(days=1))
+    item = result["profiles"][0]
+    assert item["performance"]["prefill_tps"] == 1500
+    assert item["performance"]["decode_tps"] == 150
+    assert item["load"]["max_concurrency"] == 2
+    assert item["load"]["active_seconds"] == 20
+    assert item["load"]["percent"] == pytest.approx(20 / 86400 / 2 * 100)
+    assert item["load"]["state"] == "ok"
+    assert item["requests"]["total"] == 0
+
+
 def test_invalid_cached_subset_does_not_become_a_negative_bill():
     at = datetime(2026, 10, 1, tzinfo=UTC)
     request = row(
@@ -111,6 +185,48 @@ def test_invalid_cached_subset_does_not_become_a_negative_bill():
     )
     cost = _cost([request], profile())
     assert cost["state"] == "unknown"
+    assert cost["unknown_requests"] == 1
+
+
+@pytest.mark.parametrize("missing_field", ["input_tokens", "cached_input_tokens", "output_tokens"])
+def test_partial_cost_preserves_known_total_without_assuming_missing_tokens_are_zero(missing_field):
+    at = datetime(2026, 10, 1, tzinfo=UTC)
+    values = {"input_tokens": 1_000_000, "cached_input_tokens": 250_000, "output_tokens": 500_000}
+    known = row("known", at, at + timedelta(seconds=1), status_code=200, **values)
+    unknown = row("unknown", at, at + timedelta(seconds=1), status_code=200,
+                  **{**values, missing_field: None})
+    for cost in (_cost([known, unknown], profile()),
+                 _cost_by_profile([known, unknown], {"qwen": profile()})):
+        assert cost["usd"] == pytest.approx(1.875)
+        assert cost["state"] == "partial"
+        assert cost["unknown_requests"] == 1
+    assert _cost([unknown], profile())["usd"] is None
+
+
+def test_mixed_profile_cost_skips_missing_prices_without_hiding_known_cost():
+    at = datetime(2026, 10, 1, tzinfo=UTC)
+    known = row("known", at, at + timedelta(seconds=1), status_code=200,
+                input_tokens=1_000_000, cached_input_tokens=250_000, output_tokens=500_000)
+    unpriced = row("unpriced", at, at + timedelta(seconds=1), status_code=200,
+                   input_tokens=100, cached_input_tokens=0, output_tokens=50)
+    unpriced.profile_name = "external"
+    for rows in ([known, unpriced], [unpriced, known]):
+        cost = _cost_by_profile(rows, {"qwen": profile()})
+        assert cost["usd"] == pytest.approx(1.875)
+        assert cost["state"] == "partial"
+        assert cost["unknown_requests"] == 1
+    assert _cost_by_profile([unpriced], {})["state"] == "unavailable"
+    assert _cost_by_profile([unpriced], {})["usd"] is None
+
+
+def test_zero_priced_cost_is_still_known_when_other_requests_are_unknown():
+    at = datetime(2026, 10, 1, tzinfo=UTC)
+    known = row("known", at, at + timedelta(seconds=1), status_code=200,
+                input_tokens=0, cached_input_tokens=0, output_tokens=0)
+    unknown = row("unknown", at, at + timedelta(seconds=1), status_code=500)
+    cost = _cost([known, unknown], profile())
+    assert cost["usd"] == 0
+    assert cost["state"] == "partial"
     assert cost["unknown_requests"] == 1
 
 

@@ -24,7 +24,7 @@ export function formatTimestamp(value: string | null | undefined): string {
   if (!value) return 'время неизвестно'
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return 'время неизвестно'
-  return new Intl.DateTimeFormat('ru-RU', { dateStyle: 'short', timeStyle: 'medium' }).format(date)
+  return new Intl.DateTimeFormat('ru-RU', { dateStyle: 'short', timeStyle: 'medium', timeZone: 'UTC' }).format(date) + ' UTC'
 }
 
 export function stateLabel(state: string): string {

@@ -57,6 +57,7 @@ from .proxy.router import router as proxy_router
 from .proxy.service import ProxyService
 from .schemas.common import SuccessEnvelope
 from .schemas.system import HealthData
+from .statistics import StatisticsService
 from .system import collect_status, collect_system_data, health_from_status
 from .token_stats import RequestJournalService
 
@@ -318,6 +319,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             prometheus_token=settings.prometheus_token,
             studio_id=identity_path.read_text().strip(),
         )
+        statistics_service = StatisticsService(journal_service, profile_service)
         runtime = AppContainer(
             settings=settings,
             paths=paths,
@@ -333,6 +335,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             journal_service=journal_service,
             proxy_service=proxy_service,
             metrics_service=metrics_service,
+            statistics_service=statistics_service,
             external_discovery=external_discovery,
             mcp_server=getattr(app.state, "mcp_server", None),
         )

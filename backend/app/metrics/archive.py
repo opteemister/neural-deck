@@ -98,7 +98,7 @@ def fold(row: MetricSample, daily: dict, curves: dict, baselines: dict) -> None:
         return
     at = row.observed_at.replace(tzinfo=UTC) if row.observed_at.tzinfo is None else row.observed_at
     identity = (row.profile_name, row.model_name or "", row.engine_id)
-    key = (at.astimezone().date().isoformat(), *identity)
+    key = (at.astimezone(UTC).date().isoformat(), *identity)
     day = daily.setdefault(key, {"statistics": {}, "distributions": {}})
     run = json.dumps([*identity, row.pid])
     state = baselines.setdefault(run, {"seen": {}, "histograms": {}})
@@ -175,7 +175,7 @@ async def load_and_fold(
     rows = (await session.scalars(query)).all()
     touched_days = {
         (r.observed_at.replace(tzinfo=UTC) if r.observed_at.tzinfo is None
-         else r.observed_at).astimezone().date().isoformat() for r in rows
+        else r.observed_at).astimezone(UTC).date().isoformat() for r in rows
     }
     daily_query, curve_query = select(MetricDaily), select(MetricConcurrencyDaily)
     if first_day is not None:
@@ -228,7 +228,7 @@ async def archive_before_cleanup(session: AsyncSession) -> int:
 
 async def historical_statistics(session: AsyncSession, *, profile_name: str | None,
                                 days: int, curve: bool) -> dict[str, Any]:
-    first_day = (datetime.now().astimezone().date() - timedelta(days=days - 1)).isoformat()
+    first_day = (datetime.now(UTC).date() - timedelta(days=days - 1)).isoformat()
     daily, curves, _, _ = await load_and_fold(
         session, first_day=first_day, profile_name=profile_name,
     )

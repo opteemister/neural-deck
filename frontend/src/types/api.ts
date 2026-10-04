@@ -232,6 +232,9 @@ export interface ProfileData {
   environment: Record<string, string>
   autostart: boolean
   enable_metrics?: boolean
+  input_price_usd_per_million_tokens?: number | null
+  output_price_usd_per_million_tokens?: number | null
+  cached_input_price_usd_per_million_tokens?: number | null
 }
 
 export interface ProfileIssue {
@@ -243,6 +246,85 @@ export interface ProfileIssue {
 export interface ProfileListData {
   items: ProfileData[]
   issues: ProfileIssue[]
+}
+
+export interface StatisticsTokenMetric {
+  known_total: number | null
+  unknown_requests: number
+}
+
+export interface StatisticsAggregate {
+  requests: {
+    total: number
+    success: number
+    failed: number
+    interrupted: number
+    unknown: number
+  }
+  tokens: {
+    input: StatisticsTokenMetric
+    cached_input: StatisticsTokenMetric
+    output: StatisticsTokenMetric
+  }
+  performance: {
+    latency_p95_ms: number | null
+    latency_ms: number | null
+    prefill_tps: number | null
+    decode_tps: number | null
+  }
+  cost: {
+    usd: number | null
+    state: 'ok' | 'unknown' | 'unavailable'
+    unknown_requests: number
+    prices: { input: number | null; cached_input: number | null; output: number | null }
+  }
+}
+
+export interface StatisticsProfile extends StatisticsAggregate {
+  profile_name: string
+  model_name: string | null
+  load: {
+    percent: number
+    active_seconds: number
+    period_seconds: number
+    max_concurrency: number
+    basis: 'active_requests'
+    state: 'ok'
+  }
+}
+
+export interface StatisticsClient extends StatisticsAggregate {
+  client_id: number | null
+  label: string
+  profiles: string[]
+}
+
+export interface StatisticsData {
+  summary: {
+    sessions: number | null
+    sessions_state: 'not_recorded'
+    active_days: number
+    period_days: number
+    streak_days: number
+    success_rate: number | null
+  }
+  period: {
+    name: string
+    from: string
+    to: string
+    timezone: 'UTC'
+    boundary: '[from,to)'
+    bucket: 'day'
+    request_event_time: string
+  }
+  filters: { model_name: string | null; profile_name: string | null }
+  filters_options: { models: string[]; profiles: string[] }
+  totals: StatisticsAggregate
+  activity: Array<StatisticsAggregate & { date: string; benchmark: boolean }>
+  profiles: StatisticsProfile[]
+  clients: StatisticsClient[]
+  benchmarks: { intervals: Array<{ from: string; to: string; label?: string }>; traffic_included: boolean; state: string }
+  source: string
 }
 
 export interface Metric {

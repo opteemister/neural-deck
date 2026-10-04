@@ -191,10 +191,10 @@ class MetricsService:
                 self._peaks = {key: value for key, value in self._peaks.items() if key in active}
             except Exception:
                 logger.exception("Очистка истории метрик не выполнена")
-            now = datetime.now().astimezone()
+            now = datetime.now(UTC)
             next_midnight = datetime.combine(
-                now.date() + timedelta(days=1), datetime.min.time()
-            ).astimezone()
+                now.date() + timedelta(days=1), datetime.min.time(), tzinfo=UTC
+            )
             await asyncio.sleep(max(1, (next_midnight - now).total_seconds()))
 
     async def read(

@@ -29,6 +29,7 @@ from .token_stats import RequestJournalService
 if TYPE_CHECKING:
     from .metrics.service import MetricsService
     from .proxy.service import ProxyService
+    from .statistics import StatisticsService
 
 ExternalDiscovery = Callable[..., Awaitable[list[ExternalObservation]]]
 
@@ -67,6 +68,7 @@ class AppContainer:
     journal_service: RequestJournalService
     proxy_service: ProxyService
     metrics_service: MetricsService
+    statistics_service: StatisticsService
     external_discovery: ExternalDiscovery = discover_external
     diagnostics: list[RuntimeDiagnostic] = field(default_factory=list)
     mcp_server: Any | None = None

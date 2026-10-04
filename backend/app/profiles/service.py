@@ -11,7 +11,7 @@ from typing import Any
 
 from ..errors import AppError
 from ..schemas.profiles import FormatScriptResult, ProfileData, ProfileListData
-from .formatting import format_script
+from .formatting import enable_command_metrics, format_script, substitute_placeholders
 from .repository import ProfileRepository
 
 logger = logging.getLogger(__name__)
@@ -62,6 +62,21 @@ class ProfileService:
 
     async def start_configuration(self, profile: ProfileData) -> Any:
         """Launch a validated configuration without writing a profile file."""
+        profile, engine_path = await self._prepare_configuration(profile)
+        return await self.process_manager.start_profile(profile, engine_path)
+
+    async def preview_configuration(self, profile: ProfileData) -> dict[str, str]:
+        """Render the launch command without starting a process or changing YAML."""
+        profile, engine_path = await self._prepare_configuration(profile)
+        return {"command": substitute_placeholders(
+            profile.command,
+            engine=engine_path,
+            model=str(profile.model.path),
+            model_name=profile.model_name,
+            model_draft=str(profile.model.draft_path) if profile.model.draft_path else None,
+        )}
+
+    async def _prepare_configuration(self, profile: ProfileData) -> tuple[ProfileData, str]:
         engine_path: str | Path | None = None
         if self.installation_resolver is not None:
             try:
@@ -88,7 +103,14 @@ class ProfileService:
                 status_code=409,
                 details={"installation_id": profile.engine.installation_id},
             )
-        return await self.process_manager.start_profile(profile, str(engine_path))
+        profile = profile.model_copy(
+            update={
+                "command": enable_command_metrics(
+                    profile.command, profile.engine.id, profile.enable_metrics
+                )
+            }
+        )
+        return profile, str(engine_path)
 
     async def autostart_once(self) -> builtins.list[Any]:
         """Make one best-effort autostart pass for this app lifetime.
@@ -107,8 +129,16 @@ class ProfileService:
             if not profile.autostart or profile.name in self._autostart_attempted:
                 continue
             self._autostart_attempted.add(profile.name)
-            logger.info("Автозапуск профиля: попытка name=%s", profile.name)
             try:
+                instances = await self.process_manager.refresh(probe_models=False)
+                if any(
+                    item.source == "managed"
+                    and item.profile_name == profile.name
+                    and item.state not in {"exited", "error"}
+                    for item in instances.items
+                ):
+                    continue
+                logger.info("Автозапуск профиля: попытка name=%s", profile.name)
                 result.append(await self.start(profile.name))
             except Exception as exc:  # noqa: BLE001 - autostart is non-fatal
                 # A broken autostart profile must not prevent Studio from

@@ -15,7 +15,7 @@ from ..token_stats import RequestJournalService
 from .performance import PerformanceNormalizer, process_vram
 from .prometheus import PrometheusReader, exposition
 from .providers import MetricProvider, default_providers
-from .storage import MetricsStorage, utc
+from .storage import AGGREGATE_FIELDS, MetricsStorage, utc
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +43,7 @@ class MetricsService:
         self._locks: dict[str, asyncio.Lock] = {}
         self._cache: dict[str, tuple[float, Any, MetricList]] = {}
         self._peaks: dict[tuple[str, int], dict[str, float]] = {}
+        self._aggregate_cache: dict[tuple[Any, ...], tuple[float, dict[str, Any]]] = {}
         self.last_error: str | None = None
 
     async def close(self) -> None:
@@ -92,6 +93,7 @@ class MetricsService:
                         peaks[item.name] = max(peaks.get(item.name, item.value), item.value)
                     elif item.name == "ttft_mean_ms" and item.value > 0:
                         peaks[item.name] = min(peaks.get(item.name, item.value), item.value)
+                        peaks["ttft_max_ms"] = max(peaks.get("ttft_max_ms", item.value), item.value)
                 data.peaks = dict(peaks)
             self._cache[instance_id] = (time.monotonic(), instance, data)
             return data
@@ -208,6 +210,49 @@ class MetricsService:
         client_id: int | None = None,
         offset: int = 0,
     ) -> dict[str, Any]:
+        if mode == "aggregates":
+            if scope == "all":
+                profile_name, pid = None, None
+            key = (profile_name, pid, scope)
+            cached = self._aggregate_cache.get(key)
+            if cached and time.monotonic() - cached[0] < 30:
+                return cached[1]
+            end = datetime.now(UTC)
+            start = end - timedelta(hours=24)
+            # Keep each range below Prometheus's default 11,000-point limit.
+            remote_parts = []
+            if self.prometheus.url:
+                for index in range(3):
+                    part = await self.prometheus.read(
+                        profile_name=profile_name, pid=pid,
+                        from_=start + timedelta(hours=8 * index),
+                        to=start + timedelta(hours=8 * (index + 1)), limit=100_000,
+                    )
+                    if not part:
+                        remote_parts = []
+                        break
+                    remote_parts.extend(part)
+            if remote_parts:
+                aggregates = summarize_window(remote_parts, start, end, scope == "all")
+                source = "prometheus"
+            else:
+                aggregates = await self.storage.aggregates(
+                    start=start, end=end, profile_name=profile_name, pid=pid,
+                    all_profiles=scope == "all",
+                ) if self.storage else {}
+                source = "sqlite" if self.storage else "unavailable"
+            result = {"aggregates": aggregates, "from": start, "to": end, "source": source}
+            self._aggregate_cache = {
+                cache_key: entry for cache_key, entry in self._aggregate_cache.items()
+                if time.monotonic() - entry[0] < 30
+            }
+            self._aggregate_cache[key] = (time.monotonic(), result)
+            return result
+        if mode == "token-history":
+            return (
+                await self.journal.token_history(profile_name=profile_name, pid=pid)
+                if self.journal else {"items": [], "source": "unavailable"}
+            )
         if mode == "usage":
             return (
                 await self.journal.usage(
@@ -356,7 +401,12 @@ class MetricsService:
         vram = await asyncio.to_thread(process_vram, instance)
         if vram is not None:
             result = [item for item in result if item.name != "vram_bytes"] + [vram]
-        return MetricList(items=self.performance.collect(instance, result))
+        from .archive import capture_distributions
+
+        return MetricList(
+            items=self.performance.collect(instance, result),
+            distributions=capture_distributions(result),
+        )
 
 
 __all__ = ["MetricsService"]
@@ -409,6 +459,27 @@ def aggregate_samples(rows: list[dict[str, Any]]) -> dict[str, Any]:
                         numeric_weights
                     )
         stamp = max((item.observed_at for item in matches if item), default=datetime.now(UTC))
+        metadata: dict[str, float] = {}
+        weight_key = "count" if name in {"ttft_mean_ms", "queue_time_mean_ms"} else "denominator"
+        sample_weights = [item.metadata.get(weight_key) if item else None for item in matches]
+        if sample_weights and all(
+            isinstance(weight, (int, float)) and weight > 0 for weight in sample_weights
+        ):
+            metadata[weight_key] = sum(cast(float, weight) for weight in sample_weights)
+        mean_pairs = [
+            (item.metadata.get("mean"), item.metadata.get("mean_weight"))
+            for item in matches if item is not None
+        ]
+        if len(mean_pairs) == len(rows) and mean_pairs and all(
+            isinstance(mean, (int, float)) and isinstance(weight, (int, float)) and weight > 0
+            for mean, weight in mean_pairs
+        ):
+            mean_weight = sum(cast(float, weight) for _, weight in mean_pairs)
+            metadata.update(
+                mean=sum(cast(float, mean) * cast(float, weight) for mean, weight in mean_pairs)
+                / mean_weight,
+                mean_weight=mean_weight,
+            )
         items.append(
             Metric(
                 name=name,
@@ -417,6 +488,7 @@ def aggregate_samples(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 source="aggregate",
                 observed_at=stamp,
                 state="ok" if value is not None else "unavailable",
+                metadata=metadata,
             )
         )
     sources = {row.get("source", "local") for row in rows}
@@ -433,3 +505,34 @@ def aggregate_history(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         key = int(row["observed_at"].timestamp()) // 5
         groups.setdefault(key, {})[(row["profile_name"], row["pid"])] = row
     return [aggregate_samples(list(group.values())) for _, group in sorted(groups.items())]
+
+
+def summarize_window(
+    rows: list[dict[str, Any]], start: datetime, end: datetime, all_profiles: bool,
+) -> dict[str, dict[str, float]]:
+    unique = {
+        (row["profile_name"], row["pid"], row["observed_at"]): row for row in rows
+    }
+    samples = aggregate_history(list(unique.values())) if all_profiles else list(unique.values())
+    seen: set[tuple[Any, ...]] = set()
+    totals: dict[str, list[float]] = {}
+    for row in samples:
+        for item in row["items"]:
+            value = item.value
+            if (
+                item.name not in AGGREGATE_FIELDS or item.state != "ok"
+                or not isinstance(value, (int, float)) or value <= 0
+                or not start <= utc(item.observed_at) <= end
+            ):
+                continue
+            key = (row.get("profile_name"), row.get("pid"), item.name, item.observed_at)
+            if key in seen:
+                continue
+            seen.add(key)
+            native = item.metadata.get("count" if item.name == "ttft_mean_ms" else "denominator")
+            weight = native if isinstance(native, (int, float)) and native > 0 else 1
+            total = totals.setdefault(item.name, [0, 0, 0])
+            total[0] += value * weight
+            total[1] += weight
+            total[2] = max(total[2], value)
+    return {name: {"avg": total[0] / total[1], "max": total[2]} for name, total in totals.items()}

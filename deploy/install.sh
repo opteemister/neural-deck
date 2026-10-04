@@ -87,7 +87,7 @@ prepare_system_packages() {
     local package
     local missing=()
     if command -v apt-get >/dev/null 2>&1; then
-        for package in ca-certificates curl tar gzip coreutils git libgomp1 util-linux; do
+        for package in ca-certificates curl tar gzip coreutils git libgomp1 util-linux dbus-user-session; do
             if [[ "$(dpkg-query -W -f='${Status}' "$package" 2>/dev/null || true)" != 'install ok installed' ]]; then
                 missing+=("$package")
             fi
@@ -98,7 +98,7 @@ prepare_system_packages() {
             as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${missing[@]}"
         fi
     elif command -v dnf >/dev/null 2>&1; then
-        for package in ca-certificates curl tar gzip coreutils git libgomp util-linux; do
+        for package in ca-certificates curl tar gzip coreutils git libgomp util-linux dbus-daemon; do
             if ! rpm -q "$package" >/dev/null 2>&1; then
                 missing+=("$package")
             fi
@@ -246,6 +246,7 @@ escape_sed_replacement() {
 project_replacement=$(escape_sed_replacement "$project_root")
 user_replacement=$(escape_sed_replacement "$service_user")
 group_replacement=$(escape_sed_replacement "$service_group")
+service_uid=$(id -u "$service_user")
 uv_replacement=$(escape_sed_replacement "$uv_bin")
 data_replacement=$(escape_sed_replacement "$data_root")
 log_replacement=$(escape_sed_replacement "$log_root")
@@ -256,6 +257,7 @@ sed \
     -e "s|__PROJECT_PATH__|${project_replacement}|g" \
     -e "s|__SERVICE_USER__|${user_replacement}|g" \
     -e "s|__SERVICE_GROUP__|${group_replacement}|g" \
+    -e "s|__SERVICE_UID__|${service_uid}|g" \
     -e "s|__UV_BIN__|${uv_replacement}|g" \
     -e "s|__DATA_ROOT__|${data_replacement}|g" \
     -e "s|__LOG_ROOT__|${log_replacement}|g" \
@@ -265,6 +267,10 @@ as_root install -m 0644 -o root -g root "$service_tmp" \
     /etc/systemd/system/llm-studio.service
 as_root install -m 0640 -o "$service_user" -g "$service_group" \
     "$runtime_file" /etc/llm-studio/llm-studio.env
+# The user manager owns transient model units independently of the backend.
+# Linger starts only the manager after boot; no model unit is enabled.
+as_root loginctl enable-linger "$service_user"
+as_root systemctl start "user@${service_uid}.service"
 as_root systemctl daemon-reload
 as_root systemctl enable llm-studio.service
 as_root systemctl restart llm-studio.service

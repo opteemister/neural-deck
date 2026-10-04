@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import getpass
 import hashlib
+import json
 import logging
 import os
 import signal
@@ -32,19 +33,23 @@ from ..schemas.instances import (
 from ..schemas.profiles import ProfileData
 from .discovery import ExternalObservation, discover_external, query_models
 from .external_logs import external_logs
+from .launcher import ObservedProcess, SystemdLauncher, process_start_ns
 from .registry import ModelRegistry
+from .runs import RunStore
 
 LOG_LIMIT = 8 * 1024 * 1024
+START_PROBE_INTERVAL = 2.0
 logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
 class _Managed:
     instance: Instance
-    process: asyncio.subprocess.Process
+    process: Any
     log_path: Path
     command: str
     installation_id: str
+    unit_name: str | None = None
 
 
 def _identity_start_ns(pid: int) -> int | None:
@@ -74,6 +79,8 @@ class ProcessManager:
         username: str | None = None,
         http_client: Any | None = None,
         registry: ModelRegistry | None = None,
+        run_store: RunStore | None = None,
+        launcher: SystemdLauncher | None = None,
         external_discovery: Callable[..., Awaitable[list[ExternalObservation]]] | None = None,
     ) -> None:
         self.log_root = log_root or Path.cwd() / "logs" / "profiles"
@@ -82,6 +89,8 @@ class ProcessManager:
         self.http_client = http_client
         self.external_discovery = external_discovery or discover_external
         self.registry = registry or ModelRegistry()
+        self.run_store = run_store
+        self.launcher = launcher
         self._managed: dict[str, _Managed] = {}
         self._external: dict[str, ExternalObservation] = {}
         self._operations: dict[str, ProcessOperation] = {}
@@ -109,6 +118,73 @@ class ProcessManager:
             result = close()
             if asyncio.iscoroutine(result):
                 await result
+
+    def _snapshot(self, item: _Managed) -> dict[str, Any]:
+        return {
+            "instance": item.instance.model_dump(mode="json"),
+            "log_path": str(item.log_path),
+            "command": item.command,
+            "installation_id": item.installation_id,
+            "unit_name": item.unit_name,
+        }
+
+    async def _restore(self) -> None:
+        if self.run_store is None:
+            return
+        snapshots = await self.run_store.list()
+        if self.launcher is not None:
+            for path in self.launcher.pending_dir.glob("*.json"):
+                data = json.loads(path.read_text(encoding="utf-8"))
+                unit = data["unit_name"]
+                pid = await self.launcher.pid(unit)
+                start_ns = process_start_ns(pid) if pid else None
+                if start_ns is not None:
+                    data["instance"] = Instance(
+                        id=f"managed/{quote(data['profile_name'], safe='')}/{pid}-{start_ns}",
+                        source="managed",
+                        profile_name=data["profile_name"],
+                        engine_id=data["engine_id"],
+                        pid=pid,
+                        process_start_time_ns=start_ns,
+                        identity_verified=True,
+                        can_stop=True,
+                        port=data["port"],
+                        model_name=data["model_name"],
+                        state="starting",
+                        observed_at=datetime.now(UTC),
+                    ).model_dump(mode="json")
+                    await self.run_store.save(data)
+                    snapshots.append(data)
+                path.unlink()
+                path.with_suffix(".env").unlink(missing_ok=True)
+        for data in snapshots:
+            instance = Instance.model_validate(data["instance"])
+            actual = process_start_ns(instance.pid)
+            if actual is None or actual != instance.process_start_time_ns:
+                await self.run_store.delete(instance.pid, instance.process_start_time_ns)
+                continue
+            if instance.id in self._managed:
+                continue
+            if psutil.Process(instance.pid).username() != self.username:
+                raise AppError("instance_identity_changed", "Владелец процесса изменился")
+            unit = data.get("unit_name")
+            if unit and (self.launcher is None or await self.launcher.pid(unit) != instance.pid):
+                raise AppError(
+                    "instance_identity_changed", "Сервис модели не соответствует процессу"
+                )
+            instance.state = "starting"
+            item = _Managed(
+                instance,
+                ObservedProcess(instance.pid, actual),
+                Path(data["log_path"]),
+                data["command"],
+                data["installation_id"],
+                unit,
+            )
+            self._managed[instance.id] = item
+            self.registry.register_instance(instance)
+            self._track_task(self._wait_process(instance.id))
+            self._track_task(self._watch_start(instance.id))
 
     async def start_profile(self, profile: ProfileData, engine_path: str) -> Instance:
         # Refresh once before evaluating model and port conflicts so a manual
@@ -168,32 +244,60 @@ class ProcessManager:
             temporary_log = profile_dir / f"starting-{uuid4().hex}.log"
             env = os.environ.copy()
             env.update(dict(profile.environment))
-            try:
-                log_handle = temporary_log.open("ab")
-                process = await asyncio.create_subprocess_exec(
-                    "/bin/bash",
-                    "-c",
-                    command,
-                    env=env,
-                    stdin=asyncio.subprocess.DEVNULL,
-                    stdout=log_handle,
-                    stderr=asyncio.subprocess.STDOUT,
-                    start_new_session=True,
+            process: Any
+            unit_name = None
+            pending_path = None
+            if self.launcher is not None:
+                unit_name = f"llm-studio-model-{uuid4().hex}.service"
+                pending_path = self.launcher.pending(
+                    unit_name,
+                    {
+                        "unit_name": unit_name,
+                        "profile_name": profile.name,
+                        "engine_id": profile.engine.id,
+                        "model_name": profile.model_name,
+                        "port": port,
+                        "command": command,
+                        "installation_id": profile.engine.installation_id,
+                        "log_path": str(temporary_log),
+                    },
                 )
-            except (OSError, ValueError) as exc:
-                with contextlib.suppress(OSError):
-                    log_handle.close()
-                raise AppError("instance_start_failed", str(exc), status_code=500) from exc
-            finally:
-                with contextlib.suppress(UnboundLocalError, OSError):
-                    log_handle.close()
+                pid = await self.launcher.start(unit_name, command, env, temporary_log)
+                start_ns = process_start_ns(pid) if pid else None
+                if start_ns is None:
+                    await self.launcher.stop(unit_name)
+                    pending_path.unlink(missing_ok=True)
+                    raise AppError(
+                        "instance_identity_unavailable", "Процесс модели завершился при запуске"
+                    )
+                process = ObservedProcess(pid, start_ns)
+            else:
+                try:
+                    log_handle = temporary_log.open("ab")
+                    process = await asyncio.create_subprocess_exec(
+                        "/bin/bash",
+                        "-c",
+                        command,
+                        env=env,
+                        stdin=asyncio.subprocess.DEVNULL,
+                        stdout=log_handle,
+                        stderr=asyncio.subprocess.STDOUT,
+                        start_new_session=True,
+                    )
+                except (OSError, ValueError) as exc:
+                    with contextlib.suppress(OSError):
+                        log_handle.close()
+                    raise AppError("instance_start_failed", str(exc), status_code=500) from exc
+                finally:
+                    with contextlib.suppress(UnboundLocalError, OSError):
+                        log_handle.close()
             pid = int(process.pid)
             # A launch timestamp is not a process identity.  If psutil cannot
             # confirm the child create time, do not publish an instance which
             # could later point at a reused PID.  Terminate the just-created
             # process before returning the diagnostic error so it is not left
             # running outside the registry.
-            start_ns = _identity_start_ns(pid)
+            start_ns = process.start_ns if unit_name else _identity_start_ns(pid)
             if start_ns is None:
                 # Keep the subprocess handle's normal termination hook for
                 # embedders that provide one, then terminate the entire
@@ -215,8 +319,11 @@ class ProcessManager:
                 )
             instance_id = f"managed/{quote(profile.name, safe='')}/{pid}-{start_ns}"
             log_path = profile_dir / f"{pid}-{start_ns}.log"
-            with contextlib.suppress(OSError):
-                temporary_log.replace(log_path)
+            if unit_name is not None:
+                log_path = temporary_log
+            else:
+                with contextlib.suppress(OSError):
+                    temporary_log.replace(log_path)
             instance = Instance(
                 id=instance_id,
                 source="managed",
@@ -237,7 +344,19 @@ class ProcessManager:
                 log_path=log_path,
                 command=command,
                 installation_id=profile.engine.installation_id,
+                unit_name=unit_name,
             )
+            if self.run_store is not None:
+                try:
+                    await self.run_store.save(self._snapshot(managed))
+                except Exception:
+                    if unit_name and self.launcher is not None:
+                        await self.launcher.stop(unit_name)
+                    else:
+                        await _terminate_process_group_and_wait(process)
+                    raise
+            if pending_path is not None:
+                pending_path.unlink(missing_ok=True)
             self._managed[instance.id] = managed
             self._track_task(self._wait_process(instance.id))
             self.registry.register_instance(instance)
@@ -277,7 +396,9 @@ class ProcessManager:
         # not repeat state changes or log the same failure on every poll.
         if item.instance.state in {"exited", "error"}:
             return
-        if item.instance.state == "stopping":
+        if item.instance.state == "stopping" or isinstance(item.process, ObservedProcess):
+            # An adopted process has no waitpid exit status in this backend.
+            # Report completion without inventing an engine failure reason.
             item.instance.state = "exited"
         elif item.process.returncode == 0:
             item.instance.state = "exited"
@@ -301,26 +422,41 @@ class ProcessManager:
             return
         await item.process.wait()
         self._process_done(instance_id)
+        if self.run_store is not None:
+            await self.run_store.delete(item.instance.pid, item.instance.process_start_time_ns)
 
     async def _watch_start(self, instance_id: str) -> None:
         item = self._managed.get(instance_id)
         if item is None:
             return
-        await asyncio.sleep(0.05)
-        if item.process.returncode is not None:
-            self._process_done(instance_id)
-            return
-        models = await query_models(item.instance.port, client=self.http_client)
-        if models:
-            item.instance.state = "ready"
-        else:
-            item.instance.state = "running"
-        item.instance.observed_at = datetime.now(UTC)
-        self.registry.register_instance(
-            item.instance, upstream_models=models or [item.instance.model_name or ""]
-        )
+        # Loading large models can take minutes. Process liveness alone is
+        # not readiness; keep probing until the engine publishes its models.
+        while item.instance.state == "starting":
+            if item.process.returncode is not None:
+                self._process_done(instance_id)
+                return
+            models = await query_models(item.instance.port, client=self.http_client)
+            # A stop or exit can happen while the HTTP request is in flight.
+            if item.process.returncode is not None:
+                self._process_done(instance_id)
+                return
+            if item.instance.state != "starting":
+                return
+            if models:
+                item.instance.state = "ready"
+                item.instance.observed_at = datetime.now(UTC)
+                self.registry.register_instance(item.instance, upstream_models=models)
+                return
+            await asyncio.sleep(START_PROBE_INTERVAL)
 
     async def refresh(self, *, probe_models: bool = True) -> InstanceList:
+        try:
+            return await self._refresh(probe_models=probe_models)
+        except Exception as exc:
+            self.discovery_error = str(exc)
+            raise
+
+    async def _refresh(self, *, probe_models: bool = True) -> InstanceList:
         """Reconcile managed and externally discovered processes.
 
         This is an active observation operation: it may finalize child
@@ -328,18 +464,30 @@ class ProcessManager:
         must only be called by explicit process/system refresh paths, never by
         a liveness or health probe.
         """
-        self.discovery_error = None
+        discovery_error: str | None = None
+        async with self._guard:
+            await self._restore()
         for item in list(self._managed.values()):
             if item.process.returncode is not None:
                 self._process_done(item.instance.id)
-            elif item.instance.state == "starting":
-                item.instance.state = "running"
+                if self.run_store is not None:
+                    await self.run_store.delete(
+                        item.instance.pid, item.instance.process_start_time_ns
+                    )
             item.instance.observed_at = datetime.now(UTC)
         excluded = {
             (item.instance.pid, item.instance.process_start_time_ns)
             for item in self._managed.values()
             if item.process.returncode is None
         }
+        for item in self._active_managed():
+            try:
+                children = psutil.Process(item.instance.pid).children(recursive=True)
+                excluded.update(
+                    (child.pid, int(child.create_time() * 1_000_000_000)) for child in children
+                )
+            except psutil.NoSuchProcess:
+                pass
         try:
             found = await self.external_discovery(
                 excluded_keys=excluded,
@@ -348,7 +496,7 @@ class ProcessManager:
                 probe_models=probe_models,
             )
         except Exception as exc:  # noqa: BLE001 - external process boundary
-            self.discovery_error = str(exc)
+            discovery_error = str(exc)
             found = []
         self._external = {item.instance.id: item for item in found}
         for observation in found:
@@ -367,6 +515,7 @@ class ProcessManager:
         all_instances = [item.instance for item in self._managed.values()] + [
             item.instance for item in self._external.values()
         ]
+        self.discovery_error = discovery_error
         return InstanceList(items=all_instances)
 
     async def get(self, instance_id: str) -> Instance:
@@ -401,7 +550,7 @@ class ProcessManager:
                     "identity_verified": instance_value.identity_verified,
                 },
             )
-        self._check_identity(instance_value)
+        self._check_identity(instance_value, check_group=not (managed and managed.unit_name))
         operation = ProcessOperation(
             id=f"op_{uuid4().hex}",
             kind="stop_instance",
@@ -413,20 +562,35 @@ class ProcessManager:
         self._operations[operation.id] = operation
         instance_value.state = "stopping"
         try:
-            pgid = self._check_identity(instance_value)
-            os.killpg(pgid, signal.SIGTERM)
-            await self._wait_exit(instance_value.pid, duration=10.0)
-            if _pid_exists(instance_value.pid):
-                # Identity must still match before escalating.  A PID reused
-                # by a different process is a conflict, not a kill target.
-                kill_pgid = self._check_identity(instance_value)
-                os.killpg(kill_pgid, signal.SIGKILL)
-                await self._wait_exit(instance_value.pid, duration=1.0)
+            if managed is not None and managed.unit_name:
+                if (
+                    self.launcher is None
+                    or await self.launcher.pid(managed.unit_name) != instance_value.pid
+                ):
+                    raise AppError(
+                        "instance_identity_changed", "Сервис модели изменился", status_code=409
+                    )
+                self._check_identity(instance_value, check_group=False)
+                await self.launcher.stop(managed.unit_name)
+            else:
+                pgid = self._check_identity(instance_value)
+                os.killpg(pgid, signal.SIGTERM)
+                await self._wait_exit(instance_value.pid, duration=10.0)
+                if _pid_exists(instance_value.pid):
+                    # Identity must still match before escalating.  A PID reused
+                    # by a different process is a conflict, not a kill target.
+                    kill_pgid = self._check_identity(instance_value)
+                    os.killpg(kill_pgid, signal.SIGKILL)
+                    await self._wait_exit(instance_value.pid, duration=1.0)
             if managed is not None and managed.process.returncode is None:
                 with contextlib.suppress(TimeoutError):
                     await asyncio.wait_for(managed.process.wait(), timeout=1.0)
             if managed is not None and managed.process.returncode is not None:
                 self._process_done(instance_id)
+                if self.run_store is not None:
+                    await self.run_store.delete(
+                        instance_value.pid, instance_value.process_start_time_ns
+                    )
             operation.exit_code = 0
             operation.state = "succeeded"
         except AppError as exc:
@@ -445,7 +609,7 @@ class ProcessManager:
             operation.finished_at = datetime.now(UTC)
         return operation
 
-    def _check_identity(self, expected: Instance) -> int:
+    def _check_identity(self, expected: Instance, *, check_group: bool = True) -> int:
         try:
             process = psutil.Process(expected.pid)
             actual_ns = _identity_start_ns(expected.pid)
@@ -465,6 +629,8 @@ class ProcessManager:
                 status_code=409,
                 details={"pid": expected.pid},
             )
+        if not check_group:
+            return expected.pid
         try:
             pgid = os.getpgid(expected.pid)
             group_leader = psutil.Process(pgid)

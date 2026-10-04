@@ -49,15 +49,22 @@ def test_internal_and_external_routes_share_proxy_and_preserve_wire_responses(tm
         (external_client, "/v1/chat/completions"),
     ]:
         body = {"model": "public-model", "messages": [{"role": "user", "content": "hi"}]}
-        response = client.post(path, json=body)
+        response = client.post(path, json=body, headers={"Authorization": "Bearer P-Work"})
         assert response.status_code == 200
         assert response.json()["choices"][0]["message"]["content"] == "hello"
         assert proxy.calls[-1]["route"] == "/v1/chat/completions"
         assert proxy.calls[-1]["payload"] == body
+        assert proxy.calls[-1]["headers"]["authorization"] == (
+            "Bearer l-chat" if path.startswith("/api/proxy/") else "Bearer P-Work"
+        )
+        assert proxy.calls[-1]["force_usage"] is path.startswith("/api/proxy/")
         response = client.post(path, json={**body, "stream": True})
         assert response.status_code == 200
         assert response.headers["content-type"].startswith("text/event-stream")
         assert '"content":"hello"' in response.text
         assert response.text.endswith("data: [DONE]\n\n")
+        if path.startswith("/api/proxy/"):
+            assert proxy.calls[-1]["headers"]["authorization"] == "Bearer l-chat"
+        assert proxy.calls[-1]["force_usage"] is path.startswith("/api/proxy/")
     assert internal_client.get("/v1/models").status_code == 404
     assert external_client.get("/api/proxy/models").status_code == 404

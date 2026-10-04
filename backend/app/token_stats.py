@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import case, func, select, text
+from sqlalchemy import Integer, case, cast, func, select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from .journal import ApiClientRecord, RequestJournalRecord, journal_record_values
@@ -145,6 +145,57 @@ class RequestJournalService:
                 .values(error_code="interrupted", finished_at=datetime.now(UTC))
             )
             await session.commit()
+
+    async def token_history(
+        self, *, profile_name: str | None = None, pid: int | None = None
+    ) -> dict[str, Any]:
+        now = datetime.now(UTC)
+        # 23 complete clock hours plus the current hour; boundaries stay put
+        # during polling and advance only when the next hour starts.
+        end = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+        start = end - timedelta(hours=24)
+        event_time = func.coalesce(
+            RequestJournalRecord.usage_received_at,
+            RequestJournalRecord.finished_at,
+        )
+        bucket = cast((func.strftime("%s", event_time) - start.timestamp()) / 3600, Integer)
+        fields = {
+            "input_tokens": RequestJournalRecord.input_tokens,
+            "output_tokens": RequestJournalRecord.output_tokens,
+            "cached_tokens": RequestJournalRecord.cached_input_tokens,
+        }
+        columns = [bucket.label("bucket"), func.count().label("requests")]
+        for name, field in fields.items():
+            columns.extend([
+                func.sum(func.coalesce(field, 0)).label(name),
+                func.sum(case((field.is_(None), 1), else_=0)).label(f"{name}_unknown"),
+            ])
+        query = select(*columns).where(
+            RequestJournalRecord.finished_at.is_not(None),
+            event_time >= start,
+            event_time < now,
+        ).group_by(bucket)
+        if profile_name is not None:
+            query = query.where(RequestJournalRecord.profile_name == profile_name)
+        if pid is not None:
+            query = query.where(RequestJournalRecord.pid == pid)
+        async with self._session_factory() as session:
+            rows = {row["bucket"]: dict(row) for row in (await session.execute(query)).mappings()}
+        items = []
+        for index in range(24):
+            row = rows.get(index, {"requests": 0})
+            item = {"at": start + timedelta(hours=index), "requests": row["requests"]}
+            for name in fields:
+                unknown = row.get(f"{name}_unknown", 0)
+                item[name] = (
+                    None if row["requests"] > 0 and unknown == row["requests"] else row.get(name, 0)
+                )
+                item[f"{name}_unknown"] = unknown
+            items.append(item)
+        return {
+            "items": items, "from": start, "to": end,
+            "bucket_minutes": 60, "source": "api-journal",
+        }
 
     async def usage(
         self,

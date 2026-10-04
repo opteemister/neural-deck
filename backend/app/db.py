@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import text
+from sqlalchemy import event, text
+from sqlalchemy.engine import ExceptionContext
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -20,6 +22,8 @@ from sqlalchemy.orm import DeclarativeBase
 
 from .config import Settings
 from .paths import DataPaths
+
+logger = logging.getLogger(__name__)
 
 ALEMBIC_CONFIG_PATH = Path(__file__).resolve().parents[1] / "alembic.ini"
 
@@ -35,13 +39,26 @@ def database_url(sqlite_path: Path) -> str:
 
 
 def create_engine(sqlite_path: Path, *, echo: bool = False) -> AsyncEngine:
-    return create_async_engine(
+    engine = create_async_engine(
         database_url(sqlite_path),
         echo=echo,
         future=True,
         hide_parameters=True,
+        pool_pre_ping=True,
         connect_args={"check_same_thread": False},
     )
+
+    @event.listens_for(engine.sync_engine, "handle_error")
+    def report_connection_error(context: ExceptionContext) -> None:
+        if context.is_disconnect:
+            logger.warning(
+                "SQLite: соединение потеряно; исключено из пула "
+                "(error_type=%s, during_checkout=%s)",
+                type(context.original_exception).__name__,
+                context.is_pre_ping,
+            )
+
+    return engine
 
 
 def create_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:

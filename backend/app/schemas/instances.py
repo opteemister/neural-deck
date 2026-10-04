@@ -60,6 +60,7 @@ class MetricList(BaseModel):
     items: list[Metric]
     source: str = "local"
     peaks: dict[str, float] = Field(default_factory=dict)
+    distributions: dict[str, Any] = Field(default_factory=dict, exclude=True)
 
 
 class LogsData(BaseModel):

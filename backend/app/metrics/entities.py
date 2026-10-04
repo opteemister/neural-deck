@@ -15,6 +15,7 @@ class MetricSample(Base):
         Index("ix_metrics_profile_pid_time", "profile_name", "pid", "observed_at"),
         Index("ix_metrics_profile_time", "profile_name", "observed_at"),
         Index("ix_metrics_time", "observed_at"),
+        {"sqlite_autoincrement": True},
     )
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     profile_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
@@ -24,6 +25,7 @@ class MetricSample(Base):
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     metric_meta: Mapped[dict[str, Any]] = mapped_column(JSON)
+    distributions: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     decode_tps: Mapped[float | None] = mapped_column(Float, nullable=True)
     ttft_mean_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
     prefill_tps: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -51,3 +53,30 @@ class MetricLaunchExtrema(Base):
     pid: Mapped[int] = mapped_column(Integer, primary_key=True)
     values: Mapped[dict[str, float]] = mapped_column(JSON)
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class MetricDaily(Base):
+    __tablename__ = "metric_daily"
+    day: Mapped[str] = mapped_column(String(10), primary_key=True)
+    profile_name: Mapped[str] = mapped_column(String(256), primary_key=True)
+    model_name: Mapped[str] = mapped_column(String(512), primary_key=True)
+    engine_id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    statistics: Mapped[dict[str, Any]] = mapped_column(JSON)
+    distributions: Mapped[dict[str, Any]] = mapped_column(JSON)
+
+
+class MetricConcurrencyDaily(Base):
+    __tablename__ = "metric_concurrency_daily"
+    day: Mapped[str] = mapped_column(String(10), primary_key=True)
+    profile_name: Mapped[str] = mapped_column(String(256), primary_key=True)
+    model_name: Mapped[str] = mapped_column(String(512), primary_key=True)
+    engine_id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    requests: Mapped[int] = mapped_column(Integer, primary_key=True)
+    statistics: Mapped[dict[str, Any]] = mapped_column(JSON)
+
+
+class MetricArchiveCheckpoint(Base):
+    __tablename__ = "metric_archive_checkpoint"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    last_sample_id: Mapped[int] = mapped_column(Integer)
+    baselines: Mapped[dict[str, Any]] = mapped_column(JSON)

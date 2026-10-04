@@ -72,6 +72,7 @@ export interface GpuData {
   memory_total_bytes: number
   usage_percent: number | null
   temperature_celsius: number | null
+  fan_speed_percent?: number | null
   power_watts?: number | null
   power_limit_watts?: number | null
 }
@@ -245,6 +246,7 @@ export interface ProfileListData {
 }
 
 export interface Metric {
+  metadata?: Record<string, unknown>
   name: string
   value: number | string | null
   unit: string | null
@@ -392,5 +394,13 @@ export interface MetricsHistoryData {
   history: Array<MetricsData & { observed_at: string; profile_name?: string | null; pid?: number }>
   current: (MetricsData & { observed_at: string }) | null
   peaks: Record<string, number>
+  source: string
+}
+
+export interface TokenHistoryData {
+  items: Array<{ at: string; requests: number; input_tokens: number | null; output_tokens: number | null; cached_tokens: number | null; input_tokens_unknown: number; output_tokens_unknown: number; cached_tokens_unknown: number }>
+  from: string
+  to: string
+  bucket_minutes: number
   source: string
 }

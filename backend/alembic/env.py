@@ -9,9 +9,10 @@ from alembic import context
 from app.config import Settings, load_settings
 from app.db import Base, database_url
 from app.journal import ApiClientRecord, RequestJournalRecord  # noqa: F401
-from app.metrics.entities import MetricSample, MetricLaunchExtrema  # noqa: F401
+from app.metrics.entities import MetricLaunchExtrema, MetricSample  # noqa: F401
 from app.models import entities as _model_entities  # noqa: F401
 from app.paths import build_paths, prepare_data_dirs
+from app.process.runs import ModelRunRecord  # noqa: F401
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config

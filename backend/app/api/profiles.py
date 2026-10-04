@@ -58,6 +58,17 @@ async def format_profile_script(
 
 
 @router.post(
+    "/preview", response_model=SuccessEnvelope[dict[str, str]]
+)
+async def preview_configuration(
+    request: Request,
+    profile: ProfileData,
+    service: ProfileService = Depends(get_profile_service),
+) -> JSONResponse:
+    return success(request, await service.preview_configuration(profile))
+
+
+@router.post(
     "/start", response_model=SuccessEnvelope[Instance], status_code=status.HTTP_202_ACCEPTED
 )
 async def start_configuration(

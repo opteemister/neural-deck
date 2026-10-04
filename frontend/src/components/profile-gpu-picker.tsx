@@ -3,6 +3,7 @@ import { Button } from '@/components/ui/button'
 import type { GpuData } from '@/types/api'
 
 const variable = 'CUDA_VISIBLE_DEVICES'
+const orderVariable = 'CUDA_DEVICE_ORDER'
 
 /** Edit the environment itself so manual changes and the picker cannot diverge. */
 export function ProfileGpuPicker({ gpus, environment, onChange }: { gpus: GpuData[]; environment: string; onChange: (value: string) => void }) {
@@ -21,11 +22,11 @@ export function ProfileGpuPicker({ gpus, environment, onChange }: { gpus: GpuDat
   }).join(', ')
 
   function setValue(next: string | undefined) {
-    const remaining = lines.filter((line) => !line.trim().startsWith(`${variable}=`))
-    if (next !== undefined) {
-      if (remaining.length === 1 && remaining[0] === '') remaining.length = 0
-      remaining.push(`${variable}=${next}`)
-    }
+    const multiple = next === undefined ? gpus.length > 1 : new Set(next.split(',').map((token) => token.trim()).filter((token) => token && token !== '-1')).size > 1
+    const remaining = lines.filter((line) => !line.trim().startsWith(`${variable}=`) && (!multiple || !line.trim().startsWith(`${orderVariable}=`)))
+    if ((next !== undefined || multiple) && remaining.length === 1 && remaining[0] === '') remaining.length = 0
+    if (next !== undefined) remaining.push(`${variable}=${next}`)
+    if (multiple) remaining.push(`${orderVariable}=PCI_BUS_ID`)
     onChange(remaining.join('\n'))
   }
 

@@ -23,17 +23,15 @@ def _service(paths: DataPaths) -> LogsService:
 
 
 @router.get("", response_model=SuccessEnvelope[LogSourceList])
-async def list_logs(
-    request: Request, paths: DataPaths = Depends(get_paths)
-) -> object:
+async def list_logs(request: Request, paths: DataPaths = Depends(get_paths)) -> object:
     return success(request, _service(paths).list_sources())
 
 
 @router.get("/{source_id:path}/download")
 async def download_log(
-    source_id: str, paths: DataPaths = Depends(get_paths)
+    source_id: str, latest: bool = Query(default=False), paths: DataPaths = Depends(get_paths)
 ) -> PlainTextResponse:
-    source, body = _service(paths).download(source_id)
+    source, body = _service(paths).download(source_id, latest=latest)
     safe_name = re.sub(r"[^A-Za-z0-9._-]+", "-", source.label).strip("-") or "log"
     filename = f"{safe_name}.log"
     return PlainTextResponse(

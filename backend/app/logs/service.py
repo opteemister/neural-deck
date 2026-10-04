@@ -55,8 +55,16 @@ class LogsService:
             has_older=start > 0,
         )
 
-    def download(self, source_id: str) -> tuple[LogSource, str]:
+    def download(self, source_id: str, *, latest: bool = False) -> tuple[LogSource, str]:
         group = self._find(source_id)
+        if latest:
+            if not group.paths:
+                return group.source, ""
+            try:
+                with group.paths[-1].open(encoding="utf-8", errors="replace", newline="") as handle:
+                    return group.source, handle.read()
+            except OSError as exc:
+                raise AppError("logs_unavailable", str(exc), status_code=503) from exc
         lines = self._read_lines(group.paths)
         body = "\n".join(lines)
         if lines:
@@ -105,9 +113,7 @@ class LogsService:
         operations_paths = self._operation_paths()
         groups: list[_LogGroup] = [
             _LogGroup(
-                source=self._source(
-                    "application", "application", "Application", application_paths
-                ),
+                source=self._source("application", "application", "Application", application_paths),
                 paths=tuple(application_paths),
             ),
             _LogGroup(

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useSearchParams } from 'react-router-dom'
-import { Download, Filter, RefreshCw, Trash2 } from 'lucide-react'
+import { ArrowDown, Check, Copy, Download, Filter, RefreshCw, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -45,6 +45,10 @@ export function LogsViewer({ initialProfile, initialSource = '', drawer = false 
   const [loadingOlder, setLoadingOlder] = useState(false)
   const [manualRefreshing, setManualRefreshing] = useState(false)
   const [downloadError, setDownloadError] = useState<string | null>(null)
+  const [atBottom, setAtBottom] = useState(true)
+  const [copying, setCopying] = useState(false)
+  const [copied, setCopied] = useState(false)
+  const [copyError, setCopyError] = useState<string | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const atBottomRef = useRef(true)
   const loadedSourceRef = useRef<string | null>(null)
@@ -67,6 +71,9 @@ export function LogsViewer({ initialProfile, initialSource = '', drawer = false 
     setLines([])
     loadedSourceRef.current = null
     atBottomRef.current = true
+    setAtBottom(true)
+    setCopied(false)
+    setCopyError(null)
   }, [activeSelectedId])
 
   useEffect(() => {
@@ -81,16 +88,33 @@ export function LogsViewer({ initialProfile, initialSource = '', drawer = false 
     })
   }, [activeSelectedId, log.data])
 
-  useEffect(() => {
-    if (autoScroll && atBottomRef.current && scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
-    }
-  }, [autoScroll, lines.length])
-
   const visibleLines = useMemo(() => {
     const needle = filter.trim().toLocaleLowerCase()
     return needle ? lines.filter((line) => line.text.toLocaleLowerCase().includes(needle)) : lines
   }, [filter, lines])
+  function updateScrollPosition() {
+    const element = scrollRef.current
+    if (!element) return
+    const bottom = element.scrollHeight - element.scrollTop - element.clientHeight < 16
+    atBottomRef.current = bottom
+    setAtBottom(bottom)
+  }
+
+  function scrollToBottom() {
+    if (!scrollRef.current) return
+    scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+    updateScrollPosition()
+  }
+
+  useEffect(() => {
+    const element = scrollRef.current
+    if (!element) return
+    if (autoScroll && atBottomRef.current) element.scrollTop = element.scrollHeight
+    const bottom = element.scrollHeight - element.scrollTop - element.clientHeight < 16
+    atBottomRef.current = bottom
+    setAtBottom(bottom)
+  }, [autoScroll, visibleLines])
+
   const lineNumberDigits = String((visibleLines.at(-1)?.number ?? 0) + 1).length
   const Container = drawer ? 'div' : Card
   const Header = drawer ? 'div' : CardHeader
@@ -164,11 +188,26 @@ export function LogsViewer({ initialProfile, initialSource = '', drawer = false 
     }
   }
 
+  async function copyLatest() {
+    if (!activeSelectedId || copying) return
+    setCopying(true)
+    setCopied(false)
+    setCopyError(null)
+    try {
+      const file = await api.downloadLog(activeSelectedId, true)
+      await navigator.clipboard.writeText(await file.text())
+      setCopied(true)
+    } catch (error) {
+      setCopyError(error instanceof StudioApiError ? error.message : 'Не удалось скопировать последний файл лога.')
+    } finally {
+      setCopying(false)
+    }
+  }
+
   function onScroll() {
     const element = scrollRef.current
     if (!element) return
-    const atBottom = element.scrollHeight - element.scrollTop - element.clientHeight < 16
-    atBottomRef.current = atBottom
+    updateScrollPosition()
     if (element.scrollTop < 16 && hasOlder) void loadOlder()
   }
 
@@ -198,13 +237,15 @@ export function LogsViewer({ initialProfile, initialSource = '', drawer = false 
       <Content className={drawer ? 'flex min-h-0 flex-1 flex-col' : undefined}>
         <div className={`flex shrink-0 flex-wrap items-center gap-4 border-b border-border ${drawer ? 'p-3' : 'mb-3 pb-3'}`}>
           <div className="relative min-w-56 flex-1"><Filter className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" /><Input className="pl-8 pr-20" value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Фильтр по тексту" aria-label="Фильтр по тексту" /><span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">{visibleLines.length}/{log.data?.total_lines ?? lines.length}</span></div>
+          <Button size="sm" variant="ghost" iconOnly onClick={() => void copyLatest()} disabled={!activeSelectedId || !selectedSource?.file_count || copying} aria-label={copied ? 'Последний файл скопирован' : 'Копировать последний файл лога'} title={copied ? 'Скопировано' : 'Копировать последний файл лога'}>{copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}</Button>
           <div className="flex items-center gap-4">
             <label className="flex items-center gap-2 text-xs text-muted-foreground"><input type="checkbox" checked={autoRefresh} onChange={(event) => setAutoRefresh(event.target.checked)} />Авторефреш</label>
             <label className="flex items-center gap-2 text-xs text-muted-foreground"><input type="checkbox" checked={autoScroll} onChange={(event) => setAutoScroll(event.target.checked)} />Автоскролл</label>
           </div>
         </div>
+        {copyError && <p role="alert" className="mb-3 text-xs text-[#d0a390]">{copyError}</p>}
         {downloadError && <p className="mb-3 text-xs text-[#d0a390]">{downloadError}</p>}
-        {!activeSelectedId ? <QueryEmpty title="Логи профиля пока не появились" description={`Профиль: ${profileName ?? ''}`} /> : log.isError ? <QueryError error={log.error} retry={() => void log.refetch()} label="Лог недоступен" /> : log.isPending && !log.data ? <QueryLoading label="Загружаем выбранный лог" /> : <div ref={scrollRef} onScroll={onScroll} className={`${drawer ? 'min-h-0 flex-1 p-2' : 'h-[min(65vh,42rem)] rounded-md border border-border p-3'} overflow-auto overscroll-contain bg-background font-mono text-[11px] leading-5`} aria-label="Содержимое лога">{loadingOlder && <p className="mb-2 text-center text-muted-foreground">Загружаем более ранние строки…</p>}{visibleLines.length === 0 ? <p className="text-muted-foreground">В выбранном логе пока нет строк.</p> : visibleLines.map((line) => <div key={line.number} className="flex min-w-max whitespace-pre"><span style={{ width: `calc(${lineNumberDigits}ch + 0.5rem)` }} className="mr-2 inline-block shrink-0 select-none border-r border-border pr-2 text-right text-muted-foreground">{line.number + 1}</span><span>{line.text || ' '}</span></div>)}</div>}
+        {!activeSelectedId ? <QueryEmpty title="Логи профиля пока не появились" description={`Профиль: ${profileName ?? ''}`} /> : log.isError ? <QueryError error={log.error} retry={() => void log.refetch()} label="Лог недоступен" /> : log.isPending && !log.data ? <QueryLoading label="Загружаем выбранный лог" /> : <div className={drawer ? 'relative flex min-h-0 flex-1 flex-col' : 'relative'}><div ref={scrollRef} onScroll={onScroll} className={`${drawer ? 'min-h-0 flex-1 p-2' : 'h-[min(65vh,42rem)] rounded-md border border-border p-3'} overflow-auto overscroll-contain bg-background font-mono text-[11px] leading-5`} aria-label="Содержимое лога">{loadingOlder && <p className="mb-2 text-center text-muted-foreground">Загружаем более ранние строки…</p>}{visibleLines.length === 0 ? <p className="text-muted-foreground">В выбранном логе пока нет строк.</p> : visibleLines.map((line) => <div key={line.number} className="flex min-w-max whitespace-pre"><span style={{ width: `calc(${lineNumberDigits}ch + 0.5rem)` }} className="mr-2 inline-block shrink-0 select-none border-r border-border pr-2 text-right text-muted-foreground">{line.number + 1}</span><span>{line.text || ' '}</span></div>)}</div>{!atBottom && <Button type="button" size="md" variant="secondary" className="absolute bottom-4 right-4 z-10 min-w-24 rounded-full px-4 shadow-md" aria-label="Прокрутить лог до конца" title="Прокрутить лог до конца" onClick={scrollToBottom}><ArrowDown className="size-4" />Вниз</Button>}</div>}
       </Content>
     </Container>}
   </div>

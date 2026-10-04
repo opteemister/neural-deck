@@ -27,6 +27,7 @@ def profile(name: str = "demo") -> ProfileData:
             "command": "{{engine}} serve --model {{model}} --port 1901",
             "environment": {"CUDA_VISIBLE_DEVICES": "0"},
             "autostart": False,
+            "enable_metrics": False,
         }
     )
 
@@ -141,14 +142,21 @@ def test_format_script_is_conservative_for_shell_syntax() -> None:
 
 
 @pytest.mark.parametrize(
-    "engine, flag", [("llama.cpp", "--metrics"), ("sglang", "--enable-metrics")]
+    "engine, flag",
+    [("llama.cpp", "--metrics"),
+     ("sglang", "--enable-metrics --log-level-http warning --enable-cache-report"),
+     ("vllm", "--disable-access-log-for-endpoints /metrics --enable-prompt-tokens-details"),
+     ("freetoken", "--enable-cache-report")]
 )
 def test_metrics_preference_is_saved_with_final_command(
     tmp_path: Path, engine: str, flag: str
 ) -> None:
     repository = ProfileRepository(tmp_path / "profiles")
     value = profile().model_copy(
-        update={"engine": profile().engine.model_copy(update={"id": engine})}
+        update={
+            "engine": profile().engine.model_copy(update={"id": engine}),
+            "enable_metrics": True,
+        }
     )
     saved = repository.create(value)
     assert saved.enable_metrics is True
@@ -172,8 +180,21 @@ def test_metrics_flags_ignore_comments_and_preserve_multiline_commands() -> None
     assert enable_command_metrics(command, "llama.cpp", True) == command.rstrip() + " --metrics\n"
     existing = "{{engine}} --metrics; echo done"
     assert enable_command_metrics(existing, "llama.cpp", True) == existing
-    for engine in ["vllm", "freetoken", "ninfer"]:
-        assert enable_command_metrics(command, engine, True) == command
+    assert enable_command_metrics(command, "ninfer", True) == command
+
+
+@pytest.mark.parametrize("engine, command, flag", [
+    ("vllm", "{{engine}} serve {{model}} --disable-access-log-for-endpoints /metrics", "--enable-prompt-tokens-details"),
+    ("sglang", "{{engine}} serve --model-path {{model}} --enable-metrics --log-level-http warning", "--enable-cache-report"),
+    ("freetoken", "{{engine}} serve --model {{model}}", "--enable-cache-report"),
+])
+def test_existing_commands_get_cache_usage_only_when_metrics_enabled(
+    engine: str, command: str, flag: str,
+) -> None:
+    assert enable_command_metrics(command, engine, False) == command
+    enabled = enable_command_metrics(command, engine, True)
+    assert enabled == command + " " + flag
+    assert enable_command_metrics(enabled, engine, True) == enabled
 
 
 @pytest.mark.parametrize(
@@ -185,3 +206,74 @@ def test_metrics_never_append_to_an_ambiguous_script(command: str) -> None:
         enable_command_metrics(command, "llama.cpp", True)
     assert error.value.code == "metrics_command_requires_manual_flag"
     assert enable_command_metrics(command, "llama.cpp", False) == command
+
+
+@pytest.mark.parametrize("engine, option", [
+    ("vllm", "--disable-access-log-for-endpoints=/metrics,/health --enable-prompt-tokens-details"),
+    ("sglang", "--enable-metrics --log-level-http=error --enable-cache-report"),
+    ("freetoken", "--enable-cache-report"),
+])
+def test_monitoring_options_preserve_explicit_values(engine: str, option: str) -> None:
+    command = "{{engine}} serve {{model}} " + option
+    assert enable_command_metrics(command, engine, True) == command
+    assert enable_command_metrics(command, engine, False) == command
+
+
+@pytest.mark.parametrize("engine", ["vllm", "sglang"])
+def test_monitoring_options_do_not_land_in_shell_redirects(engine: str) -> None:
+    with pytest.raises(AppError):
+        enable_command_metrics("{{engine}} serve {{model}} > /tmp/log", engine, True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("engine, flags", [
+    ("vllm", "--disable-access-log-for-endpoints /metrics --enable-prompt-tokens-details"),
+    ("sglang", "--enable-metrics --log-level-http warning --enable-cache-report"),
+    ("freetoken", "--enable-cache-report"),
+    ("llama.cpp", "--metrics"),
+])
+async def test_preview_adds_launch_flags_without_changing_saved_profile(
+    tmp_path: Path, engine: str, flags: str,
+) -> None:
+    from app.profiles.service import ProfileService
+
+    repository = ProfileRepository(tmp_path)
+    saved = repository.create(profile().model_copy(update={
+        "engine": profile().engine.model_copy(update={"id": engine}),
+    }))
+    path = tmp_path / "demo.yaml"
+    original = path.read_text()
+    service = ProfileService(tmp_path, repository=repository, installation_resolver=lambda *_: "/opt/engine")
+    enabled = saved.model_copy(update={"enable_metrics": True})
+    result = await service.preview_configuration(enabled)
+    expected = substitute_placeholders(saved.command, engine="/opt/engine", model=str(saved.model.path), model_name=saved.model_name)
+    assert result["command"] == expected + " " + flags
+    assert (await service.preview_configuration(saved))["command"] == expected
+    assert path.read_text() == original
+
+
+@pytest.mark.asyncio
+async def test_saved_profile_gets_quiet_monitoring_on_launch_without_rewriting_yaml(
+    tmp_path: Path,
+) -> None:
+    from app.profiles.service import ProfileService
+
+    class Launcher:
+        async def start_profile(self, configuration: ProfileData, engine_path: str) -> ProfileData:
+            assert engine_path == "/opt/vllm"
+            return configuration
+
+    repository = ProfileRepository(tmp_path)
+    repository.create(profile())
+    path = tmp_path / "demo.yaml"
+    path.write_text(path.read_text().replace("enable_metrics: false", "enable_metrics: true"))
+    original = path.read_text()
+    service = ProfileService(
+        tmp_path,
+        repository=repository,
+        process_manager=Launcher(),
+        installation_resolver=lambda *_: "/opt/vllm",
+    )
+    launched = await service.start("demo")
+    assert launched.command.endswith(" --disable-access-log-for-endpoints /metrics --enable-prompt-tokens-details")
+    assert path.read_text() == original

@@ -65,7 +65,7 @@ async def collect_gpus() -> list[GpuData]:
             subprocess.run,
             [
                 executable,
-                "--query-gpu=index,name,memory.used,memory.total,utilization.gpu,temperature.gpu,uuid,power.draw,power.limit",
+                "--query-gpu=index,name,memory.used,memory.total,utilization.gpu,temperature.gpu,uuid,power.draw,power.limit,fan.speed",
                 "--format=csv,noheader,nounits",
             ],
             capture_output=True,
@@ -80,8 +80,13 @@ async def collect_gpus() -> list[GpuData]:
 
     gpus: list[GpuData] = []
     for row in csv.reader(io.StringIO(completed.stdout), skipinitialspace=True):
-        if len(row) != 9:
+        if len(row) != 10:
             continue
+        try:
+            fan = float(row[9])
+            fan = fan if math.isfinite(fan) and fan >= 0 else None
+        except ValueError:
+            fan = None
         power_values: list[float | None] = []
         for raw in row[7:9]:
             try:
@@ -101,6 +106,7 @@ async def collect_gpus() -> list[GpuData]:
                     memory_total_bytes=int(float(row[3]) * 1024 * 1024),
                     usage_percent=usage,
                     temperature_celsius=temperature,
+                    fan_speed_percent=fan,
                     power_watts=power_values[0],
                     power_limit_watts=power_values[1],
                 )

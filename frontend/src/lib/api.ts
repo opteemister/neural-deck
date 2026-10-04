@@ -227,6 +227,7 @@ export const api = {
   downloadModels: (body: DownloadRequest) => request<Operation>('/api/v1/models/downloads', json(body)),
   getProfiles: () => request<ProfileListData>('/api/v1/profiles'),
   getProfile: (name: string) => request<ProfileData>(`/api/v1/profiles/${encodeURIComponent(name)}`),
+  previewProfile: (body: ProfileData) => request<{ command: string }>('/api/v1/profiles/preview', json(body)),
   createProfile: (body: ProfileData) => request<ProfileData>('/api/v1/profiles', { method: 'POST', body: JSON.stringify(body) }),
   updateProfile: (name: string, body: ProfileData) => request<ProfileData>(`/api/v1/profiles/${encodeURIComponent(name)}`, { method: 'PUT', body: JSON.stringify(body) }),
   deleteProfile: (name: string) => request<{ name: string }>(`/api/v1/profiles/${encodeURIComponent(name)}`, { method: 'DELETE' }),
@@ -236,6 +237,24 @@ export const api = {
   getInstances: () => request<{ items: import('@/types/api').Instance[] }>('/api/v1/instances'),
   stopInstance: (id: string) => request<Operation>(`/api/v1/instances/${encodeURIComponent(id)}/stop`, json(undefined)),
   getMetrics: (id: string) => request<MetricsData>(`/api/v1/instances/${encodeURIComponent(id)}/metrics`),
+  getTokenHistory: (profile_name?: string, pid?: number) => {
+    const query = new URLSearchParams({ mode: 'token-history' })
+    if (profile_name !== undefined) query.set('profile_name', profile_name)
+    if (pid !== undefined) query.set('pid', String(pid))
+    return request<import('@/types/api').TokenHistoryData>(`/api/v1/metrics?${query}`)
+  },
+  getMetricAggregates: (filters: { profile_name?: string; pid?: number; scope?: 'profile' | 'all' } = {}) => {
+    const query = new URLSearchParams({ mode: 'aggregates' })
+    if (filters.profile_name !== undefined) query.set('profile_name', filters.profile_name)
+    if (filters.pid !== undefined) query.set('pid', String(filters.pid))
+    if (filters.scope !== undefined) query.set('scope', filters.scope)
+    return request<{ aggregates: Record<string, { avg: number; max: number }>; from: string; to: string; source: string }>(`/api/v1/metrics?${query}`)
+  },
+  getMetricConcurrency: (profileName?: string) => {
+    const query = new URLSearchParams({ days: '7' })
+    if (profileName !== undefined) query.set('profile_name', profileName)
+    return request<{ items: import('@/components/concurrency-chart').ConcurrencyPoint[]; days: number; source: string }>(`/api/v1/metrics/concurrency?${query}`)
+  },
   getMetricsHistory: (filters: { profile_name?: string; pid?: number; scope?: 'profile' | 'all'; mode?: 'bootstrap' | 'current' } = {}) => {
     const query = new URLSearchParams({ mode: filters.mode ?? 'bootstrap', limit: '120' })
     if (filters.profile_name !== undefined) query.set('profile_name', filters.profile_name)
@@ -251,8 +270,8 @@ export const api = {
     return request<LogData>(`/api/v1/logs/${encodeURIComponent(id)}?${query.toString()}`)
   },
   deleteLog: (id: string) => request<{ id: string; deleted_files: number }>(`/api/v1/logs/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-  downloadLog: async (id: string): Promise<Blob> => {
-    const response = await fetch(`${apiBase}/api/v1/logs/${encodeURIComponent(id)}/download`)
+  downloadLog: async (id: string, latest = false): Promise<Blob> => {
+    const response = await fetch(`${apiBase}/api/v1/logs/${encodeURIComponent(id)}/download${latest ? '?latest=true' : ''}`)
     if (!response.ok) throw await readError(response)
     return response.blob()
   },

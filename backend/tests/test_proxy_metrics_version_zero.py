@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -101,6 +102,43 @@ def test_proxy_forwards_sse_without_buffering() -> None:
         assert b"".join(chunks) == payload
 
     asyncio.run(run())
+
+
+@pytest.mark.version_zero
+def test_proxy_enables_stream_usage_for_supported_engines() -> None:
+    seen: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["payload"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=(
+                b'data: {"usage":{"prompt_tokens":2,"completion_tokens":3}}\n\n'
+                b"data: [DONE]\n\n"
+            ),
+        )
+
+    async def run() -> None:
+        service = ProxyService(_Manager(), client_factory=lambda: _client(handler))
+        response = await service.forward(
+            route="/v1/chat/completions",
+            payload={
+                "model": "public",
+                "stream": True,
+                "stream_options": {"include_usage": False, "continuous_usage_stats": True},
+            },
+            headers={},
+            request_id="req_stream_usage",
+            force_usage=True,
+        )
+        [chunk async for chunk in response.body_iterator]
+
+    asyncio.run(run())
+    assert seen["payload"]["stream_options"] == {
+        "include_usage": True,
+        "continuous_usage_stats": True,
+    }
 
 
 @pytest.mark.version_zero

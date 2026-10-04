@@ -72,3 +72,60 @@ code, pre { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Consola
 @media (prefers-reduced-motion: reduce) {
   .logs-drawer { animation: none; }
 }
+
+/* Upper and lower sections share breakpoints; Parallel matches Tokens width. */
+.model-performance-layout { container-type: inline-size; }
+.model-performance-top { display: grid; gap: 20px; padding-bottom: 20px; }
+.model-performance-stat-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+/* Two standard 68px metric rows plus the 20px gap, at every width. */
+.model-performance-parallel { position: relative; min-width: 0; height: 156px; }
+.model-performance-parallel > section { position: absolute; inset: 0; }
+.model-performance-charts { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; }
+@container (min-width: 500px) {
+  .model-performance-top { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
+  .model-performance-charts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@container (min-width: 1000px) {
+  .model-performance-top { grid-template-columns: minmax(0, 1fr) minmax(0, calc((100% - 60px) / 4)); }
+  .model-performance-charts { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .model-performance-stat-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+}
+
+.system-resources-layout { container-type: inline-size; }
+.system-resources-grid { display: grid; grid-template-columns: minmax(0, 1fr); }
+@container (min-width: 500px) {
+  .system-resources-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@container (min-width: 1000px) {
+  .system-resources-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+
+/* GPU visuals shrink within their columns, then yield space to the values. */
+.gpu-table-container { container-type: inline-size; }
+.gpu-table-container > div { overflow-x: visible; }
+.gpu-table th, .gpu-table td { padding-left: clamp(4px, 1cqw, 12px); padding-right: clamp(4px, 1cqw, 12px); }
+.gpu-table th:nth-child(n+3) { text-align: right; }
+.gpu-table td > div { gap: 8px; min-width: 0; }
+.gpu-table-visual { display: block; flex: 1 1 20px; min-width: 20px; }
+.gpu-table-visual > div { width: 100%; }
+.gpu-table td > div > span:not(.gpu-table-visual) { flex-shrink: 0; text-align: right; font-variant-numeric: tabular-nums; }
+.gpu-table-current, .gpu-table-limit { display: inline-block; text-align: right; }
+.gpu-table-limit { margin-left: 1ch; }
+.gpu-table td:nth-child(3) .gpu-table-current { width: 7ch; }
+.gpu-table td:nth-child(7) .gpu-table-current { width: 3ch; }
+.gpu-table td:nth-child(4) > div > span:first-child,
+.gpu-table td:nth-child(5) > div > span:first-child { width: 6ch; }
+@container (max-width: 1000px) {
+  .gpu-table td:nth-child(7) .gpu-table-visual { display: none; }
+}
+@container (max-width: 900px) {
+  .gpu-table td:nth-child(3) .gpu-table-visual { display: none; }
+}
+@container (max-width: 800px) {
+  .gpu-table-visual { display: none; }
+}
+@container (max-width: 650px) {
+  .gpu-table th button { max-width: 100%; white-space: normal; flex-wrap: wrap; gap: 2px; }
+  .gpu-table td { font-size: 10px; }
+  .gpu-table td > div > span:not(.gpu-table-visual) { min-width: 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere; flex-shrink: 1; }
+}

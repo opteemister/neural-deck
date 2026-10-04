@@ -38,6 +38,7 @@ _HOP_BY_HOP = {
     "content-length",
     "host",
 }
+_USAGE_STREAM_OPTION_ENGINES = frozenset({"vllm", "llama.cpp", "sglang", "ninfer", "freetoken"})
 _SSE_USAGE_BUFFER_LIMIT = 2 * 1024 * 1024
 logger = logging.getLogger(__name__)
 _request_tracking: ContextVar[dict[str, Any] | None] = ContextVar("request_tracking", default=None)
@@ -221,6 +222,7 @@ class ProxyService:
         headers: Mapping[str, str],
         request_id: str,
         client_ip: str | None = None,
+        force_usage: bool = False,
     ) -> httpx.Response | Any:
         tracking: dict[str, Any] = {
             "journal_id": f"journal_{uuid4().hex}",
@@ -257,7 +259,11 @@ class ProxyService:
         token = _request_tracking.set(tracking)
         try:
             return await self._forward(
-                route=route, payload=payload, headers=headers, request_id=request_id
+                route=route,
+                payload=payload,
+                headers=headers,
+                request_id=request_id,
+                force_usage=force_usage,
             )
         finally:
             _request_tracking.reset(token)
@@ -269,6 +275,7 @@ class ProxyService:
         payload: Mapping[str, Any],
         headers: Mapping[str, str],
         request_id: str,
+        force_usage: bool,
     ) -> httpx.Response | Any:
         started = time.perf_counter()
         model_name = payload.get("model")
@@ -363,6 +370,17 @@ class ProxyService:
             if key.lower() not in _HOP_BY_HOP and key.lower() != "authorization"
         }
         stream = bool(upstream_payload.get("stream")) and route == "/v1/chat/completions"
+        if force_usage and stream and registered.engine_id in _USAGE_STREAM_OPTION_ENGINES:
+            # All supported OpenAI-compatible engines use this standard option
+            # for the terminal usage chunk. Preserve other engine-specific
+            # stream options while making usage available to the journal.
+            options = upstream_payload.get("stream_options")
+            if not isinstance(options, Mapping):
+                options = {}
+            else:
+                options = dict(options)
+            options["include_usage"] = True
+            upstream_payload["stream_options"] = options
         client = (
             self.client_factory()
             if self.client_factory is not None

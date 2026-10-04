@@ -65,9 +65,14 @@ export function ChatPage() {
   const activeModel = availableModels.some((model) => model.id === requestedModel) ? requestedModel : availableModels[0]?.id ?? ''
   const selectedModel = availableModels.find((model) => model.id === activeModel)
   const activeReasoning = reasoningChoices(selectedModel).all.some((option) => option.value === reasoning) ? reasoning : 'auto'
-  const lastTurn = turns[turns.length - 1]
-  const lastUsage = lastTurn?.model === activeModel ? lastTurn.usage : undefined
-  const usedContext = lastUsage?.total_tokens ?? (lastUsage?.prompt_tokens !== undefined && lastUsage.completion_tokens !== undefined ? lastUsage.prompt_tokens + lastUsage.completion_tokens : undefined)
+  let usedContext: number | undefined
+  for (let index = turns.length - 1; index >= 0; index--) {
+    const turn = turns[index]
+    if (turn.model !== activeModel) continue
+    const usage = turn.usage
+    const tokens = usage?.total_tokens ?? (usage?.prompt_tokens !== undefined && usage.completion_tokens !== undefined ? usage.prompt_tokens + usage.completion_tokens : undefined)
+    if (tokens !== undefined) { usedContext = tokens; break }
+  }
   const capacity = selectedModel?.context_length
   const contextPercent = usedContext !== undefined && capacity ? Math.min(100, usedContext / capacity * 100) : undefined
 
@@ -163,10 +168,10 @@ export function ChatPage() {
         </form>
         <div className="mt-2 flex flex-wrap items-center justify-between gap-2 px-1 text-[11px] text-muted-foreground">
           <span>Enter — отправить · Shift+Enter — новая строка</span>
-          {usedContext !== undefined && <span className="inline-flex items-center gap-2 tabular-nums" title="Контекст последнего запроса с учётом ответа. Точное число обновляется из usage движка; новый текст будет учтён при отправке.">
+          <span className="inline-flex items-center gap-2 tabular-nums" aria-label="Контекст диалога" title="Последний известный контекст с учётом ответа. Во время генерации сохраняется последнее измерение; число обновляется из usage движка. Прочерк означает, что измерения ещё нет.">
             {contextPercent !== undefined && <span className="h-1 w-12 overflow-hidden rounded bg-border"><span className="block h-full bg-copper" style={{ width: contextPercent + '%' }} /></span>}
             Контекст {number(usedContext)}{capacity ? ' / ' + number(capacity) : ' токенов'}
-          </span>}
+          </span>
         </div>
       </div>
     </div>

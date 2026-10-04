@@ -21,6 +21,10 @@ cp "$root/scripts/common.sh" "$root/scripts/deploy.sh" "$root/scripts/status.sh"
     "$test_root/scripts/"
 cp "$root/deploy/install.sh" "$root/deploy/run-service.sh" \
     "$test_root/deploy/"
+# Keep command stubs first in the isolated installer. Production normalizes
+# PATH, which would otherwise invoke real sudo/package managers in this harness.
+sed '/^export PATH=/d' "$test_root/deploy/install.sh" > "$test_root/deploy/install.sandbox.sh"
+mv "$test_root/deploy/install.sandbox.sh" "$test_root/deploy/install.sh"
 cp "$root/deploy/systemd/llm-studio.service.template" "$test_root/deploy/systemd/"
 cp "$root/docker/entrypoint.sh" "$test_root/docker/"
 printf 'tracked\n' > "$test_root/AGENTS.md"
@@ -28,12 +32,15 @@ printf 'tracked with spaces\n' > "$test_root/tracked file.txt"
 printf 'tracked local contract\n' > "$test_root/.env.local"
 mkdir -p "$test_root/data"
 printf 'must be excluded\n' > "$test_root/data/forced.dat"
+mkdir -p "$test_root/frontend/src"
+printf 'new source\n' > "$test_root/frontend/src/new-untracked.ts"
 printf '%s\n' \
     '[project]' \
     'name = "runtime-harness-backend"' \
     'version = "0.0.0"' \
     'requires-python = ">=3.12"' > "$test_root/backend/pyproject.toml"
 printf '[tool]\n' > "$test_root/backend/alembic.ini"
+: > "$test_root/backend/uv.lock"
 printf '{"name":"runtime-harness-frontend","private":true}\n' > "$test_root/frontend/package.json"
 : > "$test_root/frontend/pnpm-lock.yaml"
 runtime_data_root="$sandbox/persistent-data"
@@ -58,6 +65,9 @@ set -euo pipefail
 case " $* " in
     *" ls-files -c -z -- "*)
         printf "%s\0" "AGENTS.md" "tracked file.txt" ".env.local" "data/forced.dat"
+        ;;
+    *" ls-files -o --exclude-standard -z -- "*)
+        printf "%s\0" "frontend/src/new-untracked.ts"
         ;;
     *" rev-parse --show-toplevel "*)
         printf "%s\n" "$PWD"
@@ -94,6 +104,7 @@ fi
 write_stub "$bin_dir/sudo" '#!/bin/bash' '
 set -euo pipefail
 printf "sudo %s\n" "$*" >> "$FAKE_EVENT_LOG"
+[[ "${1:-}" == -v ]] && exit 0
 exec "$@"
 '
 
@@ -113,7 +124,7 @@ while (($#)); do
 done
 rewrite_path() {
     case "$1" in
-        /etc/*) printf "%s%s" "$FAKE_ROOTFS" "$1" ;;
+        /etc/*|/usr/local/*) printf "%s%s" "$FAKE_ROOTFS" "$1" ;;
         *) printf "%s" "$1" ;;
     esac
 }
@@ -146,6 +157,13 @@ if (( count == 1 )); then
 fi
 '
 
+write_stub "$bin_dir/journalctl" '#!/bin/bash' 'exit 0'
+
+write_stub "$bin_dir/loginctl" '#!/bin/bash' '
+set -euo pipefail
+printf "loginctl %s\n" "$*" >> "$FAKE_EVENT_LOG"
+'
+
 write_stub "$bin_dir/systemctl" '#!/bin/bash' '
 set -euo pipefail
 printf "systemctl %s\n" "$*" >> "$FAKE_EVENT_LOG"
@@ -165,6 +183,7 @@ printf "uv %s\n" "$*" >> "$FAKE_EVENT_LOG"
 write_stub "$bin_dir/pnpm" '#!/bin/bash' '
 set -euo pipefail
 printf "pnpm %s\n" "$*" >> "$FAKE_EVENT_LOG"
+[[ "${1:-}" != --version ]] || printf "9.15.9\n"
 '
 
 write_stub "$bin_dir/curl" '#!/bin/bash' '
@@ -175,6 +194,12 @@ if [[ "${FAKE_CURL_OK:-1}" != 1 ]]; then
 fi
 printf "{\"status\":\"ok\"}\n"
 '
+
+write_stub "$bin_dir/apt-get" '#!/bin/bash' 'exit 99'
+write_stub "$bin_dir/dpkg-query" '#!/bin/bash' 'printf "install ok installed"'
+write_stub "$bin_dir/node" '#!/bin/bash' 'exit 0'
+write_stub "$bin_dir/npm" '#!/bin/bash' 'exit 0'
+write_stub "$bin_dir/chown" '#!/bin/bash' 'exit 0'
 
 write_stub "$bin_dir/sleep" '#!/bin/bash' '
 set -euo pipefail
@@ -237,10 +262,17 @@ files_after=$(find "$test_root" -type f -print | sort)
 
 printf 'Y\n' | (cd "$test_root" && /bin/bash scripts/deploy.sh)
 grep -q '^uv sync ' "$event_log" || { printf 'local Y did not run backend install\n' >&2; exit 1; }
-grep -q '^pnpm install ' "$event_log" || { printf 'local Y did not run frontend install\n' >&2; exit 1; }
+grep -q '^pnpm --dir .* install ' "$event_log" || { printf 'local Y did not run frontend install\n' >&2; exit 1; }
 grep -q '^pnpm --dir .* run build$' "$event_log" || { printf 'local Y did not build frontend\n' >&2; exit 1; }
+grep -q '^loginctl enable-linger ' "$event_log" || { printf 'user manager linger missing\n' >&2; exit 1; }
+grep -q '^systemctl start user@.*\.service$' "$event_log" || { printf 'user manager was not started\n' >&2; exit 1; }
 grep -q '^systemctl daemon-reload$' "$event_log" || { printf 'local Y did not reload systemd\n' >&2; exit 1; }
 grep -q '^systemctl restart llm-studio.service$' "$event_log" || { printf 'local Y did not restart service\n' >&2; exit 1; }
+grep -q '^KillMode=control-group$' "$FAKE_ROOTFS/etc/systemd/system/llm-studio.service"
+grep -q '^Environment=LLM_STUDIO_MODEL_LAUNCHER=systemd$' "$FAKE_ROOTFS/etc/systemd/system/llm-studio.service"
+grep -q '^After=.*user@[0-9].*\.service' "$FAKE_ROOTFS/etc/systemd/system/llm-studio.service"
+! grep -q '__SERVICE_UID__' "$FAKE_ROOTFS/etc/systemd/system/llm-studio.service"
+! grep -q '^systemctl enable llm-studio-model-' "$event_log"
 [[ -f "$FAKE_ROOTFS/etc/systemd/system/llm-studio.service" ]] \
     || { printf 'local Y did not install systemd unit\n' >&2; exit 1; }
 
@@ -264,6 +296,7 @@ grep -Fxq 'AGENTS.md' <<<"$archive_listing"
 grep -Fxq 'tracked file.txt' <<<"$archive_listing"
 grep -Fxq '.env.local' <<<"$archive_listing"
 grep -Fxq '.env' <<<"$archive_listing"
+grep -Fxq 'frontend/src/new-untracked.ts' <<<"$archive_listing"
 ! grep -Fxq 'data/forced.dat' <<<"$archive_listing"
 ! grep -Fxq 'untracked-secret.txt' <<<"$archive_listing"
 grep -q 'ssh\[1\].*mkdir -p' "$event_log"

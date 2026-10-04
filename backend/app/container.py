@@ -80,7 +80,13 @@ class AppContainer:
         self.diagnostics.append(RuntimeDiagnostic(component, code, message))
 
     def diagnostic_dicts(self) -> list[dict[str, str]]:
-        result = [item.as_dict() for item in self.diagnostics]
+        # Process discovery owns its current scan failure, including SQLite
+        # restore errors. A successful later scan clears the startup warning.
+        result = [
+            item.as_dict()
+            for item in self.diagnostics
+            if not (item.component == "process_discovery" and item.code == "scan_failed")
+        ]
         # Scanner failures can happen after startup (for example a model root
         # becoming unreadable).  Expose the current failure on every status
         # read instead of leaving a stale green component behind.

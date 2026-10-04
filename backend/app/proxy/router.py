@@ -39,13 +39,18 @@ async def _forward(
     payload: dict[str, Any],
     service: ProxyService,
 ) -> Response:
+    headers = dict(request.headers)
+    internal = request.url.path.startswith("/api/proxy/")
+    if internal:
+        headers["authorization"] = "Bearer l-chat"
     try:
         result = await service.forward(
             route=route,
             payload=payload,
-            headers=request.headers,
+            headers=headers,
             request_id=request.state.request_id,
             client_ip=request.client.host if request.client else None,
+            force_usage=internal,
         )
     except AppError as exc:
         # OpenAI clients expect their own error object, separate from the

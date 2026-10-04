@@ -50,7 +50,9 @@ __all__ = ["get_journal_service", "get_metrics_service", "router"]
 @router.get("/metrics")
 async def metrics(
     request: Request,
-    mode: Literal["current", "bootstrap", "history", "peaks", "usage"] = "current",
+    mode: Literal[
+        "current", "bootstrap", "history", "peaks", "usage", "token-history", "aggregates"
+    ] = "current",
     profile_name: str | None = None,
     pid: int | None = Query(None, gt=0),
     scope: Literal["profile", "all"] = "profile",
@@ -78,6 +80,22 @@ async def metrics(
 
 
 export_router = APIRouter()
+
+
+@router.get("/metrics/daily")
+@router.get("/metrics/concurrency")
+async def historical_metrics(
+    request: Request,
+    profile_name: str | None = None,
+    days: int = Query(7, ge=1, le=3650),
+    service: MetricsService = Depends(get_metrics_service),
+) -> JSONResponse:
+    if service.storage is None:
+        return success(request, {"items": [], "days": days, "source": "unavailable"})
+    return success(request, await service.storage.historical(
+        profile_name=profile_name, days=days,
+        curve=request.url.path.endswith("/concurrency"),
+    ))
 
 
 @export_router.get("/metrics", include_in_schema=False)

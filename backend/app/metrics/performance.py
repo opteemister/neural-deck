@@ -154,6 +154,37 @@ class PerformanceNormalizer:
                         return sum(float(cast(float, item.value)) for item in grouped[name])
                 return None
 
+            # Both histograms observe the same finished requests. Unlike the
+            # live prompt counter, computed KV tokens exclude cached/transferred
+            # prefixes; prefill time excludes the initial queue and decode.
+            prefill_series: list[str] = []
+            if instance.engine_id == "vllm":
+                families = {}
+                for key, family in (
+                    ("tokens", "request_prefill_kv_computed_tokens_sum"),
+                    ("token_count", "request_prefill_kv_computed_tokens_count"),
+                    ("seconds", "request_prefill_time_seconds_sum"),
+                    ("time_count", "request_prefill_time_seconds_count"),
+                ):
+                    families[key] = {
+                        repr(sorted(item.metadata.get("labels", {}).items())): float(item.value)
+                        for item in grouped.get(f"vllm:{family}", [])
+                    }
+                labels = set(families["tokens"])
+                if (
+                    labels
+                    and all(set(family) == labels for family in families.values())
+                    and all(
+                        families["token_count"][label] == families["time_count"][label]
+                        for label in labels
+                    )
+                ):
+                    for label in sorted(labels):
+                        series = f"prefill:{label}"
+                        prefill_series.append(series)
+                        for key, family in families.items():
+                            counters[f"{series}:{key}"] = family[label]
+
             pairs = {
                 "llama.cpp": (
                     ("llamacpp:prompt_tokens_cached_total",),
@@ -223,6 +254,21 @@ class PerformanceNormalizer:
                     if counter_value is not None:
                         counters[target] = counter_value
             previous = self.samples.get(instance.id)
+            ttft_count, ttft_sum = counters.get("ttft_count"), counters.get("ttft_sum")
+            if ttft_count is not None and ttft_count > 0 and ttft_sum is not None:
+                metadata.setdefault("ttft_mean_ms", {}).update(
+                    mean=ttft_sum / ttft_count * 1000, mean_weight=ttft_count
+                )
+            proposed, accepted = counters.get("draft_proposed"), counters.get("draft_accepted")
+            if (
+                proposed is not None
+                and proposed > 0
+                and accepted is not None
+                and accepted <= proposed
+            ):
+                metadata.setdefault("spec_acceptance_percent", {}).update(
+                    mean=accepted / proposed * 100, mean_weight=proposed
+                )
             if previous and stamp > previous[0]:
                 elapsed = (stamp - previous[0]).total_seconds()
 
@@ -239,6 +285,8 @@ class PerformanceNormalizer:
                         ("decode_tps", "completion_tokens_total"),
                         ("prefill_tps", "prompt_tokens_total"),
                     ):
+                        if target == "prefill_tps" and instance.engine_id == "vllm":
+                            continue
                         change = delta(counter)
                         if change is not None:
                             values[target] = (
@@ -247,9 +295,35 @@ class PerformanceNormalizer:
                                 stamp,
                                 "ok",
                             )
+                    if prefill_series:
+                        computed, seconds = 0.0, 0.0
+                        valid = True
+                        for series in prefill_series:
+                            tokens = delta(f"{series}:tokens")
+                            duration = delta(f"{series}:seconds")
+                            token_count = delta(f"{series}:token_count")
+                            time_count = delta(f"{series}:time_count")
+                            if (
+                                tokens is None or duration is None
+                                or token_count is None or time_count != token_count
+                                or (token_count == 0 and (tokens != 0 or duration != 0))
+                                or (token_count > 0 and duration <= 0)
+                            ):
+                                valid = False
+                                break
+                            computed += tokens
+                            seconds += duration
+                        if valid and computed > 0 and seconds > 0:
+                            metadata["prefill_tps"] = {"denominator": seconds}
+                            values["prefill_tps"] = (
+                                computed / seconds,
+                                "vllm:prefill_histograms",
+                                stamp,
+                                "ok",
+                            )
                     count, duration = delta("ttft_count"), delta("ttft_sum")
                     if count is not None and count > 0 and duration is not None:
-                        metadata["ttft_mean_ms"] = {"count": count}
+                        metadata.setdefault("ttft_mean_ms", {})["count"] = count
                         values["ttft_mean_ms"] = (
                             duration / count * 1000,
                             f"{prefix}:ttft_histogram",
@@ -269,7 +343,9 @@ class PerformanceNormalizer:
                         and amount is not None
                         and (multiplier != 100 or amount <= count)
                     ):
-                        metadata[target] = {"count" if multiplier == 1000 else "denominator": count}
+                        metadata.setdefault(target, {})[
+                            "count" if multiplier == 1000 else "denominator"
+                        ] = count
                         values[target] = (
                             amount / count * multiplier,
                             f"{instance.engine_id}:counter_delta",

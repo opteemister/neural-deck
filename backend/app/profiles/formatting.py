@@ -11,20 +11,32 @@ PLACEHOLDERS = ("{{engine}}", "{{model}}", "{{model_draft}}", "{{model_name}}")
 _SEPARATORS = frozenset(" \t\r\n|;&<>\n()")
 _UNSAFE_FORMAT_CHARS = frozenset(r"'\"`$;|&<>()[\]*!?#")
 
-METRICS_FLAGS = {"llama.cpp": "--metrics", "sglang": "--enable-metrics"}
+METRICS_FLAGS = {
+    "llama.cpp": (("--metrics",),),
+    "vllm": (("--disable-access-log-for-endpoints", "/metrics"), ("--enable-prompt-tokens-details",)),
+    "sglang": (("--enable-metrics",), ("--log-level-http", "warning"), ("--enable-cache-report",)),
+    "freetoken": (("--enable-cache-report",),),
+}
 
 
 def enable_command_metrics(command: str, engine_id: str, enabled: bool) -> str:
-    """Add the exporter flag to a single shell command without rewriting it."""
-    flag = METRICS_FLAGS.get(engine_id)
-    if not enabled or flag is None:
+    """Enable exporters, cache usage details and quiet monitoring access logs."""
+    if not enabled:
         return command
+    for arguments in METRICS_FLAGS.get(engine_id, ()):
+        command = _append_missing_option(command, arguments)
+    return command
+
+
+def _append_missing_option(command: str, arguments: tuple[str, ...]) -> str:
+    flag = arguments[0]
     logical = command.replace("\\\n", "").strip()
     lexer = shlex.shlex(logical, posix=True, punctuation_chars=";&|()<>")
     lexer.whitespace_split = True
     words = list(lexer)
-    if flag in words:
+    if any(word == flag or word.startswith(flag + "=") for word in words):
         return command
+    addition = shlex.join(arguments)
     if not words:
         raise AppError(
             "metrics_command_requires_manual_flag",
@@ -56,14 +68,14 @@ def enable_command_metrics(command: str, engine_id: str, enabled: bool) -> str:
             if command[index:].count("\n") and command[index:].split("\n", 1)[1].strip():
                 break
             insertion = index
-            return command[:insertion].rstrip() + " " + flag + " " + command[insertion:]
+            return command[:insertion].rstrip() + " " + addition + " " + command[insertion:]
         if char in "`$" or (quote is None and char in ";|&<>()\n\r"):
             break
     else:
-        return command[:insertion] + " " + flag + command[insertion:]
+        return command[:insertion] + " " + addition + command[insertion:]
     raise AppError(
         "metrics_command_requires_manual_flag",
-        f"Для составного shell-скрипта добавьте {flag} к команде движка вручную "
+        f"Для составного shell-скрипта добавьте {addition} к команде движка вручную "
         "или снимите «Включить метрики»",
         status_code=422,
     )

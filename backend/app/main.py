@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -44,8 +45,10 @@ from .models.catalogue import ModelCatalogue
 from .operations import OperationManager
 from .paths import build_paths, prepare_data_dirs, validate_extra_venv_roots
 from .process.discovery import discover_external
+from .process.launcher import SystemdLauncher
 from .process.manager import ProcessManager
 from .process.registry import ModelRegistry
+from .process.runs import RunStore
 from .profiles.repository import ProfileRepository
 from .profiles.service import ProfileService
 from .proxy.listener import ApplicationCORSMiddleware, model_api_listener
@@ -272,8 +275,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         operation_manager = OperationManager(paths.operations_log_dir)
         model_registry = ModelRegistry()
         external_discovery = discover_external
+        launch_mode = os.environ.get("LLM_STUDIO_MODEL_LAUNCHER", "process")
+        if launch_mode not in {"process", "systemd"}:
+            raise ValueError("LLM_STUDIO_MODEL_LAUNCHER must be process or systemd")
         process_manager = ProcessManager(
             log_root=paths.profiles_log_dir,
+            run_store=RunStore(db_engine),
+            launcher=(SystemdLauncher(paths.runtime_dir) if launch_mode == "systemd" else None),
             registry=model_registry,
             external_discovery=external_discovery,
         )

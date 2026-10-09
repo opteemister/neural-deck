@@ -328,7 +328,10 @@ function HfTrending({ filter, data, state, openRepo, onFilterChange }: { filter:
 }
 
 function HfModelList({ items, filter, openRepo, onFilterChange, emptyTitle, emptyDescription }: { items: HfModelItem[]; filter: HfModelFilter; openRepo: (id: string) => void; onFilterChange: (filter: HfModelFilter) => void; emptyTitle: string; emptyDescription: string }) {
-  const availableFilters = HF_BADGE_DEFINITIONS.filter((definition) => items.some((item) => matchesHfBadge(item, definition)))
+  const availableFilters = HF_BADGE_DEFINITIONS.map((definition, index) => ({ definition, index, count: items.filter((item) => matchesHfBadge(item, definition)).length }))
+    .filter(({ count }) => count > 0)
+    .sort((left, right) => right.count - left.count || left.index - right.index)
+    .map(({ definition }) => definition)
   const filteredItems = filter === 'all' ? items : items.filter((item) => matchesHfFilter(item, filter))
   return <div className="space-y-3"><div className="flex flex-wrap gap-2"><FilterChip active={filter === 'all'} onClick={() => onFilterChange('all')}>Все</FilterChip>{availableFilters.map((definition) => <FilterChip key={definition.values[0]} active={matchesSelectedFilter(filter, definition)} onClick={() => onFilterChange(definition.values[0])}>{definition.label}</FilterChip>)}</div>{!filteredItems.length ? <QueryEmpty title={emptyTitle} description={emptyDescription} /> : <div className="grid gap-3">{filteredItems.map((item) => <HfModelCard key={item.repo_id} item={item} onOpen={() => openRepo(item.repo_id)} />)}</div>}</div>
 }

@@ -240,9 +240,15 @@ function ModelSourceStatus({ match }: { match: LocalModelArtifact['hf_match'] })
 }
 
 function HfUpdateBadge({ match }: { match: LocalModelArtifact['hf_match'] }) {
+  const avatar = match.repo_id
+    ? <HfAuthorAvatar author={match.repo_id.split('/')[0]} avatarUrl={`https://huggingface.co/api/avatars/${encodeURIComponent(match.repo_id.split('/')[0])}`} />
+    : null
   const update = match.remote_update
-  if (match.remote_check?.availability !== 'success' || update?.status !== 'update_available' || update.changed_files <= 0) return null
-  return <span className="inline-flex rounded-sm border border-[#81554c] px-2 py-1 text-[10px] text-[#d09b87]">Доступно обновление · {update.changed_files} файлов</span>
+  const badge = match.remote_check?.availability === 'success' && update?.status === 'update_available' && update.changed_files > 0
+    ? <span className="inline-flex rounded-sm border border-[#81554c] px-2 py-1 text-[10px] text-[#d09b87]">Доступно обновление · {update.changed_files} файлов</span>
+    : null
+  if (!avatar && !badge) return null
+  return <>{avatar}{badge}</>
 }
 
 function formatHfDate(value: string): string {

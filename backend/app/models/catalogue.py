@@ -447,7 +447,7 @@ class ModelCatalogue:
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
             "limit": limit,
-            "expand[]": ["author", "downloads", "likes", "tags", "trendingScore", "pipeline_tag", "library_name", "createdAt", "lastModified"],
+            "expand[]": ["author", "downloads", "likes", "tags", "trendingScore", "safetensors", "gguf", "pipeline_tag", "library_name", "createdAt", "lastModified"],
         }
         if search:
             params["search"] = search
@@ -483,6 +483,8 @@ class ModelCatalogue:
                     likes=item.get("likes") if isinstance(item.get("likes"), int) else None,
                     trending_score=item.get("trendingScore") if isinstance(item.get("trendingScore"), (int, float)) else None,
                     used_storage=item.get("usedStorage") if isinstance(item.get("usedStorage"), int) else None,
+                    safetensors=item.get("safetensors") if isinstance(item.get("safetensors"), dict) else None,
+                    gguf=item.get("gguf") if isinstance(item.get("gguf"), dict) else None,
                     pipeline_tag=item.get("pipeline_tag") if isinstance(item.get("pipeline_tag"), str) else None,
                     library_name=item.get("library_name") if isinstance(item.get("library_name"), str) else None,
                     created_at=item.get("createdAt") if isinstance(item.get("createdAt"), str) else None,

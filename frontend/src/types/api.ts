@@ -510,6 +510,8 @@ export interface HfModelItem {
   likes?: number | null
   trending_score?: number | null
   used_storage?: number | null
+  safetensors?: { parameters?: Record<string, number>; total?: number } | null
+  gguf?: { total?: number; architecture?: string; totalFileSize?: number } | null
   pipeline_tag?: string | null
   library_name?: string | null
   created_at?: string | null

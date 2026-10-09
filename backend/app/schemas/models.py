@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -151,6 +151,8 @@ class HfSearchItem(BaseModel):
     likes: int | None = Field(default=None, ge=0)
     trending_score: float | None = None
     used_storage: int | None = Field(default=None, ge=0)
+    safetensors: dict[str, Any] | None = None
+    gguf: dict[str, Any] | None = None
     pipeline_tag: str | None = None
     library_name: str | None = None
     created_at: str | None = None

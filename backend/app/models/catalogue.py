@@ -889,7 +889,9 @@ class ModelCatalogue:
             else:
                 size = None
             lfs = item.get("lfs") if isinstance(item.get("lfs"), dict) else None
-            lfs_sha256 = lfs.get("sha256") if lfs else None
+            # The expanded Hub tree currently exposes the LFS SHA-256 as
+            # ``lfs.oid`` (some responses use ``lfs.sha256`` instead).
+            lfs_sha256 = (lfs.get("sha256") or lfs.get("oid")) if lfs else None
             raw_sha256 = item.get("sha256")
             sha256 = (
                 raw_sha256
@@ -1785,7 +1787,7 @@ def _remote_hf_tree_metadata(repo_id: str, revision: str) -> dict[str, dict[str,
 
 def _tree_file_metadata(raw: dict[str, Any], *, cached: bool = False) -> dict[str, Any] | None:
     lfs = raw.get("lfs") if isinstance(raw.get("lfs"), dict) else None
-    lfs_sha256 = raw.get("lfs_sha256") if cached else (lfs or {}).get("sha256")
+    lfs_sha256 = raw.get("lfs_sha256") if cached else (lfs or {}).get("sha256") or (lfs or {}).get("oid")
     raw_sha256 = raw.get("sha256")
     sha256 = (
         lfs_sha256

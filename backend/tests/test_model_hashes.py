@@ -105,6 +105,19 @@ def test_remote_file_date_is_read_from_expanded_last_commit() -> None:
 
 
 @pytest.mark.version_zero
+def test_remote_lfs_oid_is_used_as_sha256_when_sha256_field_is_absent() -> None:
+    metadata = _tree_file_metadata(
+        {
+            "path": "model.safetensors",
+            "size": 7,
+            "lfs": {"oid": "b" * 64, "size": 7},
+        }
+    )
+
+    assert metadata == {"size": 7, "sha256": "b" * 64}
+
+
+@pytest.mark.version_zero
 def test_remote_difference_is_update_when_local_still_matches_downloaded_baseline(
     tmp_path: Path,
 ) -> None:

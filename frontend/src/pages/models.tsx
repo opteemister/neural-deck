@@ -18,7 +18,7 @@ import type { HfFile, HfModelItem, HfRepoData, LocalModelArtifact, Operation } f
 
 type ModelView = 'local' | 'huggingface'
 type RepoTab = 'description' | 'files' | 'quantizations'
-type HfTrendingGroup = 'all' | 'text' | 'gguf' | 'vllm' | 'diffusers' | 'embeddings'
+type HfModelFilter = 'all' | string
 type RepoNavigation = { repo_id: string; revision?: string; tab: RepoTab }
 
 type HfBadgeGroup = 'format' | 'library' | 'task' | 'capability' | 'generation'
@@ -106,7 +106,7 @@ export function ModelsPage() {
   const view: ModelView = requestedView === 'huggingface' ? 'huggingface' : 'local'
   const localQuery = params.get('local_q') ?? ''
   const hfQuery = params.get('hf_q') ?? ''
-  const hfGroup = (params.get('hf_group') as HfTrendingGroup | null) ?? 'all'
+  const hfGroup: HfModelFilter = params.get('hf_group') ?? 'all'
   const repoId = params.get('repo') ?? ''
   const revision = params.get('revision') ?? undefined
   const repoTab: RepoTab = params.get('repo_tab') === 'quantizations' ? 'quantizations' : 'description'
@@ -167,7 +167,7 @@ export function ModelsPage() {
   const localItems = useMemo(() => (localModels.data?.items ?? []).filter((model) => `${model.path} ${model.format} ${model.compatibility}`.toLowerCase().includes(localQuery.toLowerCase())).sort((left, right) => Number(!favoriteModels.includes(left.id)) - Number(!favoriteModels.includes(right.id))), [favoriteModels, localModels.data?.items, localQuery])
 
   function setView(next: ModelView) { setParams((current) => { current.set('view', next); current.delete('q'); current.delete('parent_repo'); current.delete('parent_revision'); current.delete('parent_tab'); current.delete('repo_stack'); current.delete('repo_tab'); if (next !== 'huggingface') { current.delete('repo'); current.delete('revision') } return current }, { replace: true }) }
-  function submitSearch(event: FormEvent<HTMLFormElement>) { event.preventDefault(); setParams((current) => { const value = searchInput.trim(); if (value) current.set('hf_q', value); else current.delete('hf_q'); current.delete('hf_group'); current.set('view', 'huggingface'); current.delete('repo'); current.delete('revision'); current.delete('parent_repo'); current.delete('parent_revision'); current.delete('parent_tab'); current.delete('repo_stack'); current.delete('repo_tab'); current.delete('q'); return current }, { replace: true }) }
+  function submitSearch(event: FormEvent<HTMLFormElement>) { event.preventDefault(); setParams((current) => { const value = searchInput.trim(); if (value) current.set('hf_q', value); else current.delete('hf_q'); current.set('hf_group', 'all'); current.set('view', 'huggingface'); current.delete('repo'); current.delete('revision'); current.delete('parent_repo'); current.delete('parent_revision'); current.delete('parent_tab'); current.delete('repo_stack'); current.delete('repo_tab'); current.delete('q'); return current }, { replace: true }) }
   function openRepo(id: string) { setParams((current) => { current.set('view', 'huggingface'); current.set('repo', id); current.delete('parent_repo'); current.delete('parent_revision'); current.delete('parent_tab'); current.delete('repo_stack'); current.delete('repo_tab'); return current }, { replace: true }); setSelectedFiles([]) }
   function openLocalHfRepo(id: string, repoRevision?: string | null) { setParams((current) => { current.set('view', 'huggingface'); current.set('repo', id); if (repoRevision) current.set('revision', repoRevision); else current.delete('revision'); current.delete('parent_repo'); current.delete('parent_revision'); current.delete('parent_tab'); current.delete('repo_stack'); current.delete('repo_tab'); return current }, { replace: true }); setSelectedFiles([]) }
   function openQuantization(id: string, parent: HfRepoData) {
@@ -221,7 +221,7 @@ export function ModelsPage() {
     {deleteModel.isError && <div className="mb-4"><QueryError error={deleteModel.error} label="Папку модели не удалось удалить" /></div>}
     {deleteModelGroup.isError && <div className="mb-4"><QueryError error={deleteModelGroup.error} label="Компонент модели не удалось удалить" /></div>}
     {view === 'local' && <LocalModels query={localQuery} items={localItems} state={localModels} scanError={scan.error ?? (localModels.data?.scan_error ? new Error(localModels.data.scan_error) : null)} onSearch={(value) => setParams((current) => { if (value) current.set('local_q', value); else current.delete('local_q'); return current }, { replace: true })} onScan={() => void scan.mutate()} scanning={scan.isPending || Boolean(localModels.data?.scanning)} favorites={favoriteModels} onToggleFavorite={(id) => setFavoriteModels((current) => current.includes(id) ? current.filter((value) => value !== id) : [...current, id])} onOpenHf={openLocalHfRepo} onDelete={(model) => { if (window.confirm(`Удалить папку модели «${model.path}»? Все файлы внутри будут удалены.`)) void deleteModel.mutate(model.id) }} onDeleteGroup={(model, group) => { const kind = group.kind === 'variant' ? 'вариант' : 'вспомогательный блок'; if (window.confirm(`Удалить ${kind} «${group.label}»?`)) void deleteModelGroup.mutate({ modelId: model.id, groupId: group.id }) }} deletingId={deleteModel.isPending ? deleteModel.variables : null} deletingGroupId={deleteModelGroup.isPending ? deleteModelGroup.variables?.groupId : null} />}
-    {view === 'huggingface' && <section className="space-y-4">{!repoId && <form className="flex w-full gap-2" onSubmit={submitSearch}><div className="min-w-0 flex-1"><SearchField label="Поиск Hugging Face" value={searchInput} onChange={setSearchInput} onClear={() => { setSearchInput(''); setParams((current) => { current.delete('hf_q'); current.delete('hf_group'); current.delete('repo'); current.delete('revision'); current.delete('parent_repo'); current.delete('parent_revision'); current.delete('parent_tab'); current.delete('repo_stack'); current.delete('repo_tab'); return current }, { replace: true }) }} placeholder="Qwen, llama, mistral…" /></div><Button type="submit" variant="primary"><Search className="size-3.5" />Искать</Button></form>}{repoId ? <RepoView repo={hfRepo.data} query={hfRepo} initialTab={repoTab} backLabel={backRepoId ? `К квантам ${backRepoId}` : 'Назад'} selectedFiles={selectedFiles} toggleFile={toggleFile} onBack={goBackFromRepo} onOpenQuantization={openQuantization} onDownload={startDownload} downloadOperations={downloadOperations} /> : hfQuery ? <HfResults query={hfQuery} data={hfSearch.data} state={hfSearch} openRepo={openRepo} /> : <HfTrending group={hfGroup} data={hfTrending.data} state={hfTrending} openRepo={openRepo} onGroupChange={(group) => setParams((current) => { current.set('view', 'huggingface'); current.set('hf_group', group); current.delete('hf_q'); return current }, { replace: true })} />}</section>}
+    {view === 'huggingface' && <section className="space-y-4">{!repoId && <form className="flex w-full gap-2" onSubmit={submitSearch}><div className="min-w-0 flex-1"><SearchField label="Поиск Hugging Face" value={searchInput} onChange={setSearchInput} onClear={() => { setSearchInput(''); setParams((current) => { current.delete('hf_q'); current.set('hf_group', 'all'); current.delete('repo'); current.delete('revision'); current.delete('parent_repo'); current.delete('parent_revision'); current.delete('parent_tab'); current.delete('repo_stack'); current.delete('repo_tab'); return current }, { replace: true }) }} placeholder="Qwen, llama, mistral…" /></div><Button type="submit" variant="primary"><Search className="size-3.5" />Искать</Button></form>}{repoId ? <RepoView repo={hfRepo.data} query={hfRepo} initialTab={repoTab} backLabel={backRepoId ? `К квантам ${backRepoId}` : 'Назад'} selectedFiles={selectedFiles} toggleFile={toggleFile} onBack={goBackFromRepo} onOpenQuantization={openQuantization} onDownload={startDownload} downloadOperations={downloadOperations} /> : hfQuery ? <HfResults query={hfQuery} filter={hfGroup} data={hfSearch.data} state={hfSearch} openRepo={openRepo} onFilterChange={(filter) => setParams((current) => { current.set('view', 'huggingface'); current.set('hf_group', filter); return current }, { replace: true })} /> : <HfTrending filter={hfGroup} data={hfTrending.data} state={hfTrending} openRepo={openRepo} onFilterChange={(filter) => setParams((current) => { current.set('view', 'huggingface'); current.set('hf_group', filter); current.delete('hf_q'); return current }, { replace: true })} />}</section>}
   </div>
 }
 
@@ -328,37 +328,59 @@ function LocalGroupList({ title, groups, model, onDelete, deletingGroupId }: { t
   return <details className="mt-3 border-t border-border pt-3"><summary className="cursor-pointer text-[11px] text-muted-foreground">{title} · {groups.length}</summary><div className="mt-2 grid gap-2">{groups.map((group) => <div key={group.id} className="flex items-center justify-between gap-3 rounded-md border border-border bg-secondary px-3 py-1.5"><div className="flex min-w-0 items-center gap-2">{group.status !== 'complete' && <span title={group.status === 'incomplete' ? 'Группа загружена не полностью' : 'Полнота группы не подтверждена'}><AlertTriangle className="size-3.5 shrink-0 text-[#b99a5b]" /></span>}<span className="min-w-0 truncate font-mono text-[10px]" title={group.label}>{group.label}</span><span className="shrink-0 text-[10px] text-muted-foreground">{group.file_count} файлов · {formatBytes(group.size_bytes)}</span></div>{group.deletable && <IconButton variant="ghost" className="shrink-0 text-copper hover:text-copper" disabled={deletingGroupId === group.id} onClick={() => onDelete(model, group)} label={`Удалить ${group.label}`}><Trash2 className="h-3.5 w-3.5 shrink-0" strokeWidth={2} /></IconButton>}</div>)}</div></details>
 }
 
-function HfResults({ query, data, state, openRepo }: { query: string; data: { items: HfModelItem[] } | undefined; state: ReturnType<typeof useQuery<Awaited<ReturnType<typeof api.searchHf>>, Error>>; openRepo: (id: string) => void }) { if (!query) return <QueryEmpty title="Введите запрос" description="Поиск обращается к публичному Hugging Face API после отправки формы." />; if (state.isLoading) return <QueryLoading label="Ищем публичные модели" />; if (state.isError) return <QueryError error={state.error} retry={() => void state.refetch()} label="Поиск Hugging Face не выполнен" />; if (!data?.items.length) return <QueryEmpty title="Ничего не найдено" description="Попробуйте имя модели или namespace/repository." />; return <div className="grid gap-3">{data.items.map((item) => <HfModelCard key={item.repo_id} item={item} onOpen={() => openRepo(item.repo_id)} />)}</div> }
-
-function HfTrending({ group, data, state, openRepo, onGroupChange }: { group: HfTrendingGroup; data: { items: HfModelItem[] } | undefined; state: ReturnType<typeof useQuery<Awaited<ReturnType<typeof api.getHfTrending>>, Error>>; openRepo: (id: string) => void; onGroupChange: (group: HfTrendingGroup) => void }) {
-  const groups: Array<[HfTrendingGroup, string]> = [['all', 'Все'], ['text', 'Текст'], ['gguf', 'GGUF'], ['vllm', 'vLLM'], ['diffusers', 'Diffusers'], ['embeddings', 'Embeddings']]
-  const items = data?.items ?? []
-  const availableGroups = groups.filter(([value]) => value === 'all' || items.some((item) => matchesHfGroup(item, value)))
-  const filteredItems = group === 'all' ? items : items.filter((item) => matchesHfGroup(item, group))
-  if (state.isLoading) return <QueryLoading label="Загружаем трендинг Hugging Face" />
-  if (state.isError) return <QueryError error={state.error} retry={() => void state.refetch()} label="Трендинг Hugging Face не загружен" />
-  return <div className="space-y-3"><div className="flex flex-wrap gap-2">{availableGroups.map(([value, label]) => <button key={value} type="button" className={`rounded-full border px-3 py-1.5 text-xs transition-colors ${group === value ? 'border-copper bg-copper/10 text-foreground' : 'border-border text-muted-foreground hover:border-[#6c625a] hover:text-foreground'}`} onClick={() => onGroupChange(value)}>{label}</button>)}</div>{!filteredItems.length ? <QueryEmpty title="Трендовые модели не найдены" description="Hugging Face не вернул модели для этой группы." /> : <div className="grid gap-3">{filteredItems.map((item) => <HfModelCard key={item.repo_id} item={item} onOpen={() => openRepo(item.repo_id)} />)}</div>}</div>
+function HfResults({ query, filter, data, state, openRepo, onFilterChange }: { query: string; filter: HfModelFilter; data: { items: HfModelItem[] } | undefined; state: ReturnType<typeof useQuery<Awaited<ReturnType<typeof api.searchHf>>, Error>>; openRepo: (id: string) => void; onFilterChange: (filter: HfModelFilter) => void }) {
+  if (!query) return <QueryEmpty title="Введите запрос" description="Поиск обращается к публичному Hugging Face API после отправки формы." />
+  if (state.isLoading) return <QueryLoading label="Ищем публичные модели" />
+  if (state.isError) return <QueryError error={state.error} retry={() => void state.refetch()} label="Поиск Hugging Face не выполнен" />
+  if (!data?.items.length) return <QueryEmpty title="Ничего не найдено" description="Попробуйте имя модели или namespace/repository." />
+  return <HfModelList items={data.items} filter={filter} openRepo={openRepo} onFilterChange={onFilterChange} emptyTitle="В найденных моделях нет такого типа" emptyDescription="Выберите другой фильтр или сбросьте его." />
 }
 
-function matchesHfGroup(item: HfModelItem, group: HfTrendingGroup): boolean {
-  if (group === 'all') return true
-  const values = [item.pipeline_tag, item.library_name, ...item.tags].filter(Boolean).map((value) => value!.toLowerCase())
-  if (group === 'gguf') return values.some((value) => value.includes('gguf'))
-  if (group === 'vllm') return values.some((value) => value.includes('vllm'))
-  if (group === 'diffusers') return values.some((value) => value.includes('diffusers'))
-  if (group === 'embeddings') return values.some((value) => value.includes('embedding') || value === 'feature-extraction' || value === 'sentence-similarity')
-  return values.some((value) => value.startsWith('text-') || value === 'text-generation' || value === 'text-classification')
+function HfTrending({ filter, data, state, openRepo, onFilterChange }: { filter: HfModelFilter; data: { items: HfModelItem[] } | undefined; state: ReturnType<typeof useQuery<Awaited<ReturnType<typeof api.getHfTrending>>, Error>>; openRepo: (id: string) => void; onFilterChange: (filter: HfModelFilter) => void }) {
+  if (state.isLoading) return <QueryLoading label="Загружаем трендинг Hugging Face" />
+  if (state.isError) return <QueryError error={state.error} retry={() => void state.refetch()} label="Трендинг Hugging Face не загружен" />
+  return <HfModelList items={data?.items ?? []} filter={filter} openRepo={openRepo} onFilterChange={onFilterChange} emptyTitle="Трендовые модели не найдены" emptyDescription="Hugging Face не вернул модели для этой группы." />
+}
+
+function HfModelList({ items, filter, openRepo, onFilterChange, emptyTitle, emptyDescription }: { items: HfModelItem[]; filter: HfModelFilter; openRepo: (id: string) => void; onFilterChange: (filter: HfModelFilter) => void; emptyTitle: string; emptyDescription: string }) {
+  const availableFilters = HF_BADGE_DEFINITIONS.filter((definition) => items.some((item) => matchesHfBadge(item, definition)))
+  const filteredItems = filter === 'all' ? items : items.filter((item) => matchesHfFilter(item, filter))
+  return <div className="space-y-3"><div className="flex flex-wrap gap-2"><FilterChip active={filter === 'all'} onClick={() => onFilterChange('all')}>Все</FilterChip>{availableFilters.map((definition) => <FilterChip key={definition.values[0]} active={matchesSelectedFilter(filter, definition)} onClick={() => onFilterChange(definition.values[0])}>{definition.label}</FilterChip>)}</div>{!filteredItems.length ? <QueryEmpty title={emptyTitle} description={emptyDescription} /> : <div className="grid gap-3">{filteredItems.map((item) => <HfModelCard key={item.repo_id} item={item} onOpen={() => openRepo(item.repo_id)} />)}</div>}</div>
+}
+
+function FilterChip({ active, onClick, children }: { active: boolean; onClick: () => void; children: ReactNode }) {
+  return <button type="button" className={`rounded-full border px-3 py-1.5 text-xs transition-colors ${active ? 'border-copper bg-copper/10 text-foreground' : 'border-border text-muted-foreground hover:border-[#6c625a] hover:text-foreground'}`} onClick={onClick}>{children}</button>
+}
+
+function hfItemValues(item: HfModelItem): Set<string> {
+  return new Set([item.pipeline_tag, item.library_name, ...item.tags].filter(Boolean).map((value) => value!.toLowerCase()))
+}
+
+function matchesHfBadge(item: HfModelItem, definition: HfBadgeDefinition): boolean {
+  const values = hfItemValues(item)
+  return definition.values.some((value) => values.has(value))
+}
+
+function matchesHfFilter(item: HfModelItem, filter: HfModelFilter): boolean {
+  const definition = HF_BADGE_DEFINITIONS.find((candidate) => candidate.values[0] === filter)
+  if (definition) return matchesHfBadge(item, definition)
+  const values = hfItemValues(item)
+  if (filter === 'text') return [...values].some((value) => value.startsWith('text-') || value === 'text-generation' || value === 'text-classification')
+  if (filter === 'gguf') return [...values].some((value) => value.includes('gguf'))
+  if (filter === 'vllm') return values.has('vllm')
+  if (filter === 'diffusers') return values.has('diffusers')
+  if (filter === 'embeddings') return [...values].some((value) => value.includes('embedding') || value === 'feature-extraction' || value === 'sentence-similarity')
+  return false
+}
+
+function matchesSelectedFilter(filter: HfModelFilter, definition: HfBadgeDefinition): boolean {
+  return filter === definition.values[0] || (filter === 'embeddings' && definition.label === 'Embeddings')
 }
 
 function HfModelCard({ item, onOpen }: { item: HfModelItem; onOpen: () => void }) {
   const author = item.author ?? item.repo_id.split('/')[0]
-  const badges = getHfBadges(item)
+  const badges = Array.from(new Set([item.pipeline_tag, item.library_name, item.used_storage != null ? formatBytes(item.used_storage) : null, ...item.tags.slice(0, 3)].filter((value): value is string => Boolean(value))))
   return <Card className="transition-colors hover:border-[#6c625a]"><CardContent><div className="flex items-start justify-between gap-4"><div className="flex min-w-0 items-center gap-3"><HfAuthorAvatar author={author} avatarUrl={item.avatar_url} className="size-10" /><div className="min-w-0"><div className="flex items-center gap-2"><p className="truncate font-mono text-sm text-foreground">{item.repo_id}</p><a href={`https://huggingface.co/${item.repo_id}`} target="_blank" rel="noreferrer" aria-label={`Открыть ${item.repo_id} на Hugging Face`} title="Открыть на Hugging Face" className="inline-flex size-6 shrink-0 items-center justify-center rounded-md border border-border text-muted-foreground hover:border-[#6c625a] hover:text-foreground"><ExternalLink className="size-3.5" /></a></div>{formatWeightSummary(item) && <p className="mt-2 line-clamp-2 text-[11px] text-muted-foreground">{formatWeightSummary(item)}</p>}{item.description && <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{item.description}</p>}</div></div><div className="flex shrink-0 flex-col items-end gap-1 text-[11px] text-muted-foreground">{item.trending_score != null && <span className="flex items-center gap-1 text-copper"><TrendingUp className="size-3.5" />{formatCompactNumber(item.trending_score)}</span>}{item.downloads != null && <span className="flex items-center gap-1"><Download className="size-3.5" />{formatCompactNumber(item.downloads)}</span>}{item.likes != null && <span className="flex items-center gap-1"><Heart className="size-3.5" />{formatCompactNumber(item.likes)}</span>}</div></div><div className="mt-3 flex flex-wrap gap-1.5">{badges.map((badge) => <Badge key={badge} className="bg-transparent px-2 py-1">{badge}</Badge>)}</div><div className="mt-4 flex flex-wrap items-center gap-3 border-t border-border pt-3 text-[11px] text-muted-foreground"><span>автор · {author}</span>{item.created_at && <span>создана {formatHfCardDate(item.created_at)}</span>}{item.last_modified && <span>обновлена {formatHfCardDate(item.last_modified)}</span>}<button type="button" className="ml-auto shrink-0 text-copper hover:underline" onClick={onOpen}>Открыть</button></div></CardContent></Card>
-}
-
-function getHfBadges(item: HfModelItem): string[] {
-  const values = new Set([item.pipeline_tag, item.library_name, ...item.tags].filter(Boolean).map((value) => value!.toLowerCase()))
-  return HF_BADGE_DEFINITIONS.filter((definition) => definition.values.some((value) => values.has(value))).map((definition) => definition.label)
 }
 
 function formatCompactNumber(value: number): string {

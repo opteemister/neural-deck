@@ -447,7 +447,7 @@ class ModelCatalogue:
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
             "limit": limit,
-            "expand[]": ["author", "downloads", "likes", "trendingScore", "usedStorage", "pipeline_tag", "library_name", "createdAt", "lastModified"],
+            "expand[]": ["author", "downloads", "likes", "trendingScore", "pipeline_tag", "library_name", "createdAt", "lastModified"],
         }
         if search:
             params["search"] = search

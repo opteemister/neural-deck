@@ -301,15 +301,21 @@ function formatCompactNumber(value: number): string {
 }
 
 function formatWeightSummary(item: HfModelItem): string {
+  const parts: string[] = []
   if (item.safetensors) {
     const parameterEntries = Object.entries(item.safetensors.parameters ?? {})
     const parameters = parameterEntries.length > 0 ? `${formatCompactNumber(parameterEntries.reduce((sum, [, value]) => sum + value, 0))} параметров` : null
-    return ['SafeTensors', parameters].filter(Boolean).join(' · ')
+    parts.push(['SafeTensors', parameters].filter(Boolean).join(' · '))
+  } else if (item.gguf) {
+    parts.push(['GGUF', item.gguf.architecture, item.gguf.total ? formatBytes(item.gguf.total) : null, item.gguf.totalFileSize ? `файлы ${formatBytes(item.gguf.totalFileSize)}` : null].filter(Boolean).join(' · '))
   }
-  if (item.gguf) {
-    return ['GGUF', item.gguf.architecture, item.gguf.total ? formatBytes(item.gguf.total) : null, item.gguf.totalFileSize ? `файлы ${formatBytes(item.gguf.totalFileSize)}` : null].filter(Boolean).join(' · ')
-  }
-  return ''
+  const evaluations = (item.eval_results ?? []).filter((result) => result.dataset_name || result.metric_name).slice(0, 2).map((result) => {
+    const label = result.dataset_name ?? result.metric_name ?? 'benchmark'
+    const metric = result.metric_name && result.metric_name !== label ? ` ${result.metric_name}` : ''
+    return `${label}${metric}${result.metric_value != null ? `: ${result.metric_value}` : ''}`
+  })
+  if (evaluations.length > 0) parts.push(`Eval · ${evaluations.join(' · ')}`)
+  return parts.join(' · ')
 }
 
 function HfAuthorAvatar({ author, avatarUrl }: { author: string; avatarUrl?: string | null }) {

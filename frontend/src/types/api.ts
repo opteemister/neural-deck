@@ -512,6 +512,7 @@ export interface HfModelItem {
   used_storage?: number | null
   safetensors?: { parameters?: Record<string, number>; total?: number } | null
   gguf?: { total?: number; architecture?: string; totalFileSize?: number } | null
+  eval_results?: Array<{ dataset_name?: string; metric_name?: string; metric_value?: number | string }> | null
   pipeline_tag?: string | null
   library_name?: string | null
   created_at?: string | null

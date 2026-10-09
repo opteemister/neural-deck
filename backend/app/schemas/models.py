@@ -153,6 +153,7 @@ class HfSearchItem(BaseModel):
     used_storage: int | None = Field(default=None, ge=0)
     safetensors: dict[str, Any] | None = None
     gguf: dict[str, Any] | None = None
+    eval_results: list[dict[str, Any]] | None = None
     pipeline_tag: str | None = None
     library_name: str | None = None
     created_at: str | None = None

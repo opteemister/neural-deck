@@ -21,6 +21,66 @@ type RepoTab = 'description' | 'files' | 'quantizations'
 type HfTrendingGroup = 'all' | 'text' | 'gguf' | 'vllm' | 'diffusers' | 'embeddings'
 type RepoNavigation = { repo_id: string; revision?: string; tab: RepoTab }
 
+type HfBadgeGroup = 'format' | 'library' | 'task' | 'capability' | 'generation'
+type HfBadgeDefinition = { group: HfBadgeGroup; label: string; values: string[] }
+
+const HF_BADGE_DEFINITIONS: HfBadgeDefinition[] = [
+  { group: 'format', label: 'SafeTensors', values: ['safetensors'] },
+  { group: 'format', label: 'GGUF', values: ['gguf'] },
+  { group: 'format', label: 'GGML', values: ['ggml'] },
+  { group: 'format', label: 'PyTorch', values: ['pytorch'] },
+  { group: 'format', label: 'TensorFlow', values: ['tensorflow'] },
+  { group: 'format', label: 'Flax', values: ['flax'] },
+  { group: 'format', label: 'ONNX', values: ['onnx'] },
+  { group: 'format', label: 'MLX', values: ['mlx'] },
+  { group: 'format', label: 'OpenVINO', values: ['openvino'] },
+  { group: 'format', label: 'Core ML', values: ['coreml'] },
+  { group: 'format', label: 'TFLite', values: ['tflite'] },
+  { group: 'format', label: 'AWQ', values: ['awq'] },
+  { group: 'format', label: 'GPTQ', values: ['gptq'] },
+  { group: 'format', label: 'EXL2', values: ['exl2'] },
+  { group: 'library', label: 'Transformers', values: ['transformers'] },
+  { group: 'library', label: 'Diffusers', values: ['diffusers'] },
+  { group: 'library', label: 'llama.cpp', values: ['llama.cpp', 'llamacpp'] },
+  { group: 'library', label: 'vLLM', values: ['vllm'] },
+  { group: 'library', label: 'Sentence Transformers', values: ['sentence-transformers'] },
+  { group: 'library', label: 'PEFT', values: ['peft'] },
+  { group: 'task', label: 'Text generation', values: ['text-generation'] },
+  { group: 'task', label: 'Image-text-to-text', values: ['image-text-to-text'] },
+  { group: 'task', label: 'Text classification', values: ['text-classification'] },
+  { group: 'task', label: 'Text-to-image', values: ['text-to-image'] },
+  { group: 'task', label: 'Image-to-image', values: ['image-to-image'] },
+  { group: 'task', label: 'Image-to-video', values: ['image-to-video'] },
+  { group: 'task', label: 'Image-text-to-video', values: ['image-text-to-video'] },
+  { group: 'task', label: 'Video-to-video', values: ['video-to-video'] },
+  { group: 'task', label: 'Speech recognition', values: ['automatic-speech-recognition'] },
+  { group: 'task', label: 'Text-to-speech', values: ['text-to-speech'] },
+  { group: 'task', label: 'Feature extraction', values: ['feature-extraction'] },
+  { group: 'task', label: 'Embeddings', values: ['embedding', 'embeddings', 'multimodal-embedding', 'sentence-similarity'] },
+  { group: 'task', label: 'Mask generation', values: ['mask-generation'] },
+  { group: 'task', label: 'Voice activity detection', values: ['voice-activity-detection'] },
+  { group: 'capability', label: 'Conversational', values: ['conversational'] },
+  { group: 'capability', label: 'Multimodal', values: ['multimodal'] },
+  { group: 'capability', label: 'Vision', values: ['vision'] },
+  { group: 'capability', label: 'Reasoning', values: ['reasoning'] },
+  { group: 'capability', label: 'MoE', values: ['moe', 'mixture-of-experts'] },
+  { group: 'capability', label: 'Decision model', values: ['decision-model'] },
+  { group: 'capability', label: 'Audio', values: ['audio'] },
+  { group: 'capability', label: 'Video', values: ['video'] },
+  { group: 'capability', label: 'Multilingual', values: ['multilingual'] },
+  { group: 'capability', label: 'Zero-shot', values: ['zero-shot'] },
+  { group: 'capability', label: 'Uncensored', values: ['uncensored'] },
+  { group: 'generation', label: 'ComfyUI', values: ['comfyui'] },
+  { group: 'generation', label: 'LoRA', values: ['lora'] },
+  { group: 'generation', label: 'Quantization', values: ['quantization'] },
+  { group: 'generation', label: 'iMatrix', values: ['imatrix'] },
+  { group: 'generation', label: 'Image generation', values: ['image-generation'] },
+  { group: 'generation', label: 'Image editing', values: ['image-editing'] },
+  { group: 'generation', label: 'Video generation', values: ['video-generation'] },
+  { group: 'generation', label: 'Inpainting', values: ['inpainting'] },
+  { group: 'generation', label: 'ControlNet', values: ['controlnet'] },
+]
+
 function parseRepoStack(value: string | null): RepoNavigation[] {
   if (!value) return []
   try {
@@ -292,8 +352,13 @@ function matchesHfGroup(item: HfModelItem, group: HfTrendingGroup): boolean {
 
 function HfModelCard({ item, onOpen }: { item: HfModelItem; onOpen: () => void }) {
   const author = item.author ?? item.repo_id.split('/')[0]
-  const badges = Array.from(new Set([item.pipeline_tag, item.library_name, item.used_storage != null ? formatBytes(item.used_storage) : null, ...item.tags.slice(0, 3)].filter((value): value is string => Boolean(value))))
+  const badges = getHfBadges(item)
   return <Card className="transition-colors hover:border-[#6c625a]"><CardContent><div className="flex items-start justify-between gap-4"><div className="flex min-w-0 items-center gap-3"><HfAuthorAvatar author={author} avatarUrl={item.avatar_url} className="size-10" /><div className="min-w-0"><div className="flex items-center gap-2"><p className="truncate font-mono text-sm text-foreground">{item.repo_id}</p><a href={`https://huggingface.co/${item.repo_id}`} target="_blank" rel="noreferrer" aria-label={`Открыть ${item.repo_id} на Hugging Face`} title="Открыть на Hugging Face" className="inline-flex size-6 shrink-0 items-center justify-center rounded-md border border-border text-muted-foreground hover:border-[#6c625a] hover:text-foreground"><ExternalLink className="size-3.5" /></a></div>{formatWeightSummary(item) && <p className="mt-2 line-clamp-2 text-[11px] text-muted-foreground">{formatWeightSummary(item)}</p>}{item.description && <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{item.description}</p>}</div></div><div className="flex shrink-0 flex-col items-end gap-1 text-[11px] text-muted-foreground">{item.trending_score != null && <span className="flex items-center gap-1 text-copper"><TrendingUp className="size-3.5" />{formatCompactNumber(item.trending_score)}</span>}{item.downloads != null && <span className="flex items-center gap-1"><Download className="size-3.5" />{formatCompactNumber(item.downloads)}</span>}{item.likes != null && <span className="flex items-center gap-1"><Heart className="size-3.5" />{formatCompactNumber(item.likes)}</span>}</div></div><div className="mt-3 flex flex-wrap gap-1.5">{badges.map((badge) => <Badge key={badge} className="bg-transparent px-2 py-1">{badge}</Badge>)}</div><div className="mt-4 flex flex-wrap items-center gap-3 border-t border-border pt-3 text-[11px] text-muted-foreground"><span>автор · {author}</span>{item.created_at && <span>создана {formatHfCardDate(item.created_at)}</span>}{item.last_modified && <span>обновлена {formatHfCardDate(item.last_modified)}</span>}<button type="button" className="ml-auto shrink-0 text-copper hover:underline" onClick={onOpen}>Открыть</button></div></CardContent></Card>
+}
+
+function getHfBadges(item: HfModelItem): string[] {
+  const values = new Set([item.pipeline_tag, item.library_name, ...item.tags].filter(Boolean).map((value) => value!.toLowerCase()))
+  return HF_BADGE_DEFINITIONS.filter((definition) => definition.values.some((value) => values.has(value))).map((definition) => definition.label)
 }
 
 function formatCompactNumber(value: number): string {

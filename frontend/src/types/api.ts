@@ -522,6 +522,8 @@ export interface HfSearchData {
 export interface HfRepoData {
   repo_id: string
   revision: string
+  author?: string | null
+  avatar_url?: string | null
   revision_date?: string | null
   description?: string | null
   readme?: string | null

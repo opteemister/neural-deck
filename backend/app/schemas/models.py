@@ -188,6 +188,8 @@ class HfRepoData(BaseModel):
 
     repo_id: str
     revision: str
+    author: str | None = None
+    avatar_url: str | None = None
     revision_date: str | None = None
     description: str | None = None
     readme: str | None = None

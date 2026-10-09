@@ -505,6 +505,7 @@ class ModelCatalogue:
                 description = card_data.get("description") if isinstance(card_data, dict) else None
                 if not isinstance(description, str):
                     description = None
+                author = metadata.get("author") if isinstance(metadata.get("author"), str) else namespace
                 readme = await self._hf_readme(client, repo_id, resolved)
         except AppError:
             raise
@@ -519,6 +520,8 @@ class ModelCatalogue:
         return HfRepoData(
             repo_id=repo_id,
             revision=resolved,
+            author=author,
+            avatar_url=f"https://huggingface.co/api/avatars/{quote(author, safe='')}" if author else None,
             revision_date=revision_date,
             description=description,
             readme=readme,

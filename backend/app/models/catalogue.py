@@ -447,7 +447,7 @@ class ModelCatalogue:
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
             "limit": limit,
-            "expand[]": ["author", "downloads", "likes", "trendingScore", "pipeline_tag", "library_name", "createdAt", "lastModified"],
+            "expand[]": ["author", "cardData", "downloads", "likes", "tags", "trendingScore", "pipeline_tag", "library_name", "createdAt", "lastModified"],
         }
         if search:
             params["search"] = search
@@ -467,11 +467,15 @@ class ModelCatalogue:
             repo_id = item["id"]
             author = item.get("author") if isinstance(item.get("author"), str) else repo_id.split("/", 1)[0]
             tags = item.get("tags")
+            card_data = item.get("cardData")
+            description = item.get("description") if isinstance(item.get("description"), str) else None
+            if description is None and isinstance(card_data, dict) and isinstance(card_data.get("description"), str):
+                description = card_data["description"]
             result.append(
                 HfSearchItem(
                     repo_id=repo_id,
                     revision=item.get("sha") if isinstance(item.get("sha"), str) else None,
-                    description=item.get("description") if isinstance(item.get("description"), str) else None,
+                    description=description,
                     tags=[tag for tag in tags if isinstance(tag, str)] if isinstance(tags, list) else [],
                     author=author,
                     avatar_url=f"https://huggingface.co/api/avatars/{quote(author, safe='')}" if author else None,

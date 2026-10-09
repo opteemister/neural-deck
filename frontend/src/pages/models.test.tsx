@@ -18,6 +18,7 @@ describe('Models workflow', () => {
     const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) => {
       const url = String(input)
       if (url.endsWith('/api/v1/models/local')) return Promise.resolve(new Response(envelope({ items: [{ id: 'local_1', path: '/models/qwen', kind: 'directory', format: 'transformers', compatibility: 'vllm', size_bytes: null, hf_match: { status: 'unknown' } }] }), { status: 200 }))
+      if (url.includes('/api/v1/models/hf/trending')) return Promise.resolve(new Response(envelope({ items: [{ repo_id: 'org/trending', revision: null, description: 'trending model', tags: ['text-generation'], author: 'org', avatar_url: null, downloads: 1234, likes: 42, trending_score: 9.5 }] }), { status: 200 }))
       if (url.includes('/api/v1/models/hf/search')) return Promise.resolve(new Response(envelope({ items: [{ repo_id: 'org/qwen', revision: null, description: 'test model', tags: [] }] }), { status: 200 }))
       if (url.includes('/api/v1/models/hf/repos/org/qwen')) return Promise.resolve(new Response(envelope({ repo_id: 'org/qwen', revision: 'abc123', files: [{ path: 'config.json', size: 10, etag: null, sha256: null }, { path: 'weights.bin', size: null, etag: null, sha256: null }] }), { status: 200 }))
       if (url.endsWith('/api/v1/models/downloads')) return Promise.resolve(new Response(envelope({ id: 'op_download', kind: 'download', state: 'queued', target_id: 'org/qwen', created_at: '2026-09-29T00:00:00Z', started_at: null, finished_at: null, stdout: '', stderr: '', exit_code: null, error: null }), { status: 202 }))
@@ -39,6 +40,22 @@ describe('Models workflow', () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/v1/models/downloads', expect.objectContaining({ method: 'POST' })))
     expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith('/api/v1/models'))).toBe(false)
     expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith('/api/v1/models/local'))).toBe(true)
+  })
+
+  it('loads HF trending groups and reuses the model card', async () => {
+    const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/models/local')) return Promise.resolve(new Response(envelope({ items: [] }), { status: 200 }))
+      if (url.includes('/api/v1/models/hf/trending')) return Promise.resolve(new Response(envelope({ items: [{ repo_id: 'org/trending', revision: null, description: 'trending model', tags: ['text-generation'], author: 'org', avatar_url: null, downloads: 1234, likes: 42, trending_score: 9.5 }] }), { status: 200 }))
+      return Promise.resolve(new Response(envelope({ items: [] }), { status: 200 }))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    renderPage()
+    fireEvent.click(screen.getByRole('button', { name: 'Hugging Face' }))
+    expect(await screen.findByRole('button', { name: /org\/trending/ })).toBeInTheDocument()
+    expect(screen.getByText('↓ 1 234')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'GGUF' }))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/v1/models/hf/trending?group=gguf&limit=50'))
   })
 
   it('shows remote update state and dates without rendering hash values', async () => {

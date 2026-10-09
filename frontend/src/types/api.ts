@@ -499,8 +499,24 @@ export interface HfFile {
   file_date?: string | null
 }
 
+export interface HfModelItem {
+  repo_id: string
+  revision?: string | null
+  description?: string | null
+  tags: string[]
+  author?: string | null
+  avatar_url?: string | null
+  downloads?: number | null
+  likes?: number | null
+  trending_score?: number | null
+  pipeline_tag?: string | null
+  library_name?: string | null
+  created_at?: string | null
+  last_modified?: string | null
+}
+
 export interface HfSearchData {
-  items: Array<{ repo_id: string; revision?: string | null; description?: string | null; tags: string[] }>
+  items: HfModelItem[]
 }
 
 export interface HfRepoData {

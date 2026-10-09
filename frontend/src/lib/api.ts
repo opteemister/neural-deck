@@ -225,6 +225,7 @@ export const api = {
   deleteLocalModel: (id: string) => request<LocalModelsData>(`/api/v1/models/local/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   deleteLocalModelGroup: (modelId: string, groupId: string) => request<LocalModelsData>(`/api/v1/models/local/${encodeURIComponent(modelId)}/groups/${encodeURIComponent(groupId)}`, { method: 'DELETE' }),
   searchHf: (query: string) => request<HfSearchData>(`/api/v1/models/hf/search?q=${encodeURIComponent(query)}`),
+  getHfTrending: (group = 'all', limit = 50) => request<HfSearchData>(`/api/v1/models/hf/trending?group=${encodeURIComponent(group)}&limit=${limit}`),
   getHfRepo: (namespace: string, name: string, revision?: string) => request<HfRepoData>(`/api/v1/models/hf/repos/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}${revision ? `?revision=${encodeURIComponent(revision)}` : ''}`),
   getHfQuantizations: (namespace: string, name: string) => request<import('@/types/api').HfSearchData>(`/api/v1/models/hf/repos/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/quantizations`),
   getHfFiles: (namespace: string, name: string, revision?: string) => request<HfRepoData>(`/api/v1/models/hf/repos/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/files${revision ? `?revision=${encodeURIComponent(revision)}` : ''}`),
@@ -327,6 +328,7 @@ export const queryKeys = {
   operation: (id: string) => ['operation', id] as const,
   downloads: ['operations', 'download'] as const,
   hfSearch: (query: string) => ['hf-search', query] as const,
+  hfTrending: (group: string, limit = 50) => ['hf-trending', group, limit] as const,
   hfRepo: (repoId: string, revision?: string) => ['hf-repo', repoId, revision ?? ''] as const,
   hfQuantizations: (repoId: string) => ['hf-quantizations', repoId] as const,
 }

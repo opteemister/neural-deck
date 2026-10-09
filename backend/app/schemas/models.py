@@ -145,6 +145,15 @@ class HfSearchItem(BaseModel):
     revision: str | None = None
     description: str | None = None
     tags: list[str] = Field(default_factory=list)
+    author: str | None = None
+    avatar_url: str | None = None
+    downloads: int | None = Field(default=None, ge=0)
+    likes: int | None = Field(default=None, ge=0)
+    trending_score: float | None = None
+    pipeline_tag: str | None = None
+    library_name: str | None = None
+    created_at: str | None = None
+    last_modified: str | None = None
 
 
 class HfSearchData(BaseModel):

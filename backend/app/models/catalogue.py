@@ -16,6 +16,7 @@ import threading
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 import yaml  # type: ignore[import-untyped]
@@ -37,6 +38,15 @@ from ..schemas.models import (
 logger = logging.getLogger(__name__)
 _MANIFEST_LOCK = threading.RLock()
 _DOWNLOAD_WORKING_DIR = Path(__file__).resolve().parents[2]
+
+HF_TRENDING_FILTERS: dict[str, str | None] = {
+    "all": None,
+    "text": "text-generation",
+    "gguf": "gguf",
+    "vllm": "vllm",
+    "diffusers": "diffusers",
+    "embeddings": "feature-extraction",
+}
 
 MODEL_EXTENSIONS = {
     ".gguf": "gguf",
@@ -384,7 +394,10 @@ class ModelCatalogue:
             raise AppError("invalid_query", "Параметр q не должен быть пустым", status_code=422)
         try:
             async with httpx.AsyncClient(base_url="https://huggingface.co", timeout=30) as client:
-                response = await client.get("/api/models", params={"search": query, "limit": 50})
+                response = await client.get(
+                    "/api/models",
+                    params=self._hf_model_params(search=query),
+                )
                 response.raise_for_status()
                 payload = response.json()
                 if not isinstance(payload, list):
@@ -397,18 +410,81 @@ class ModelCatalogue:
                 details={"reason": str(exc)[:200]},
                 retryable=True,
             ) from exc
-        return HfSearchData(
-            items=[
-                HfSearchItem(
-                    repo_id=item.get("id", ""),
-                    revision=item.get("sha"),
-                    description=item.get("description"),
-                    tags=item.get("tags", []),
+        return HfSearchData(items=self._parse_hf_models(payload))
+
+    async def hf_trending(self, group: str = "all", limit: int = 50) -> HfSearchData:
+        if group not in HF_TRENDING_FILTERS:
+            raise AppError("invalid_hf_group", "Неизвестная группа моделей", status_code=422)
+        if limit < 1 or limit > 50:
+            raise AppError("invalid_hf_limit", "Лимит моделей должен быть от 1 до 50", status_code=422)
+        try:
+            async with httpx.AsyncClient(base_url="https://huggingface.co", timeout=30) as client:
+                response = await client.get(
+                    "/api/models",
+                    params=self._hf_model_params(
+                        filter_name=HF_TRENDING_FILTERS[group],
+                        limit=limit,
+                        trending=True,
+                    ),
                 )
-                for item in payload
-                if isinstance(item, dict) and item.get("id")
-            ]
-        )
+                response.raise_for_status()
+                payload = response.json()
+                if not isinstance(payload, list):
+                    raise ValueError("Hugging Face вернул неожиданный список моделей")
+        except (httpx.HTTPError, ValueError) as exc:
+            raise AppError(
+                "hf_unavailable",
+                "Hugging Face недоступен",
+                status_code=502,
+                details={"reason": str(exc)[:200]},
+                retryable=True,
+            ) from exc
+        return HfSearchData(items=self._parse_hf_models(payload))
+
+    @staticmethod
+    def _hf_model_params(
+        *, search: str | None = None, filter_name: str | None = None, limit: int = 50, trending: bool = False
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "limit": limit,
+            "expand[]": ["author", "downloads", "likes", "trendingScore", "pipeline_tag", "library_name", "createdAt", "lastModified"],
+        }
+        if search:
+            params["search"] = search
+        if filter_name:
+            params["filter"] = filter_name
+        if trending:
+            params["sort"] = "trendingScore"
+            params["direction"] = -1
+        return params
+
+    @staticmethod
+    def _parse_hf_models(payload: list[Any]) -> list[HfSearchItem]:
+        result: list[HfSearchItem] = []
+        for item in payload:
+            if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+                continue
+            repo_id = item["id"]
+            author = item.get("author") if isinstance(item.get("author"), str) else repo_id.split("/", 1)[0]
+            tags = item.get("tags")
+            result.append(
+                HfSearchItem(
+                    repo_id=repo_id,
+                    revision=item.get("sha") if isinstance(item.get("sha"), str) else None,
+                    description=item.get("description") if isinstance(item.get("description"), str) else None,
+                    tags=[tag for tag in tags if isinstance(tag, str)] if isinstance(tags, list) else [],
+                    author=author,
+                    avatar_url=f"https://huggingface.co/api/avatars/{quote(author, safe='')}" if author else None,
+                    downloads=item.get("downloads") if isinstance(item.get("downloads"), int) else None,
+                    likes=item.get("likes") if isinstance(item.get("likes"), int) else None,
+                    trending_score=item.get("trendingScore") if isinstance(item.get("trendingScore"), (int, float)) else None,
+                    pipeline_tag=item.get("pipeline_tag") if isinstance(item.get("pipeline_tag"), str) else None,
+                    library_name=item.get("library_name") if isinstance(item.get("library_name"), str) else None,
+                    created_at=item.get("createdAt") if isinstance(item.get("createdAt"), str) else None,
+                    last_modified=item.get("lastModified") if isinstance(item.get("lastModified"), str) else None,
+                )
+            )
+        return result
 
     async def hf_repo(self, repo_id: str, revision: str | None = None) -> HfRepoData:
         namespace, name = _repo_parts(repo_id)

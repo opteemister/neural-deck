@@ -478,6 +478,16 @@ async def hf_search(
     return success(request, await catalogue.hf_search(q))
 
 
+@router.get("/models/hf/trending", response_model=SuccessEnvelope[HfSearchData])
+async def hf_trending(
+    request: Request,
+    group: str = "all",
+    limit: int = 50,
+    catalogue: ModelCatalogue = Depends(get_model_catalogue),
+) -> JSONResponse:
+    return success(request, await catalogue.hf_trending(group=group, limit=limit))
+
+
 @router.get("/models/hf/repos/{namespace}/{name}", response_model=SuccessEnvelope[HfRepoData])
 async def hf_repo(
     request: Request,

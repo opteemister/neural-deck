@@ -285,7 +285,7 @@ function ModelSourceStatus({ match }: { match: LocalModelArtifact['hf_match'] })
 
 function HfUpdateBadge({ match }: { match: LocalModelArtifact['hf_match'] }) {
   const avatar = match.repo_id
-    ? <HfAuthorAvatar author={match.repo_id.split('/')[0]} avatarUrl={`https://huggingface.co/api/avatars/${encodeURIComponent(match.repo_id.split('/')[0])}`} className="order-first" />
+    ? <HfAuthorAvatar author={match.repo_id.split('/')[0]} avatarUrl={`https://huggingface.co/api/avatars/${encodeURIComponent(match.repo_id.split('/')[0])}`} className="order-first size-8" />
     : null
   const update = match.remote_update
   const badge = match.remote_check?.availability === 'success' && update?.status === 'update_available' && update.changed_files > 0

@@ -150,6 +150,7 @@ class HfSearchItem(BaseModel):
     downloads: int | None = Field(default=None, ge=0)
     likes: int | None = Field(default=None, ge=0)
     trending_score: float | None = None
+    used_storage: int | None = Field(default=None, ge=0)
     pipeline_tag: str | None = None
     library_name: str | None = None
     created_at: str | None = None

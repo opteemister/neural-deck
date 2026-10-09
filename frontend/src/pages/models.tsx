@@ -1,7 +1,7 @@
 import { marked } from 'marked'
 import { FormEvent, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, ArrowLeft, ChevronDown, ChevronUp, Download, ExternalLink, FolderOpen, RefreshCw, Search, Star, Trash2, X } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, ChevronDown, ChevronUp, Download, ExternalLink, FolderOpen, Heart, RefreshCw, Search, Star, Trash2, TrendingUp, X } from 'lucide-react'
 import { useSearchParams } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardTitle } from '@/components/ui/card'
@@ -285,7 +285,11 @@ function matchesHfGroup(item: HfModelItem, group: HfTrendingGroup): boolean {
 
 function HfModelCard({ item, onOpen }: { item: HfModelItem; onOpen: () => void }) {
   const author = item.author ?? item.repo_id.split('/')[0]
-  return <button type="button" className="text-left" onClick={onOpen}><Card className="transition-colors hover:border-[#6c625a]"><CardContent><div className="flex items-start gap-3"><HfAuthorAvatar author={author} avatarUrl={item.avatar_url} /><div className="min-w-0 flex-1"><div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="truncate font-mono text-xs text-foreground">{item.repo_id}</p><p className="mt-0.5 text-[11px] text-muted-foreground">{author}</p></div><span className="shrink-0 text-[11px] text-copper">Открыть</span></div>{item.description && <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{item.description}</p>}<div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">{item.trending_score != null && <span>тренд {item.trending_score.toFixed(1)}</span>}{item.downloads != null && <span>↓ {item.downloads.toLocaleString('ru-RU')}</span>}{item.likes != null && <span>★ {item.likes.toLocaleString('ru-RU')}</span>}</div>{item.tags.length > 0 && <p className="mt-2 line-clamp-1 text-[11px] text-muted-foreground">{item.tags.slice(0, 8).join(' · ')}</p>}</div></div></CardContent></Card></button>
+  return <button type="button" className="text-left" onClick={onOpen}><Card className="transition-colors hover:border-[#6c625a]"><CardContent><div className="flex items-start justify-between gap-4"><div className="flex min-w-0 items-start gap-3"><HfAuthorAvatar author={author} avatarUrl={item.avatar_url} /><div className="min-w-0"><p className="truncate font-mono text-sm text-foreground">{item.repo_id}</p><p className="mt-1 text-xs text-muted-foreground">{author}</p></div></div><div className="flex shrink-0 flex-wrap items-center justify-end gap-x-3 gap-y-1 text-[11px] text-muted-foreground">{item.trending_score != null && <span className="flex items-center gap-1 text-copper"><TrendingUp className="size-3.5" />{formatCompactNumber(item.trending_score)}</span>}{item.downloads != null && <span className="flex items-center gap-1"><Download className="size-3.5" />{formatCompactNumber(item.downloads)}</span>}{item.likes != null && <span className="flex items-center gap-1"><Heart className="size-3.5" />{formatCompactNumber(item.likes)}</span>}</div></div><div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border pt-3 text-[11px] text-muted-foreground">{item.pipeline_tag && <span>{item.pipeline_tag}</span>}{item.library_name && <span>{item.library_name}</span>}{item.used_storage != null && <span>{formatBytes(item.used_storage)}</span>}{item.tags.length > 0 && <span className="line-clamp-1">{item.tags.slice(0, 3).join(' · ')}</span>}<span className="ml-auto shrink-0 text-copper">Открыть</span></div></CardContent></Card></button>
+}
+
+function formatCompactNumber(value: number): string {
+  return new Intl.NumberFormat('ru-RU', { notation: 'compact', maximumFractionDigits: 1 }).format(value)
 }
 
 function HfAuthorAvatar({ author, avatarUrl }: { author: string; avatarUrl?: string | null }) {

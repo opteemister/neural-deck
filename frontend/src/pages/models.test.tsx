@@ -53,7 +53,7 @@ describe('Models workflow', () => {
     renderPage()
     fireEvent.click(screen.getByRole('button', { name: 'Hugging Face' }))
     expect(await screen.findByRole('button', { name: /org\/trending/ })).toBeInTheDocument()
-    expect(screen.getByText('↓ 1 234')).toBeInTheDocument()
+    expect(screen.getByText(/1,2/)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'GGUF' })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Текст' }))
     await waitFor(() => expect(fetchMock.mock.calls.filter(([input]) => String(input).includes('/api/v1/models/hf/trending')).length).toBe(1))

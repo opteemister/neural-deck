@@ -509,6 +509,7 @@ export interface HfModelItem {
   downloads?: number | null
   likes?: number | null
   trending_score?: number | null
+  used_storage?: number | null
   pipeline_tag?: string | null
   library_name?: string | null
   created_at?: string | null

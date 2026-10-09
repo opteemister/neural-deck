@@ -57,12 +57,10 @@ const HF_BADGE_DEFINITIONS: HfBadgeDefinition[] = [
   { group: 'capability', label: 'MoE', values: ['moe', 'mixture-of-experts'] },
   { group: 'capability', label: 'Decision model', values: ['decision-model'] },
   { group: 'capability', label: 'Multilingual', values: ['multilingual'] },
-  { group: 'capability', label: 'Zero-shot', values: ['zero-shot'] },
   { group: 'capability', label: 'Uncensored', values: ['uncensored'] },
   { group: 'generation', label: 'ComfyUI', values: ['comfyui'] },
   { group: 'generation', label: 'LoRA', values: ['lora'] },
   { group: 'generation', label: 'Quantization', values: ['quantization'] },
-  { group: 'generation', label: 'iMatrix', values: ['imatrix'] },
   { group: 'generation', label: 'ControlNet', values: ['controlnet'] },
 ]
 
@@ -331,9 +329,9 @@ function HfModelList({ items, filter, openRepo, onFilterChange, emptyTitle, empt
   const availableFilters = HF_BADGE_DEFINITIONS.map((definition, index) => ({ definition, index, count: items.filter((item) => matchesHfBadge(item, definition)).length }))
     .filter(({ count }) => count > 0)
     .sort((left, right) => right.count - left.count || left.index - right.index)
-    .map(({ definition }) => definition)
+    .map(({ definition, count }) => ({ definition, count }))
   const filteredItems = filter === 'all' ? items : items.filter((item) => matchesHfFilter(item, filter))
-  return <div className="space-y-3"><div className="flex flex-wrap gap-2"><FilterChip active={filter === 'all'} onClick={() => onFilterChange('all')}>Все</FilterChip>{availableFilters.map((definition) => <FilterChip key={definition.values[0]} active={matchesSelectedFilter(filter, definition)} onClick={() => onFilterChange(definition.values[0])}>{definition.label}</FilterChip>)}</div>{!filteredItems.length ? <QueryEmpty title={emptyTitle} description={emptyDescription} /> : <div className="grid gap-3">{filteredItems.map((item) => <HfModelCard key={item.repo_id} item={item} onOpen={() => openRepo(item.repo_id)} />)}</div>}</div>
+  return <div className="space-y-3"><div className="flex flex-wrap gap-2"><FilterChip active={filter === 'all'} onClick={() => onFilterChange('all')}>Все ({items.length})</FilterChip>{availableFilters.map(({ definition, count }) => <FilterChip key={definition.values[0]} active={matchesSelectedFilter(filter, definition)} onClick={() => onFilterChange(definition.values[0])}>{definition.label} ({count})</FilterChip>)}</div>{!filteredItems.length ? <QueryEmpty title={emptyTitle} description={emptyDescription} /> : <div className="grid gap-3">{filteredItems.map((item) => <HfModelCard key={item.repo_id} item={item} onOpen={() => openRepo(item.repo_id)} />)}</div>}</div>
 }
 
 function FilterChip({ active, onClick, children }: { active: boolean; onClick: () => void; children: ReactNode }) {

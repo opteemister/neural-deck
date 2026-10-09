@@ -56,8 +56,6 @@ const HF_BADGE_DEFINITIONS: HfBadgeDefinition[] = [
   { group: 'capability', label: 'Reasoning', values: ['reasoning'] },
   { group: 'capability', label: 'MoE', values: ['moe', 'mixture-of-experts'] },
   { group: 'capability', label: 'Decision model', values: ['decision-model'] },
-  { group: 'capability', label: 'Audio', values: ['audio'] },
-  { group: 'capability', label: 'Video', values: ['video'] },
   { group: 'capability', label: 'Multilingual', values: ['multilingual'] },
   { group: 'capability', label: 'Zero-shot', values: ['zero-shot'] },
   { group: 'capability', label: 'Uncensored', values: ['uncensored'] },
@@ -65,10 +63,6 @@ const HF_BADGE_DEFINITIONS: HfBadgeDefinition[] = [
   { group: 'generation', label: 'LoRA', values: ['lora'] },
   { group: 'generation', label: 'Quantization', values: ['quantization'] },
   { group: 'generation', label: 'iMatrix', values: ['imatrix'] },
-  { group: 'generation', label: 'Image generation', values: ['image-generation'] },
-  { group: 'generation', label: 'Image editing', values: ['image-editing'] },
-  { group: 'generation', label: 'Video generation', values: ['video-generation'] },
-  { group: 'generation', label: 'Inpainting', values: ['inpainting'] },
   { group: 'generation', label: 'ControlNet', values: ['controlnet'] },
 ]
 

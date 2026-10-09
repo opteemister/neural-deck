@@ -69,7 +69,7 @@ export function ModelsPage() {
   })
   const localModels = useQuery({ queryKey: queryKeys.localModels, queryFn: api.getLocalModels, enabled: view === 'local', refetchInterval: (query) => query.state.data?.scanning ? 1_500 : false })
   const hfSearch = useQuery({ queryKey: queryKeys.hfSearch(hfQuery), queryFn: () => api.searchHf(hfQuery), enabled: view === 'huggingface' && hfQuery.trim().length > 1 })
-  const hfTrending = useQuery({ queryKey: queryKeys.hfTrending(hfGroup), queryFn: () => api.getHfTrending(hfGroup, 50), enabled: view === 'huggingface' && !hfQuery.trim() && !repoId })
+  const hfTrending = useQuery({ queryKey: queryKeys.hfTrending('all'), queryFn: () => api.getHfTrending('all', 50), enabled: view === 'huggingface' && !hfQuery.trim() && !repoId })
   const repoParts = repoId.split('/')
   const hfRepo = useQuery({ queryKey: queryKeys.hfRepo(repoId, revision), queryFn: () => api.getHfRepo(repoParts[0], repoParts[1], revision), enabled: view === 'huggingface' && repoParts.length === 2 && Boolean(repoId) })
   const scan = useMutation({ mutationFn: api.scanLocalModels, onSuccess: (data) => queryClient.setQueryData(queryKeys.localModels, data) })
@@ -265,9 +265,22 @@ function HfResults({ query, data, state, openRepo }: { query: string; data: { it
 
 function HfTrending({ group, data, state, openRepo, onGroupChange }: { group: HfTrendingGroup; data: { items: HfModelItem[] } | undefined; state: ReturnType<typeof useQuery<Awaited<ReturnType<typeof api.getHfTrending>>, Error>>; openRepo: (id: string) => void; onGroupChange: (group: HfTrendingGroup) => void }) {
   const groups: Array<[HfTrendingGroup, string]> = [['all', 'Все'], ['text', 'Текст'], ['gguf', 'GGUF'], ['vllm', 'vLLM'], ['diffusers', 'Diffusers'], ['embeddings', 'Embeddings']]
+  const items = data?.items ?? []
+  const availableGroups = groups.filter(([value]) => value === 'all' || items.some((item) => matchesHfGroup(item, value)))
+  const filteredItems = group === 'all' ? items : items.filter((item) => matchesHfGroup(item, group))
   if (state.isLoading) return <QueryLoading label="Загружаем трендинг Hugging Face" />
   if (state.isError) return <QueryError error={state.error} retry={() => void state.refetch()} label="Трендинг Hugging Face не загружен" />
-  return <div className="space-y-3"><div className="flex flex-wrap gap-2">{groups.map(([value, label]) => <button key={value} type="button" className={`rounded-full border px-3 py-1.5 text-xs transition-colors ${group === value ? 'border-copper bg-copper/10 text-foreground' : 'border-border text-muted-foreground hover:border-[#6c625a] hover:text-foreground'}`} onClick={() => onGroupChange(value)}>{label}</button>)}</div>{!data?.items.length ? <QueryEmpty title="Трендовые модели не найдены" description="Hugging Face не вернул модели для этой группы." /> : <div className="grid gap-3">{data.items.map((item) => <HfModelCard key={item.repo_id} item={item} onOpen={() => openRepo(item.repo_id)} />)}</div>}</div>
+  return <div className="space-y-3"><div className="flex flex-wrap gap-2">{availableGroups.map(([value, label]) => <button key={value} type="button" className={`rounded-full border px-3 py-1.5 text-xs transition-colors ${group === value ? 'border-copper bg-copper/10 text-foreground' : 'border-border text-muted-foreground hover:border-[#6c625a] hover:text-foreground'}`} onClick={() => onGroupChange(value)}>{label}</button>)}</div>{!filteredItems.length ? <QueryEmpty title="Трендовые модели не найдены" description="Hugging Face не вернул модели для этой группы." /> : <div className="grid gap-3">{filteredItems.map((item) => <HfModelCard key={item.repo_id} item={item} onOpen={() => openRepo(item.repo_id)} />)}</div>}</div>
+}
+
+function matchesHfGroup(item: HfModelItem, group: HfTrendingGroup): boolean {
+  if (group === 'all') return true
+  const values = [item.pipeline_tag, item.library_name, ...item.tags].filter(Boolean).map((value) => value!.toLowerCase())
+  if (group === 'gguf') return values.some((value) => value.includes('gguf'))
+  if (group === 'vllm') return values.some((value) => value.includes('vllm'))
+  if (group === 'diffusers') return values.some((value) => value.includes('diffusers'))
+  if (group === 'embeddings') return values.some((value) => value.includes('embedding') || value === 'feature-extraction' || value === 'sentence-similarity')
+  return values.some((value) => value.startsWith('text-') || value === 'text-generation' || value === 'text-classification')
 }
 
 function HfModelCard({ item, onOpen }: { item: HfModelItem; onOpen: () => void }) {

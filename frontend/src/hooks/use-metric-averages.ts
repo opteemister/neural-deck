@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 
-type Filters = { profile_name?: string; pid?: number; scope?: 'profile' | 'all' }
+type Filters = { profile_name?: string; profile_id?: string; pid?: number; scope?: 'profile' | 'all' }
 export function useDailyMetricAggregates(historyKey: string, filters: Filters) {
   const query = useQuery({
     queryKey: ['metrics-aggregates', historyKey],

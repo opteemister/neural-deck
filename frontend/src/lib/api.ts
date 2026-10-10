@@ -235,6 +235,7 @@ export const api = {
   getProfile: (name: string) => request<ProfileData>(`/api/v1/profiles/${encodeURIComponent(name)}`),
   getProxyRoutes: () => request<ProxyRoutesData>('/api/v1/proxy/routes'),
   createProxyAlias: (body: { name: string; profile_ids: string[] }) => request<ProxyRoute>('/api/v1/proxy/routes/aliases', json(body)),
+  updateProxyAlias: (currentName: string, body: { name: string; profile_ids: string[] }) => request<ProxyRoute>(`/api/v1/proxy/routes/aliases/${encodeURIComponent(currentName)}`, { method: 'PATCH', body: JSON.stringify(body) }),
   updateProxyRoute: (name: string, profile_ids: string[]) => request<ProxyRoute>(`/api/v1/proxy/routes/${encodeURIComponent(name)}`, { method: 'PUT', body: JSON.stringify({ profile_ids }) }),
   deleteProxyAlias: (name: string) => request<{ name: string }>(`/api/v1/proxy/routes/aliases/${encodeURIComponent(name)}`, { method: 'DELETE' }),
   previewProfile: (body: ProfileData) => request<{ command: string }>('/api/v1/profiles/preview', json(body)),
@@ -247,27 +248,31 @@ export const api = {
   getInstances: () => request<{ items: import('@/types/api').Instance[] }>('/api/v1/instances'),
   stopInstance: (id: string) => request<Operation>(`/api/v1/instances/${encodeURIComponent(id)}/stop`, json(undefined)),
   getMetrics: (id: string) => request<MetricsData>(`/api/v1/instances/${encodeURIComponent(id)}/metrics`),
-  getTokenHistory: (profile_name?: string, pid?: number) => {
+  getTokenHistory: (profile_name?: string, pid?: number, profile_id?: string) => {
     const query = new URLSearchParams({ mode: 'token-history' })
     if (profile_name !== undefined) query.set('profile_name', profile_name)
+    if (profile_id !== undefined) query.set('profile_id', profile_id)
     if (pid !== undefined) query.set('pid', String(pid))
     return request<import('@/types/api').TokenHistoryData>(`/api/v1/metrics?${query}`)
   },
-  getMetricAggregates: (filters: { profile_name?: string; pid?: number; scope?: 'profile' | 'all' } = {}) => {
+  getMetricAggregates: (filters: { profile_name?: string; profile_id?: string; pid?: number; scope?: 'profile' | 'all' } = {}) => {
     const query = new URLSearchParams({ mode: 'aggregates' })
     if (filters.profile_name !== undefined) query.set('profile_name', filters.profile_name)
+    if (filters.profile_id !== undefined) query.set('profile_id', filters.profile_id)
     if (filters.pid !== undefined) query.set('pid', String(filters.pid))
     if (filters.scope !== undefined) query.set('scope', filters.scope)
     return request<{ aggregates: Record<string, { avg: number; max: number }>; from: string; to: string; source: string }>(`/api/v1/metrics?${query}`)
   },
-  getMetricConcurrency: (profileName?: string) => {
+  getMetricConcurrency: (profileName?: string, profileId?: string) => {
     const query = new URLSearchParams({ days: '7' })
     if (profileName !== undefined) query.set('profile_name', profileName)
+    if (profileId !== undefined) query.set('profile_id', profileId)
     return request<{ items: import('@/components/concurrency-chart').ConcurrencyPoint[]; days: number; source: string }>(`/api/v1/metrics/concurrency?${query}`)
   },
-  getMetricsHistory: (filters: { profile_name?: string; pid?: number; scope?: 'profile' | 'all'; mode?: 'bootstrap' | 'current' } = {}) => {
+  getMetricsHistory: (filters: { profile_name?: string; profile_id?: string; pid?: number; scope?: 'profile' | 'all'; mode?: 'bootstrap' | 'current' } = {}) => {
     const query = new URLSearchParams({ mode: filters.mode ?? 'bootstrap', limit: '120' })
     if (filters.profile_name !== undefined) query.set('profile_name', filters.profile_name)
+    if (filters.profile_id !== undefined) query.set('profile_id', filters.profile_id)
     if (filters.pid !== undefined) query.set('pid', String(filters.pid))
     if (filters.scope !== undefined) query.set('scope', filters.scope)
     return request<import('@/types/api').MetricsHistoryData>(`/api/v1/metrics?${query}`)
@@ -285,18 +290,20 @@ export const api = {
     if (!response.ok) throw await readError(response)
     return response.blob()
   },
-  getTokenStats: (filters: { profile_name?: string; from?: string; to?: string } = {}) => {
+  getTokenStats: (filters: { profile_name?: string; profile_id?: string; from?: string; to?: string } = {}) => {
     const query = new URLSearchParams()
     if (filters.profile_name) query.set('profile_name', filters.profile_name)
+    if (filters.profile_id) query.set('profile_id', filters.profile_id)
     if (filters.from) query.set('from', filters.from)
     if (filters.to) query.set('to', filters.to)
     const suffix = query.toString() ? `?${query.toString()}` : ''
     return request<TokenStatsData>(`/api/v1/token-stats${suffix}`)
   },
-  getStatistics: (filters: { period?: 'week' | 'month' | 'quarter' | 'half_year' | 'year'; model_name?: string; profile_name?: string } = {}) => {
+  getStatistics: (filters: { period?: 'week' | 'month' | 'quarter' | 'half_year' | 'year'; model_name?: string; profile_name?: string; profile_id?: string } = {}) => {
     const query = new URLSearchParams({ period: filters.period ?? 'month' })
     if (filters.model_name) query.set('model_name', filters.model_name)
     if (filters.profile_name) query.set('profile_name', filters.profile_name)
+    if (filters.profile_id) query.set('profile_id', filters.profile_id)
     return request<StatisticsData>(`/api/v1/statistics?${query}`)
   },
   getOpenAiModels: async (): Promise<OpenAiModelsData> => {
@@ -321,7 +328,7 @@ export const queryKeys = {
   proxyRoutes: ['proxy-routes'] as const,
   instances: ['instances'] as const,
   tokens: ['token-stats'] as const,
-  statistics: (filters: { period?: 'week' | 'month' | 'quarter' | 'half_year' | 'year'; model_name?: string; profile_name?: string } = {}) => ['statistics', filters] as const,
+  statistics: (filters: { period?: 'week' | 'month' | 'quarter' | 'half_year' | 'year'; model_name?: string; profile_name?: string; profile_id?: string } = {}) => ['statistics', filters] as const,
   openAiModels: ['openai-models'] as const,
   logs: ['logs'] as const,
   log: (id: string) => ['log', id] as const,

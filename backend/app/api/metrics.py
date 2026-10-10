@@ -35,13 +35,14 @@ async def instance_metrics(
 async def token_stats(
     request: Request,
     profile_name: str | None = None,
+    profile_id: str | None = None,
     from_: datetime | None = Query(default=None, alias="from"),
     to: datetime | None = None,
     service: RequestJournalService = Depends(get_journal_service),
 ) -> JSONResponse:
     return success(
         request,
-        await service.stats(profile_name=profile_name, from_=from_, to=to),
+        await service.stats(profile_name=profile_name, profile_id=profile_id, from_=from_, to=to),
     )
 
 
@@ -51,6 +52,7 @@ async def statistics(
     period: Literal["week", "month", "quarter", "half_year", "year", "custom"] = "month",
     model_name: str | None = None,
     profile_name: str | None = None,
+    profile_id: str | None = None,
     from_: datetime | None = Query(default=None, alias="from"),
     to: datetime | None = None,
     service: StatisticsService = Depends(get_statistics_service),
@@ -63,6 +65,7 @@ async def statistics(
             to=to,
             model_name=model_name,
             profile_name=profile_name,
+            profile_id=profile_id,
         ),
     )
 
@@ -77,6 +80,7 @@ async def metrics(
         "current", "bootstrap", "history", "peaks", "usage", "token-history", "aggregates"
     ] = "current",
     profile_name: str | None = None,
+    profile_id: str | None = None,
     pid: int | None = Query(None, gt=0),
     scope: Literal["profile", "all"] = "profile",
     from_: datetime | None = Query(None, alias="from"),
@@ -91,6 +95,7 @@ async def metrics(
         await service.read(
             mode=mode,
             profile_name=profile_name,
+            profile_id=profile_id,
             pid=pid,
             scope=scope,
             from_=from_,
@@ -110,13 +115,14 @@ export_router = APIRouter()
 async def historical_metrics(
     request: Request,
     profile_name: str | None = None,
+    profile_id: str | None = None,
     days: int = Query(7, ge=1, le=3650),
     service: MetricsService = Depends(get_metrics_service),
 ) -> JSONResponse:
     if service.storage is None:
         return success(request, {"items": [], "days": days, "source": "unavailable"})
     return success(request, await service.storage.historical(
-        profile_name=profile_name, days=days,
+        profile_name=profile_name, profile_id=profile_id, days=days,
         curve=request.url.path.endswith("/concurrency"),
     ))
 

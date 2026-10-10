@@ -34,6 +34,7 @@ class RequestJournalRecord(Base):
     )
     route: Mapped[str] = mapped_column(String(120), nullable=False)
     model_name: Mapped[str] = mapped_column(String(512), nullable=False)
+    profile_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     profile_name: Mapped[str | None] = mapped_column(String(256), nullable=True, index=True)
     instance_id: Mapped[str | None] = mapped_column(String(512), nullable=True, index=True)
     engine_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
@@ -73,6 +74,7 @@ def journal_record_values(record: RequestJournalRecord) -> dict[str, Any]:
         "created_at": record.created_at,
         "route": record.route,
         "model_name": record.model_name,
+        "profile_id": record.profile_id,
         "profile_name": record.profile_name,
         "instance_id": record.instance_id,
         "engine_id": record.engine_id,

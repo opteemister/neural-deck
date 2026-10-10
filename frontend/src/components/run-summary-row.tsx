@@ -5,8 +5,8 @@ import { TableCell, TableRow } from '@/components/ui/table'
 import type { Instance, MetricsData } from '@/types/api'
 
 export function RunSummaryRow({ instance, data, onSelect, onStop, onLogs, stopping }: { instance: Instance; data?: MetricsData; onSelect: () => void; onStop: () => void; onLogs?: () => void; stopping: boolean }) {
-  const historyKey = instance.profile_name ?? instance.id
-  const averages = useDailyMetricAggregates(historyKey, instance.profile_name ? { profile_name: instance.profile_name } : { pid: instance.pid })
+  const historyKey = instance.profile_id ?? instance.profile_name ?? instance.id
+  const averages = useDailyMetricAggregates(historyKey, instance.profile_id ? { profile_id: instance.profile_id } : instance.profile_name ? { profile_name: instance.profile_name } : { pid: instance.pid })
   const format = (value?: number | null) => value == null ? '—' : value.toLocaleString('ru-RU', { maximumFractionDigits: 1 })
   const value = (name: string) => {
     const metric = data?.items.find((item) => item.name === name)

@@ -42,6 +42,16 @@ async def create_alias(
     )
 
 
+@router.patch("/aliases/{alias_name:path}", response_model=SuccessEnvelope[dict[str, object]])
+async def update_alias(
+    request: Request,
+    alias_name: str,
+    payload: AliasCreateRequest,
+    service: ProxyService = Depends(get_proxy_service),
+) -> JSONResponse:
+    return success(request, await service.update_alias(alias_name, payload.name, payload.profile_ids))
+
+
 @router.put("/{route_name:path}", response_model=SuccessEnvelope[dict[str, object]])
 async def update_route_order(
     request: Request,

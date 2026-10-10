@@ -74,10 +74,10 @@ class MetricsService:
             instance = await self.process_manager.get(instance_id)
             data = await self._collect_local(instance_id)
             if instance.profile_name is not None:
-                identity = (instance.profile_name, instance.pid)
+                identity = (instance.profile_id or instance.profile_name, instance.pid)
                 if identity not in self._peaks:
                     self._peaks[identity] = (
-                        await self.storage.peaks(*identity) if self.storage else {}
+                        await self.storage.peaks(instance.profile_name, instance.pid, instance.profile_id) if self.storage else {}
                     )
                 peaks = self._peaks[identity]
                 for item in data.items:
@@ -98,7 +98,7 @@ class MetricsService:
                 if self.storage:
                     vram = next((item for item in data.items if item.name == "vram_bytes"), None)
                     if vram is not None:
-                        await self.storage.remember_vram(instance.profile_name, vram)
+                        await self.storage.remember_vram(instance.profile_name, vram, instance.profile_id)
             self._cache[instance_id] = (time.monotonic(), instance, data)
             return data
 
@@ -111,7 +111,7 @@ class MetricsService:
             data = MetricList(items=samples[-1]["items"], source="prometheus")
             if instance.profile_name is not None:
                 data.peaks = (
-                    dict(self._peaks.get((instance.profile_name, instance.pid), {}))
+                    dict(self._peaks.get((instance.profile_id or instance.profile_name, instance.pid), {}))
                     if instance.profile_name is not None
                     else {}
                 )
@@ -130,7 +130,7 @@ class MetricsService:
                 return MetricList(
                     items=items,
                     source="sqlite",
-                    peaks=dict(self._peaks.get((instance.profile_name, instance.pid), {}))
+                    peaks=dict(self._peaks.get((instance.profile_id or instance.profile_name, instance.pid), {}))
                     if instance.profile_name is not None
                     else {},
                 )
@@ -186,7 +186,7 @@ class MetricsService:
             try:
                 instances = await self._instances()
                 active = {
-                    (instance.profile_name, instance.pid)
+                    (instance.profile_id or instance.profile_name, instance.pid)
                     for instance in instances
                     if instance.profile_name is not None
                 }
@@ -206,6 +206,7 @@ class MetricsService:
         *,
         mode: str,
         profile_name: str | None = None,
+        profile_id: str | None = None,
         pid: int | None = None,
         scope: str = "profile",
         from_: datetime | None = None,
@@ -217,7 +218,7 @@ class MetricsService:
         if mode == "aggregates":
             if scope == "all":
                 profile_name, pid = None, None
-            key = (profile_name, pid, scope)
+            key = (profile_name, profile_id, pid, scope)
             cached = self._aggregate_cache.get(key)
             if cached and time.monotonic() - cached[0] < 30:
                 return cached[1]
@@ -225,7 +226,7 @@ class MetricsService:
             start = end - timedelta(hours=24)
             # Keep each range below Prometheus's default 11,000-point limit.
             remote_parts = []
-            if self.prometheus.url:
+            if self.prometheus.url and profile_id is None:
                 for index in range(3):
                     part = await self.prometheus.read(
                         profile_name=profile_name, pid=pid,
@@ -241,7 +242,7 @@ class MetricsService:
                 source = "prometheus"
             else:
                 aggregates = await self.storage.aggregates(
-                    start=start, end=end, profile_name=profile_name, pid=pid,
+                    start=start, end=end, profile_name=profile_name, profile_id=profile_id, pid=pid,
                     all_profiles=scope == "all",
                 ) if self.storage else {}
                 source = "sqlite" if self.storage else "unavailable"
@@ -254,13 +255,14 @@ class MetricsService:
             return result
         if mode == "token-history":
             return (
-                await self.journal.token_history(profile_name=profile_name, pid=pid)
+                await self.journal.token_history(profile_name=profile_name, profile_id=profile_id, pid=pid)
                 if self.journal else {"items": [], "source": "unavailable"}
             )
         if mode == "usage":
             return (
                 await self.journal.usage(
                     profile_name=profile_name,
+                    profile_id=profile_id,
                     pid=pid,
                     client_id=client_id,
                     from_=from_,
@@ -278,7 +280,7 @@ class MetricsService:
             profile_name, pid = None, None
         if mode == "peaks":
             stored_peaks = (
-                await self.storage.peaks(profile_name, pid)
+                await self.storage.peaks(profile_name, pid, profile_id)
                 if self.storage and profile_name is not None and pid is not None
                 else {}
             )
@@ -289,20 +291,22 @@ class MetricsService:
             count = limit * 16 if scope == "all" else limit
             history = (
                 await self.storage.history(
-                    profile_name=profile_name, pid=pid, from_=start, to=end, limit=count
+                    profile_name=profile_name, profile_id=profile_id, pid=pid, from_=start, to=end, limit=count
                 )
                 if self.storage
                 else []
             )
-            remote = await self.prometheus.read(
-                profile_name=profile_name,
-                pid=pid,
-                from_=max(start, end - timedelta(seconds=limit * 5))
-                if mode == "bootstrap"
-                else start,
-                to=end,
-                limit=count,
-            )
+            remote = []
+            if profile_id is None:
+                remote = await self.prometheus.read(
+                    profile_name=profile_name,
+                    pid=pid,
+                    from_=max(start, end - timedelta(seconds=limit * 5))
+                    if mode == "bootstrap"
+                    else start,
+                    to=end,
+                    limit=count,
+                )
             if remote:
                 # Keep SQLite points in remote gaps, preferring remote on identity/time collisions.
                 samples = {
@@ -328,6 +332,11 @@ class MetricsService:
                 instance
                 for instance in instances
                 if (profile_name is None or instance.profile_name == profile_name)
+                and (
+                    profile_id is None
+                    or instance.profile_id == profile_id
+                    or (instance.profile_id is None and profile_name is not None)
+                )
                 and (pid is None or instance.pid == pid)
             ]
             results = await asyncio.gather(
@@ -335,6 +344,7 @@ class MetricsService:
             )
             rows = [
                 {
+                    "profile_id": instance.profile_id,
                     "profile_name": instance.profile_name,
                     "pid": instance.pid,
                     "items": result.items,
@@ -350,7 +360,10 @@ class MetricsService:
                 current = aggregate_samples(rows)
             elif rows:
                 current = rows[-1]
-                peaks = dict(self._peaks.get((rows[-1]["profile_name"], rows[-1]["pid"]), {}))
+                peaks = dict(self._peaks.get(
+                    (rows[-1]["profile_id"] or rows[-1]["profile_name"], rows[-1]["pid"]),
+                    {},
+                ))
         if mode == "current" and current is not None:
             source = current.get("source", "local")
         return {"history": history, "current": current, "peaks": peaks, "source": source}

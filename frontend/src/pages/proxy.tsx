@@ -35,36 +35,46 @@ export function ProxyPage() {
     mutationFn: ({ name, profileIds }: { name: string; profileIds: string[] }) => api.updateProxyRoute(name, profileIds),
     onSuccess: invalidateRoutes,
   })
+  const updateAlias = useMutation({
+    mutationFn: ({ currentName, name, profileIds }: { currentName: string; name: string; profileIds: string[] }) => api.updateProxyAlias(currentName, { name, profile_ids: profileIds }),
+    onSuccess: () => { closeAliasDialog(); invalidateRoutes() },
+  })
   const deleteAlias = useMutation({
     mutationFn: api.deleteProxyAlias,
     onSuccess: invalidateRoutes,
   })
 
   const editingRoute = aliasDialog?.kind === 'edit' ? aliasDialog.route : null
-  const routeNames = useMemo(() => new Set(routes.data?.items.map((route) => route.name) ?? []), [routes.data?.items])
-  const aliasError = editingRoute
+  const manualRouteNames = useMemo(
+    () => new Set(routes.data?.items.filter((route) => route.kind === 'alias').map((route) => route.name) ?? []),
+    [routes.data?.items],
+  )
+  const aliasError = aliasName.length === 0
     ? null
-    : aliasName.length === 0
-      ? null
-      : !aliasPattern.test(aliasName)
-        ? 'Используйте 1–128 ASCII-символов: буквы, цифры, точку, дефис или подчёркивание.'
-        : routeNames.has(aliasName) || (profiles.data?.items ?? []).some((profile) => profile.model_name === aliasName)
-          ? 'Это имя уже занято маршрутом или публичным именем модели.'
-          : null
-  const mutationError = createAlias.error ?? updateRoute.error ?? deleteAlias.error
+    : !aliasPattern.test(aliasName)
+      ? 'Используйте 1–128 ASCII-символов: буквы, цифры, точку, дефис или подчёркивание.'
+      : manualRouteNames.has(aliasName) && aliasName !== editingRoute?.name
+        ? 'Это имя уже занято ручным алиасом.'
+        : null
+  const mutationError = createAlias.error ?? updateAlias.error ?? updateRoute.error ?? deleteAlias.error
   const visibleRoutes = routes.data?.items.filter((route) => route.kind === 'alias' || (route.available && route.diagnostics.length === 0)) ?? []
 
-  function toggleProfile(name: string) {
-    setSelectedProfiles((current) => current.includes(name) ? current.filter((item) => item !== name) : [...current, name])
+  function toggleProfile(profile: ProfileData) {
+    const reference = profile.profile_id ?? profile.name
+    setSelectedProfiles((current) => current.includes(reference) ? current.filter((item) => item !== reference) : [...current, reference])
   }
 
   function openNewAlias() {
+    createAlias.reset()
+    updateAlias.reset()
     setAliasName('')
     setSelectedProfiles([])
     setAliasDialog({ kind: 'new' })
   }
 
   function openEditAlias(route: ProxyRoute) {
+    createAlias.reset()
+    updateAlias.reset()
     setAliasName(route.name)
     setSelectedProfiles([...route.candidate_profile_ids])
     setAliasDialog({ kind: 'edit', route })
@@ -79,10 +89,7 @@ export function ProxyPage() {
   function submitAlias() {
     if (!aliasName || aliasError || selectedProfiles.length === 0) return
     if (editingRoute) {
-      updateRoute.mutate(
-        { name: editingRoute.name, profileIds: selectedProfiles },
-        { onSuccess: closeAliasDialog },
-      )
+      updateAlias.mutate({ currentName: editingRoute.name, name: aliasName, profileIds: selectedProfiles })
       return
     }
     createAlias.mutate({ name: aliasName, profile_ids: selectedProfiles })
@@ -110,7 +117,7 @@ export function ProxyPage() {
     <div className="mb-6">
       {routes.isLoading ? <QueryLoading label="Читаем маршруты" /> : routes.isError ? <QueryError error={routes.error} retry={() => void routes.refetch()} label="Маршруты недоступны" /> : visibleRoutes.length > 0 && <Card><CardContent className="space-y-3">{visibleRoutes.map((route) => <RouteCard key={`${route.kind}:${route.name}`} route={route} dragSource={dragSource} onDragSource={setDragSource} dragTarget={dragTarget} onDragTarget={setDragTarget} onDrop={drop} onDelete={() => deleteAlias.mutate(route.name)} onEdit={() => openEditAlias(route)} onRemove={(profileId) => updateRoute.mutate({ name: route.name, profileIds: route.candidate_profile_ids.filter((item) => item !== profileId) })} updating={updateRoute.isPending} deleting={deleteAlias.isPending && deleteAlias.variables === route.name} />)}</CardContent></Card>}
     </div>
-    <Dialog open={aliasDialog !== null} title={editingRoute ? 'Изменить алиас' : 'Новый алиас'} onOpenChange={(open) => { if (!open) closeAliasDialog() }}><div className="space-y-4 px-4 py-4"><div><label htmlFor="proxy-alias-name" className="text-xs text-foreground">Имя алиаса</label><Input id="proxy-alias-name" className="mt-1.5" value={aliasName} onChange={(event) => setAliasName(event.target.value)} placeholder="my-chat-model" readOnly={Boolean(editingRoute)} aria-invalid={Boolean(aliasError)} />{aliasError && <p className="mt-1.5 text-[11px] text-[#d09b87]">{aliasError}</p>}</div><div><p className="text-xs text-foreground">Профили-кандидаты</p><div className="mt-1.5 max-h-64 space-y-1 overflow-auto rounded-md border border-border bg-secondary p-2">{profiles.isLoading ? <p className="px-2 py-3 text-xs text-muted-foreground">Читаем профили…</p> : profiles.data?.items.length === 0 ? <p className="px-2 py-3 text-xs text-muted-foreground">Сначала создайте профиль.</p> : profiles.data?.items.map((profile) => <ProfileCheckbox key={profile.name} profile={profile} checked={selectedProfiles.includes(profile.name)} onChange={() => toggleProfile(profile.name)} />)}</div></div><div className="flex justify-end gap-2"><Button variant="ghost" onClick={closeAliasDialog}>Отмена</Button><Button variant="primary" disabled={!aliasName || Boolean(aliasError) || selectedProfiles.length === 0 || createAlias.isPending || updateRoute.isPending} onClick={submitAlias}>{editingRoute ? <Pencil className="size-3.5" /> : <Plus className="size-3.5" />}{editingRoute ? 'Сохранить' : createAlias.isPending ? 'Сохраняем…' : 'Добавить алиас'}</Button></div></div></Dialog>
+    <Dialog open={aliasDialog !== null} title={editingRoute ? 'Изменить алиас' : 'Новый алиас'} onOpenChange={(open) => { if (!open) closeAliasDialog() }}><div className="space-y-4 px-4 py-4"><div><label htmlFor="proxy-alias-name" className="text-xs text-foreground">Имя алиаса</label><Input id="proxy-alias-name" className="mt-1.5" value={aliasName} onChange={(event) => setAliasName(event.target.value)} placeholder="my-chat-model" aria-invalid={Boolean(aliasError)} />{aliasError && <p className="mt-1.5 text-[11px] text-[#d09b87]">{aliasError}</p>}</div><div><p className="text-xs text-foreground">Профили-кандидаты</p><div className="mt-1.5 max-h-64 space-y-1 overflow-auto rounded-md border border-border bg-secondary p-2">{profiles.isLoading ? <p className="px-2 py-3 text-xs text-muted-foreground">Читаем профили…</p> : profiles.data?.items.length === 0 ? <p className="px-2 py-3 text-xs text-muted-foreground">Сначала создайте профиль.</p> : profiles.data?.items.map((profile) => <ProfileCheckbox key={profile.profile_id ?? profile.name} profile={profile} checked={selectedProfiles.includes(profile.profile_id ?? profile.name)} onChange={() => toggleProfile(profile)} />)}</div></div>{updateAlias.isError && <QueryError error={updateAlias.error} label="Изменение алиаса не сохранено" />}<div className="flex justify-end gap-2"><Button variant="ghost" onClick={closeAliasDialog}>Отмена</Button><Button variant="primary" disabled={!aliasName || Boolean(aliasError) || selectedProfiles.length === 0 || createAlias.isPending || updateAlias.isPending || updateRoute.isPending} onClick={submitAlias}>{editingRoute ? <Pencil className="size-3.5" /> : <Plus className="size-3.5" />}{editingRoute ? 'Сохранить' : createAlias.isPending ? 'Сохраняем…' : 'Добавить алиас'}</Button></div></div></Dialog>
     {mutationError && <QueryError error={mutationError} label="Изменение маршрута не сохранено" />}
   </div>
 }
@@ -125,7 +132,7 @@ function RouteCard({ route, dragSource, onDragSource, dragTarget, onDragTarget, 
   return <div className="rounded-md border border-border bg-secondary/40" onDragLeave={(event) => {
     if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) onDragTarget(null)
   }}>
-    <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2.5"><h3 className="font-mono text-xs text-foreground">{route.name}</h3><Badge>{route.kind === 'auto' ? 'автоматический' : 'ручной'}</Badge><Badge className={route.available ? 'border-[#596c4b] text-[#b2c995]' : 'border-[#72544a] text-[#d0a390]'}>{route.available ? 'доступен' : route.kind === 'alias' ? 'ожидает профиль' : 'скрыт из /v1/models'}</Badge>{route.kind === 'alias' && <div className="ml-auto flex gap-1"><Button variant="ghost" size="icon-sm" iconOnly aria-label={`Изменить алиас ${route.name}`} title="Изменить алиас" onClick={onEdit}><Pencil className="size-3.5" /></Button><Button variant="danger" size="icon-sm" iconOnly aria-label={`Удалить алиас ${route.name}`} title="Удалить алиас" onClick={onDelete} disabled={deleting}><Trash2 className="size-3.5" /></Button></div>}</div>
+    <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2.5"><h3 className="font-mono text-xs text-foreground">{route.name}</h3><Badge>{route.kind === 'auto' ? 'автоматический' : 'ручной'}</Badge><Badge className={route.available ? 'border-[#596c4b] text-[#b2c995]' : 'border-[#72544a] text-[#d0a390]'}>{route.diagnostics.includes('route_name_collision') ? 'конфликт имени' : route.available ? 'доступен' : route.kind === 'alias' ? 'ожидает профиль' : 'скрыт из /v1/models'}</Badge>{route.kind === 'alias' && <div className="ml-auto flex gap-1"><Button variant="ghost" size="icon-sm" iconOnly aria-label={`Изменить алиас ${route.name}`} title="Изменить алиас" onClick={onEdit}><Pencil className="size-3.5" /></Button><Button variant="danger" size="icon-sm" iconOnly aria-label={`Удалить алиас ${route.name}`} title="Удалить алиас" onClick={onDelete} disabled={deleting}><Trash2 className="size-3.5" /></Button></div>}</div>
     {route.diagnostics.map((diagnostic) => <p key={diagnostic} className="flex items-center gap-1.5 border-b border-border px-3 py-2 text-[11px] text-[#d09b87]"><AlertTriangle className="size-3.5" />{diagnosticText(diagnostic)}</p>)}
     <div className="divide-y divide-border">{route.candidates.length === 0 ? <p className="px-3 py-3 text-xs text-muted-foreground">Кандидаты не настроены.</p> : <>{route.candidates.map((candidate, index) => {
       const isDropTarget = dragTarget?.route === route.name && dragTarget.index === index

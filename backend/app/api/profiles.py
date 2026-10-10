@@ -100,16 +100,20 @@ async def start_configuration(
 async def profile_summary(
     request: Request,
     profile_names: list[str] | None = Query(default=None),
+    profile_ids: list[str] | None = Query(default=None),
     service: ProfileService = Depends(get_profile_service),
     metrics: MetricsService = Depends(get_metrics_service),
     catalogue: ModelCatalogue = Depends(get_model_catalogue),
 ) -> JSONResponse:
     profile_list = await asyncio.to_thread(service.list)
     selected_names = set(profile_names) if profile_names is not None else None
+    selected_ids = set(profile_ids) if profile_ids is not None else None
     selected = (
         profile_list.items
-        if selected_names is None
-        else [profile for profile in profile_list.items if profile.name in selected_names]
+        if selected_names is None and selected_ids is None
+        else [profile for profile in profile_list.items if
+              (selected_names is None or profile.name in selected_names)
+              and (selected_ids is None or profile.profile_id in selected_ids)]
     )
     start, end = utc_day_window()
     summary = await build_profile_summary(

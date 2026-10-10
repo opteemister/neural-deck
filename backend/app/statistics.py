@@ -45,7 +45,7 @@ def _event_time(row: RequestJournalRecord) -> datetime:
 
 
 def _profile_key(row: RequestJournalRecord) -> str:
-    return row.profile_name or "external"
+    return row.profile_id or row.profile_name or "external"
 
 
 def _token_metric(
@@ -182,15 +182,24 @@ def _calculate_cost(
             (row.cached_input_tokens, rates["cached_input"]),
             (row.output_tokens, rates["output"]),
         )
-        incomplete = False
+        invalid_cached = any(
+            label == "cached" and row.input_tokens is not None and tokens is not None and tokens > row.input_tokens
+            for label, (tokens, _) in zip(("input", "cached", "output"), components, strict=True)
+        )
+        incomplete = any(
+            tokens is None or rate is None
+            or invalid_cached
+            for label, (tokens, rate) in zip(
+                ("input", "cached", "output"), components, strict=True
+            )
+        )
+        if incomplete:
+            unknown_requests += 1
+            missing_usage = missing_usage or invalid_cached or any(tokens is None for tokens, _ in components)
+            continue
         for tokens, rate in components:
-            if tokens is None or rate is None:
-                incomplete = True
-                missing_usage = missing_usage or tokens is None
-                continue
             total += tokens * rate / 1_000_000
             priced_components += 1
-        unknown_requests += int(incomplete)
     return {
         "usd": round(total, 8) if priced_components or not entries else None,
         "state": "partial" if priced_components and unknown_requests else
@@ -267,6 +276,7 @@ class StatisticsService:
         to: datetime | None = None,
         model_name: str | None = None,
         profile_name: str | None = None,
+        profile_id: str | None = None,
     ) -> dict[str, Any]:
         if period == "custom" and from_ is not None and to is not None:
             start, end = as_utc(from_), as_utc(to)
@@ -293,30 +303,59 @@ class StatisticsService:
         ]
         client_labels = await self.journal.client_labels()
         configured = await asyncio.to_thread(self.profiles.list)
-        profile_map = {profile.name: profile for profile in configured.items}
+        profile_map = {
+            reference: profile
+            for profile in configured.items
+            for reference in (profile.name, profile.profile_id)
+            if reference
+        }
+        profile_map_by_id = {profile.profile_id: profile for profile in configured.items if profile.profile_id}
+        profile_id_by_name = {
+            profile.name: profile.profile_id
+            for profile in configured.items
+            if profile.profile_id
+        }
+        def row_reference(row: RequestJournalRecord) -> str:
+            return row.profile_id or profile_id_by_name.get(row.profile_name or "") or row.profile_name or "external"
         period_rows = [
             row for row in all_rows
             if start <= _event_time(row) < end
             and (model_name is None or row.model_name == model_name)
-            and (profile_name is None or _profile_key(row) == profile_name)
+            and (profile_name is None or row.profile_name == profile_name)
+            and (profile_id is None or row.profile_id == profile_id)
         ]
-        all_names = set(profile_map)
-        all_names.update(_profile_key(row) for row in all_rows)
+        all_names = {
+            profile.profile_id or profile.name
+            for profile in configured.items
+        }
+        all_names.update(row_reference(row) for row in all_rows)
+        profile_filter_names = {profile.name for profile in configured.items}
+        profile_filter_names.update(row.profile_name for row in all_rows if row.profile_name)
         names = set(all_names)
         if model_name is not None:
             names = {
-                name for name, profile in profile_map.items() if profile.model_name == model_name
+                profile.profile_id or profile.name
+                for profile in configured.items
+                if profile.model_name == model_name
             }
-            names.update(_profile_key(row) for row in period_rows)
+            names.update(row_reference(row) for row in period_rows)
         if profile_name is not None:
-            names = {profile_name}
+            profile = next((item for item in configured.items if item.name == profile_name), None)
+            names = {profile.profile_id if profile and profile.profile_id else profile_name}
+        if profile_id is not None:
+            selected = profile_map_by_id.get(profile_id)
+            names = {profile_id if selected is None else (selected.profile_id or selected.name)}
         profiles: list[dict[str, Any]] = []
-        for name in sorted(names):
-            rows = [row for row in period_rows if _profile_key(row) == name]
-            profile = profile_map.get(name)
+        for profile_ref in sorted(names):
+            rows = [row for row in period_rows if row_reference(row) == profile_ref]
+            profile = profile_map.get(profile_ref)
+            display_name = profile.name if profile is not None else next(
+                (row.profile_name for row in rows if row.profile_name), profile_ref
+            )
+            selected_profile_id = profile.profile_id if profile is not None else None
             item = _aggregate(rows, profile)
-            engine = await self.storage.statistics_window(start=start, end=end, profile_name=name) if self.storage else {}
-            maximum = await self.storage.all_time_active_requests_max(name) if self.storage else None
+            engine = await self.storage.statistics_window(start=start, end=end, profile_name=display_name, profile_id=selected_profile_id) if self.storage else {}
+            maximum = await self.storage.all_time_active_requests_max(display_name, selected_profile_id) if self.storage else None
             maximum = int(maximum or 0)
             item["performance"].update({field: engine.get(field) for field in ("prefill_tps", "decode_tps")})
             seconds = engine.get("active_seconds", 0.0)
@@ -328,7 +367,8 @@ class StatisticsService:
                 "state": "ok" if engine.get("load_known") else "unknown",
             }
             item.update({
-                "profile_name": name,
+                "profile_name": display_name,
+                "profile_id": selected_profile_id or (profile_ref if profile_ref not in profile_map else None),
                 "model_name": (
                     profile.model_name
                     if profile
@@ -351,7 +391,12 @@ class StatisticsService:
                 "client_id": None if client_id == "unknown" else int(client_id),
                 "label": client_labels.get(int(client_id), "Неизвестный клиент")
                 if client_id != "unknown" else "Неизвестный клиент",
-                "profiles": sorted({_profile_key(row) for row in rows}),
+                "profiles": sorted({
+                    profile_map.get(row_reference(row), profile_map.get(row.profile_name)).name
+                    if profile_map.get(row_reference(row), profile_map.get(row.profile_name)) is not None
+                    else (row.profile_name or "external")
+                    for row in rows
+                }),
             })
             clients.append(item)
 
@@ -376,10 +421,14 @@ class StatisticsService:
                 "bucket": "day",
                 "request_event_time": "finished_at_else_started_at",
             },
-            "filters": {"model_name": model_name, "profile_name": profile_name},
+            "filters": {
+                "model_name": model_name,
+                "profile_name": profile_name,
+                "profile_id": profile_id,
+            },
             "filters_options": {
                 "models": sorted({row.model_name for row in all_rows}),
-                "profiles": sorted(all_names),
+                "profiles": sorted(profile_filter_names),
             },
             "totals": totals,
             "summary": {

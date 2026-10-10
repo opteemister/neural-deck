@@ -86,3 +86,27 @@ describe('Proxy alias drag and drop', () => {
     expect(update).not.toHaveBeenCalled()
   })
 })
+
+it('renames an alias and sends its candidates in the same update', async () => {
+  await setup()
+  const update = vi.spyOn(api, 'updateProxyAlias').mockResolvedValue({ ...route, name: 'smart' })
+  fireEvent.click(screen.getByRole('button', { name: 'Изменить алиас manual' }))
+  fireEvent.change(screen.getByLabelText('Имя алиаса'), { target: { value: 'smart' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }))
+  await waitFor(() => expect(update).toHaveBeenCalledWith('manual', {
+    name: 'smart', profile_ids: ['first', 'second', 'third'],
+  }))
+})
+
+it('blocks renaming to an existing manual alias', async () => {
+  vi.spyOn(api, 'getProxyRoutes').mockResolvedValue({ items: [route, { ...route, name: 'taken' }] })
+  vi.spyOn(api, 'getProfiles').mockResolvedValue({ items: [], issues: [] })
+  const update = vi.spyOn(api, 'updateProxyAlias')
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  render(<QueryClientProvider client={client}><ProxyPage /></QueryClientProvider>)
+  fireEvent.click(await screen.findByRole('button', { name: 'Изменить алиас manual' }))
+  fireEvent.change(screen.getByLabelText('Имя алиаса'), { target: { value: 'taken' } })
+  expect(screen.getByRole('button', { name: 'Сохранить' })).toBeDisabled()
+  expect(screen.getByText('Это имя уже занято ручным алиасом.')).toBeInTheDocument()
+  expect(update).not.toHaveBeenCalled()
+})

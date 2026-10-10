@@ -185,6 +185,14 @@ class ProxyService:
         await asyncio.to_thread(self.route_manager.create_alias, name, profile_ids)
         return await self._route_by_name(name)
 
+    async def update_alias(
+        self, current_name: str, name: str, profile_ids: list[str]
+    ) -> dict[str, Any]:
+        if self.route_manager is None:
+            raise AppError("route_unavailable", "Управление маршрутами недоступно", status_code=503)
+        await asyncio.to_thread(self.route_manager.update_alias, current_name, name, profile_ids)
+        return await self._route_by_name(name)
+
     async def delete_alias(self, name: str) -> None:
         if self.route_manager is None:
             raise AppError("route_unavailable", "Управление маршрутами недоступно", status_code=503)
@@ -234,10 +242,19 @@ class ProxyService:
                 )
             )
             profiles = await asyncio.to_thread(self.route_manager.profiles)
+            profile_ids_by_name = {
+                profile.name: profile.profile_id
+                for profile in profiles
+                if profile.profile_id is not None
+            }
             runtime = {
-                instance.profile_name: RuntimeModel(instance, metadata.get(instance.id, {}))
+                (
+                    instance.profile_id
+                    or profile_ids_by_name.get(instance.profile_name or "")
+                    or instance.profile_name
+                ): RuntimeModel(instance, metadata.get(instance.id, {}))
                 for instance in instances.values()
-                if instance.source == "managed" and instance.profile_name
+                if instance.source == "managed" and (instance.profile_id or instance.profile_name)
             }
             routes = await asyncio.to_thread(self.route_manager.snapshot, profiles, runtime)
             return observed, instances, metadata, routes
@@ -436,6 +453,7 @@ class ProxyService:
                         instance_id=candidate.instance_id or "",
                         engine_id=candidate.engine_id or "",
                         profile_name=candidate.profile_name,
+                        profile_id=candidate.profile_id if hasattr(candidate, "profile_id") else None,
                         observed_at=datetime.now(UTC),
                     )
                     token = _route_override.set(registered)
@@ -498,6 +516,7 @@ class ProxyService:
         if tracking is not None:
             tracking["pid"] = instance.pid
             tracking["profile_name"] = registered.profile_name
+            tracking["profile_id"] = registered.profile_id
             tracking["instance_id"] = registered.instance_id
             tracking["engine_id"] = registered.engine_id
             if self.journal is not None:
@@ -788,7 +807,7 @@ class ProxyService:
             return
         try:
             extra = dict(tracking if tracking is not None else _request_tracking.get() or {})
-            for key in ("profile_name", "instance_id", "engine_id"):
+            for key in ("profile_name", "profile_id", "instance_id", "engine_id"):
                 extra.pop(key, None)
             extra["finished_at"] = datetime.now(UTC)
             await self._write_journal(
@@ -797,6 +816,7 @@ class ProxyService:
                 route=route,
                 model_name=model_name,
                 profile_name=registered.profile_name,
+                profile_id=registered.profile_id,
                 instance_id=registered.instance_id,
                 engine_id=registered.engine_id,
                 status_code=status_code,
@@ -824,7 +844,7 @@ class ProxyService:
             return
         try:
             extra = dict(_request_tracking.get() or {})
-            for key in ("profile_name", "instance_id", "engine_id"):
+            for key in ("profile_name", "profile_id", "instance_id", "engine_id"):
                 extra.pop(key, None)
             extra["finished_at"] = datetime.now(UTC)
             await self._write_journal(

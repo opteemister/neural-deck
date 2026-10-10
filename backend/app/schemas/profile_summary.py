@@ -75,6 +75,7 @@ class ProfileEndpointSummary(BaseModel):
 class ProfileSummary(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    profile_id: str | None = None
     profile_name: str = Field(min_length=1)
     period: SummaryPeriod
     performance: ProfilePerformanceSummary

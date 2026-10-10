@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Literal
+from uuid import UUID
 
 from pydantic import (
     BaseModel,
@@ -60,6 +61,7 @@ class ProfileData(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     version: StrictInt
+    profile_id: StrictStr | None = Field(default=None, min_length=1)
     name: StrictStr = Field(min_length=1)
     model_name: StrictStr = Field(min_length=1)
     engine: ProfileEngine
@@ -89,6 +91,17 @@ class ProfileData(BaseModel):
     @classmethod
     def valid_name(cls, value: str) -> str:
         return _profile_name(value)
+
+    @field_validator("profile_id")
+    @classmethod
+    def valid_profile_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        try:
+            UUID(value)
+        except ValueError as exc:
+            raise ValueError("profile_id должен быть UUID") from exc
+        return value
 
     @field_validator("command")
     @classmethod

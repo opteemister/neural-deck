@@ -37,12 +37,13 @@ function numeric(item: Metric | undefined): number | null {
 }
 
 export function ModelPerformance({ instance, data }: { instance?: Instance; data?: MetricsData }) {
-  const historyKey = instance?.profile_name ?? instance?.id ?? 'all'
+  const profileId = instance?.profile_id ?? undefined
+  const historyKey = profileId ?? instance?.profile_name ?? instance?.id ?? 'all'
   const bootstrap = useQuery({ queryKey: ['metrics-bootstrap', historyKey],
-    queryFn: () => api.getMetricsHistory(instance?.profile_name ? { profile_name: instance.profile_name } : instance ? { pid: instance.pid } : { scope: 'all' }),
+    queryFn: () => profileId ? api.getMetricsHistory({ profile_id: profileId }) : instance?.profile_name ? api.getMetricsHistory({ profile_name: instance.profile_name }) : instance ? api.getMetricsHistory({ pid: instance.pid }) : api.getMetricsHistory({ scope: 'all' }),
     staleTime: Infinity, refetchOnWindowFocus: false, retry: false })
   const [histories, setHistories] = useState<Record<string, Point[]>>({})
-  const averages = useDailyMetricAggregates(historyKey, instance?.profile_name ? { profile_name: instance.profile_name } : instance ? { pid: instance.pid } : { scope: 'all' })
+  const averages = useDailyMetricAggregates(historyKey, profileId ? { profile_id: profileId } : instance?.profile_name ? { profile_name: instance.profile_name } : instance ? { pid: instance.pid } : { scope: 'all' })
   const [knownMetrics, setKnownMetrics] = useState<Record<string, Map<string, Metric>>>({})
   const history = histories[historyKey] ?? []
   const currentItems = new Map(data?.items.map((item) => [item.name, item]))

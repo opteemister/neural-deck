@@ -25,6 +25,7 @@ class Instance(BaseModel):
     id: str = Field(min_length=1)
     source: Literal["managed", "external"]
     profile_name: str | None = None
+    profile_id: str | None = None
     engine_id: str = Field(min_length=1)
     pid: int = Field(gt=0)
     process_start_time_ns: int | None = Field(default=None, gt=0)
@@ -82,6 +83,7 @@ class TokenCounts(BaseModel):
 class TokenStats(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    profile_id: str | None = None
     profile_name: str = Field(min_length=1)
     requests: int = Field(ge=0)
     input_tokens: TokenCounts

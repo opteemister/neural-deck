@@ -83,6 +83,7 @@ export interface Instance {
   id: string
   source: 'managed' | 'external'
   profile_name: string | null
+  profile_id?: string | null
   engine_id: string
   pid: number
   process_start_time_ns: number | null
@@ -278,6 +279,7 @@ export interface ProfileModelRef {
 
 export interface ProfileData {
   version: 1
+  profile_id?: string | null
   name: string
   model_name: string
   engine: ProfileEngineRef
@@ -313,6 +315,7 @@ export interface ProfileSummaryMetric {
 }
 
 export interface ProfileSummary {
+  profile_id?: string | null
   profile_name: string
   period: { from: string; to: string; timezone: 'UTC' }
   performance: { prefill_tps: ProfileSummaryMetric; decode_tps: ProfileSummaryMetric }
@@ -380,6 +383,7 @@ export interface StatisticsAggregate {
 }
 
 export interface StatisticsProfile extends StatisticsAggregate {
+  profile_id?: string | null
   profile_name: string
   model_name: string | null
   load: {
@@ -416,7 +420,7 @@ export interface StatisticsData {
     bucket: 'day'
     request_event_time: string
   }
-  filters: { model_name: string | null; profile_name: string | null }
+  filters: { model_name: string | null; profile_name: string | null; profile_id?: string | null }
   filters_options: { models: string[]; profiles: string[] }
   totals: StatisticsAggregate
   activity: Array<StatisticsAggregate & { date: string; benchmark: boolean }>
@@ -479,6 +483,7 @@ export interface LogData {
 }
 
 export interface TokenStatsItem {
+  profile_id?: string | null
   profile_name: string
   requests: number
   input_tokens: { known_total: number | null; unknown_requests: number }
@@ -597,7 +602,7 @@ export interface ApiErrorResponse {
 
 
 export interface MetricsHistoryData {
-  history: Array<MetricsData & { observed_at: string; profile_name?: string | null; pid?: number }>
+  history: Array<MetricsData & { observed_at: string; profile_name?: string | null; profile_id?: string | null; pid?: number }>
   current: (MetricsData & { observed_at: string }) | null
   peaks: Record<string, number>
   source: string

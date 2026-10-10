@@ -137,13 +137,17 @@ async def build_profile_summary(
 
     catalogue_items = await asyncio.to_thread(catalogue.items)
     resolutions = {
-        profile.name: resolve_effective_port(profile.engine.id, profile.command)
+        (profile.profile_id or profile.name): resolve_effective_port(profile.engine.id, profile.command)
         for profile in profiles
     }
     by_port: dict[int, list[str]] = {}
-    for profile_name, resolution in resolutions.items():
+    for profile_ref, resolution in resolutions.items():
         if resolution.port is not None:
-            by_port.setdefault(resolution.port, []).append(profile_name)
+            profile = next(
+                (item for item in profiles if (item.profile_id or item.name) == profile_ref),
+                None,
+            )
+            by_port.setdefault(resolution.port, []).append(profile.name if profile else profile_ref)
 
     instances: list[Instance] = []
     try:
@@ -160,9 +164,15 @@ async def build_profile_summary(
         instances = []
 
     active_by_profile: dict[str, Instance] = {}
+    profile_ids_by_name = {
+        profile.name: profile.profile_id
+        for profile in profiles
+        if profile.profile_id is not None
+    }
     for instance in instances:
-        if instance.profile_name is not None:
-            active_by_profile[instance.profile_name] = instance
+        profile_ref = instance.profile_id or profile_ids_by_name.get(instance.profile_name or "") or instance.profile_name
+        if profile_ref is not None:
+            active_by_profile[profile_ref] = instance
     current_results = await asyncio.gather(
         *(metrics.local(instance.id) for instance in active_by_profile.values()),
         return_exceptions=True,
@@ -173,14 +183,18 @@ async def build_profile_summary(
         if isinstance(result, MetricList)
     }
 
-    async def aggregates_for(profile_name: str) -> dict[str, dict[str, float]]:
+    async def aggregates_for(profile: ProfileData) -> dict[str, dict[str, float]]:
         if metrics.storage is None:
             return {}
         try:
-            result = await metrics.storage.aggregates(
-                start=start, end=end, profile_name=profile_name
-            )
-            peak = await metrics.storage.all_time_active_requests_max(profile_name)
+            try:
+                result = await metrics.storage.aggregates(
+                    start=start, end=end, profile_name=profile.name, profile_id=profile.profile_id
+                )
+                peak = await metrics.storage.all_time_active_requests_max(profile.name, profile.profile_id)
+            except TypeError:
+                result = await metrics.storage.aggregates(start=start, end=end, profile_name=profile.name)
+                peak = await metrics.storage.all_time_active_requests_max(profile.name)
             result.pop("active_requests", None)
             if peak is not None:
                 result["active_requests"] = {"max": peak}
@@ -190,30 +204,34 @@ async def build_profile_summary(
             # states when the historical store is temporarily unreadable.
             return {}
 
-    async def last_vram_for(profile_name: str) -> SummaryMetric:
+    async def last_vram_for(profile: ProfileData) -> SummaryMetric:
         value = None
         if metrics.storage is not None:
             try:
-                value = await metrics.storage.last_vram(profile_name)
+                try:
+                    value = await metrics.storage.last_vram(profile.name, profile.profile_id)
+                except TypeError:
+                    value = await metrics.storage.last_vram(profile.name)
             except Exception:
-                logging.getLogger(__name__).exception("Не удалось прочитать сохранённый VRAM профиля %s", profile_name)
+                logging.getLogger(__name__).exception(
+                    "Не удалось прочитать сохранённый VRAM профиля %s", profile.name
+                )
         return _metric(
             value, unit="bytes", state="ok" if value is not None else "unavailable",
             source="sqlite" if value is not None else "unavailable",
             reason="last_observed" if value is not None else "no_valid_samples",
         )
 
-    last_vram_results = await asyncio.gather(*(last_vram_for(p.name) for p in profiles))
-    aggregate_results = await asyncio.gather(
-        *(aggregates_for(profile.name) for profile in profiles)
-    )
+    last_vram_results = await asyncio.gather(*(last_vram_for(p) for p in profiles))
+    aggregate_results = await asyncio.gather(*(aggregates_for(profile) for profile in profiles))
     period = SummaryPeriod.model_validate({"from": start, "to": end, "timezone": "UTC"})
     result: list[ProfileSummary] = []
     for profile, aggregates, last_vram in zip(
         profiles, aggregate_results, last_vram_results, strict=True
     ):
+        profile_ref = profile.profile_id or profile.name
         current_vram = _current_metric(
-            current_by_profile.get(profile.name), "vram_bytes", unit="bytes"
+            current_by_profile.get(profile_ref), "vram_bytes", unit="bytes"
         )
         vram_avg = _aggregate_metric(aggregates, "vram_bytes", unit="bytes")
         vram_peak = _max_metric(aggregates, "vram_bytes", unit="bytes")
@@ -222,6 +240,7 @@ async def build_profile_summary(
             limit.value = float(int(limit.value))
         result.append(
             ProfileSummary(
+                profile_id=profile.profile_id,
                 profile_name=profile.name,
                 period=period,
                 performance=ProfilePerformanceSummary(
@@ -256,7 +275,7 @@ async def build_profile_summary(
                         reason="daily_load_not_collected",
                     )
                 ),
-                endpoint=_port_summary(resolutions[profile.name], by_port, profile.name),
+            endpoint=_port_summary(resolutions[profile_ref], by_port, profile.name),
             )
         )
     source = "sqlite" if metrics.storage is not None else "unavailable"

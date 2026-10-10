@@ -141,9 +141,10 @@ class ProcessManager:
                 start_ns = process_start_ns(pid) if pid else None
                 if start_ns is not None:
                     data["instance"] = Instance(
-                        id=f"managed/{quote(data['profile_name'], safe='')}/{pid}-{start_ns}",
+                        id=f"managed/{quote(data.get('profile_id') or data['profile_name'], safe='')}/{pid}-{start_ns}",
                         source="managed",
                         profile_name=data["profile_name"],
+                        profile_id=data.get("profile_id"),
                         engine_id=data["engine_id"],
                         pid=pid,
                         process_start_time_ns=start_ns,
@@ -194,7 +195,11 @@ class ProcessManager:
         async with self._guard:
             active = self._active_managed()
             active_external = [item.instance for item in self._external.values()]
-            if any(item.instance.profile_name == profile.name for item in active):
+            if any(
+                item.instance.profile_id == profile.profile_id
+                or (item.instance.profile_id is None and item.instance.profile_name == profile.name)
+                for item in active
+            ):
                 raise AppError(
                     "profile_already_running",
                     "Профиль уже запущен",
@@ -222,7 +227,7 @@ class ProcessManager:
                     status_code=409,
                     details={"port": port},
                 )
-            profile_dir = self.log_root / _safe_profile_dir(profile.name)
+            profile_dir = self.log_root / _safe_profile_dir(profile.profile_id or profile.name)
             profile_dir.mkdir(parents=True, exist_ok=True)
             with contextlib.suppress(OSError):
                 (profile_dir / ".profile-name").write_text(profile.name, encoding="utf-8")
@@ -239,6 +244,7 @@ class ProcessManager:
                     {
                         "unit_name": unit_name,
                         "profile_name": profile.name,
+                        "profile_id": profile.profile_id,
                         "engine_id": profile.engine.id,
                         "model_name": profile.model_name,
                         "port": port,
@@ -302,7 +308,7 @@ class ProcessManager:
                     status_code=503,
                     retryable=True,
                 )
-            instance_id = f"managed/{quote(profile.name, safe='')}/{pid}-{start_ns}"
+            instance_id = f"managed/{quote(profile.profile_id or profile.name, safe='')}/{pid}-{start_ns}"
             log_path = profile_dir / f"{pid}-{start_ns}.log"
             if unit_name is not None:
                 log_path = temporary_log
@@ -313,6 +319,7 @@ class ProcessManager:
                 id=instance_id,
                 source="managed",
                 profile_name=profile.name,
+                profile_id=profile.profile_id,
                 engine_id=profile.engine.id,
                 pid=pid,
                 process_start_time_ns=start_ns,

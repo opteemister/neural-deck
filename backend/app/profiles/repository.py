@@ -12,6 +12,7 @@ import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import yaml  # type: ignore[import-untyped]
 from pydantic import ValidationError
@@ -99,15 +100,11 @@ class ProfileRepository:
             profile = ProfileData.model_validate(raw)
         except ValidationError as exc:
             raise ValueError("ошибка схемы профиля: " + _validation_message(exc)) from exc
-        if profile.name != path.stem:
-            raise ValueError("поле name не совпадает с именем файла")
         validate_command_or_error(profile.command)
         return profile
 
-    def get(self, name: str) -> ProfileData:
-        path = self.profile_path(name)
-        if not path.exists():
-            raise AppError("profile_not_found", "Профиль не найден", status_code=404)
+    def get(self, identifier: str) -> ProfileData:
+        path = self._find_path(identifier)
         try:
             return self.read_file(path)
         except ValueError as exc:
@@ -117,6 +114,32 @@ class ProfileRepository:
                 status_code=422,
                 details={"file": path.name},
             ) from exc
+
+    def get_by_id(self, profile_id: str) -> ProfileData:
+        return self.get(profile_id)
+
+    def ensure_ids(self) -> None:
+        """Persist one stable UUID for legacy profile YAML files."""
+        seen: dict[str, Path] = {}
+        for path in self.profiles_dir.glob("*.yaml"):
+            if not path.is_file() or path.is_symlink():
+                continue
+            try:
+                profile = self.read_file(path)
+            except (OSError, ValueError, TypeError):
+                continue
+            if profile.profile_id is None:
+                profile = profile.model_copy(update={"profile_id": str(uuid4())})
+                self._atomic_write(path, profile)
+            previous = seen.get(profile.profile_id)
+            if previous is not None and previous != path:
+                raise AppError(
+                    "profile_id_conflict",
+                    "Один profile_id используется несколькими файлами профилей",
+                    status_code=422,
+                    details={"profile_id": profile.profile_id, "files": [previous.name, path.name]},
+                )
+            seen[profile.profile_id] = path
 
     def list(self) -> ProfileListData:
         items: list[ProfileData] = []
@@ -165,17 +188,25 @@ class ProfileRepository:
         self._atomic_write(path, profile)
         return self.get(profile.name)
 
-    def put(self, name: str, profile: ProfileData) -> ProfileData:
-        _safe_name(name)
-        if profile.name != name:
+    def put(self, identifier: str, profile: ProfileData) -> ProfileData:
+        path = self._find_path(identifier)
+        current = self.read_file(path)
+        if (
+            current.profile_id is not None
+            and profile.profile_id is not None
+            and profile.profile_id != current.profile_id
+        ):
             raise AppError(
-                "profile_name_mismatch",
-                "Имя профиля в пути и теле запроса различается",
+                "profile_id_mismatch",
+                "Идентификатор профиля нельзя изменить",
                 status_code=422,
             )
-        path = self.profile_path(name)
-        if not path.exists():
-            raise AppError("profile_not_found", "Профиль не найден", status_code=404)
+        profile = profile.model_copy(update={"profile_id": current.profile_id or profile.profile_id})
+        target = self.profile_path(profile.name)
+        if target.exists() and target != path:
+            raise AppError(
+                "profile_conflict", "Профиль с таким именем уже существует", status_code=409
+            )
         validate_command_or_error(profile.command)
         profile = profile.model_copy(
             update={
@@ -184,13 +215,13 @@ class ProfileRepository:
                 )
             }
         )
-        self._atomic_write(path, profile)
-        return self.get(name)
+        self._atomic_write(target, profile)
+        if target != path:
+            path.unlink()
+        return self.get(profile.name)
 
-    def delete(self, name: str) -> str:
-        path = self.profile_path(name)
-        if not path.exists():
-            raise AppError("profile_not_found", "Профиль не найден", status_code=404)
+    def delete(self, identifier: str) -> str:
+        path = self._find_path(identifier)
         if path.is_symlink():
             raise AppError(
                 "profile_invalid", "Символическая ссылка на профиль запрещена", status_code=422
@@ -210,7 +241,23 @@ class ProfileRepository:
                 os.fsync(directory_fd)
             finally:
                 os.close(directory_fd)
-        return name
+        return path.stem
+
+    def _find_path(self, identifier: str) -> Path:
+        try:
+            by_name = self.profile_path(identifier)
+        except AppError:
+            by_name = None
+        if by_name is not None and by_name.exists():
+            return by_name
+        for candidate in self.profiles_dir.glob("*.yaml"):
+            try:
+                profile = self.read_file(candidate)
+            except (OSError, ValueError, TypeError):
+                continue
+            if profile.profile_id == identifier:
+                return candidate
+        raise AppError("profile_not_found", "Профиль не найден", status_code=404)
 
     def _atomic_write(self, path: Path, profile: ProfileData) -> None:
         payload = profile.model_dump(mode="json")

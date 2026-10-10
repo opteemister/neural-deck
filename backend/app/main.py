@@ -17,6 +17,7 @@ from uuid import uuid4
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, Response
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -77,6 +78,57 @@ def _service_url(host: str, port: int) -> str:
     if ":" in display_host and not display_host.startswith("["):
         display_host = f"[{display_host}]"
     return f"http://{display_host}:{port}"
+
+
+async def _backfill_profile_ids(
+    profile_repository: ProfileRepository, session_factory: Any
+) -> None:
+    """Link legacy name-keyed history to the stable IDs stored in profile YAML."""
+
+    profile_repository.ensure_ids()
+    profiles = profile_repository.list().items
+    identities = {
+        profile.name: profile.profile_id
+        for profile in profiles
+        if profile.profile_id is not None
+    }
+    if not identities:
+        return
+    updated = 0
+    async with session_factory.begin() as session:
+        tables = (
+            "request_journal",
+            "metric_samples",
+            "metric_launch_extrema",
+            "profile_statistics",
+            "metric_daily",
+            "metric_concurrency_daily",
+        )
+        existing = set(
+            (
+                await session.execute(
+                    text(
+                        "SELECT name FROM sqlite_master "
+                        "WHERE type = 'table' AND name IN (" + ",".join(f"'{table}'" for table in tables) + ")"
+                    )
+                )
+            ).scalars()
+        )
+        if len(existing) != len(tables):
+            logger.warning("Миграция идентичности профилей пропущена: таблицы базы ещё не созданы")
+            return
+        for table in tables:
+            for profile_name, profile_id in identities.items():
+                result = await session.execute(
+                    text(
+                        f"UPDATE {table} SET profile_id = :profile_id "
+                        "WHERE profile_id IS NULL AND profile_name = :profile_name"
+                    ),
+                    {"profile_id": profile_id, "profile_name": profile_name},
+                )
+                updated += result.rowcount or 0
+    if updated:
+        logger.info("Миграция идентичности профилей: обновлено ссылок=%s", updated)
 
 
 def _configure_application_logging(log_path: Path) -> None:
@@ -303,6 +355,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             installation_resolver=engine_service.resolve_installation,
         )
         session_factory = create_session_factory(db_engine)
+        await _backfill_profile_ids(profile_repository, session_factory)
         journal_service = RequestJournalService(session_factory=session_factory)
         route_manager = RouteManager(paths.config_dir, profile_repository)
         proxy_service = ProxyService(
@@ -393,6 +446,7 @@ def _mcp_dependencies(app: FastAPI) -> MCPDependencies:
                     "upstream_model": item.upstream_model,
                     "instance_id": item.instance_id,
                     "engine_id": item.engine_id,
+                    "profile_id": item.profile_id,
                     "profile_name": item.profile_name,
                     "observed_at": item.observed_at,
                 }

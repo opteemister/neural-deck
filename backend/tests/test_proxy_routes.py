@@ -118,7 +118,7 @@ def test_auto_routes_group_profiles_and_report_runtime_availability(tmp_path: Pa
     assert ordered.candidate_profile_ids == ("second", "first")
 
 
-def test_alias_order_is_persisted_and_collisions_are_rejected(tmp_path: Path) -> None:
+def test_alias_order_is_persisted_and_only_duplicate_manual_names_are_rejected(tmp_path: Path) -> None:
     first = profile("first")
     second = profile("second")
     repository = ProfileRepositoryStub([first, second])
@@ -129,8 +129,9 @@ def test_alias_order_is_persisted_and_collisions_are_rejected(tmp_path: Path) ->
     route = next(route for route in manager.snapshot([first, second], {}) if route.name == "chat")
     assert route.candidate_profile_ids == ("second", "first")
 
-    with pytest.raises(AppError, match="совпадает"):
-        manager.create_alias("public-model", ["first"])
+    manager.create_alias("public-model", ["first"])
+    with pytest.raises(AppError, match="уже существует"):
+        manager.create_alias("public-model", ["second"])
     with pytest.raises(AppError, match="ASCII"):
         manager.create_alias("русский", ["first"])
     with pytest.raises(AppError, match="хотя бы один"):
@@ -177,3 +178,78 @@ async def test_route_failover_substitutes_upstream_model_and_uses_final_profile(
     assert '"model":"upstream-8001"' in requests[-1][1]
     assert journal.records[-1]["profile_name"] == "second"
     assert journal.records[-1]["instance_id"] == instances[1].id
+
+
+def test_alias_rename_and_membership_update_are_saved_together(tmp_path):
+    repository = ProfileRepositoryStub([profile("first"), profile("second")])
+    manager = RouteManager(tmp_path, repository)
+    manager.create_alias("chat", ["first", "second"])
+    manager.update_alias("chat", "smart", ["second", "first"])
+    reloaded = RouteManager(tmp_path, repository)
+    assert reloaded.config.load()["aliases"] == {"smart": ["second", "first"]}
+    assert reloaded.resolve("chat", repository.list().items, {}) is None
+
+
+@pytest.mark.parametrize("name", ["taken", "bad/name", ""])
+def test_alias_rename_rejects_conflicts_without_modifying_original(tmp_path, name):
+    manager = RouteManager(tmp_path, ProfileRepositoryStub([profile("first")]))
+    manager.create_alias("chat", ["first"])
+    manager.create_alias("taken", ["first"])
+    before = manager.config.path.read_bytes()
+    with pytest.raises(AppError):
+        manager.update_alias("chat", name, ["first"])
+    assert manager.config.path.read_bytes() == before
+
+
+@pytest.mark.asyncio
+async def test_later_profile_name_collision_is_consistent_in_catalogue_and_requests(tmp_path):
+    repository = ProfileRepositoryStub([profile("first")])
+    manager = RouteManager(tmp_path, repository)
+    manager.create_alias("chat", ["first"])
+    repository._profiles.append(profile("second", "chat"))
+    process_manager = ProcessManagerStub([instance("first", 8000), instance("second", 8001)])
+
+    def handler(request):
+        if request.method == "GET":
+            return httpx.Response(200, json={"data": [{"id": "chat"}]})
+        return httpx.Response(200, json={"model": "chat"})
+
+    service = ProxyService(process_manager, route_manager=manager,
+        client_factory=lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    routes = (await service.route_data())["items"]
+    conflicting = [route for route in routes if route["name"] == "chat"]
+    assert len(conflicting) == 1
+    assert conflicting[0]["candidate_profile_ids"] == ["first", "second"]
+    assert "chat" in [item["id"] for item in (await service.models())["data"]]
+    response = await service.forward(route="/v1/chat/completions", payload={"model": "chat", "messages": []},
+                                     headers={}, request_id="collision")
+    assert response.status_code == 200
+    manager.update_alias("chat", "smart", ["first"])
+    assert "chat" in [item["id"] for item in (await service.models())["data"]]
+
+
+@pytest.mark.asyncio
+async def test_management_api_updates_alias_name_and_candidates(tmp_path):
+    from fastapi import FastAPI
+    from app.api.dependencies import get_proxy_service
+    from app.api.proxy_routes import router
+
+    manager = RouteManager(tmp_path, ProfileRepositoryStub([profile("first"), profile("second")]))
+    manager.create_alias("old", ["first"])
+    service = ProxyService(ProcessManagerStub([]), route_manager=manager)
+    app = FastAPI()
+
+    @app.middleware("http")
+    async def request_id(request, call_next):
+        request.state.request_id = "alias-update-test"
+        return await call_next(request)
+
+    app.include_router(router)
+    app.dependency_overrides[get_proxy_service] = lambda: service
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.patch("/api/v1/proxy/routes/aliases/old", json={
+            "name": "new", "profile_ids": ["second", "first"],
+        })
+    assert response.status_code == 200
+    assert response.json()["data"]["name"] == "new"
+    assert manager.config.load()["aliases"] == {"new": ["second", "first"]}

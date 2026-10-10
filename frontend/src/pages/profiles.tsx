@@ -45,7 +45,7 @@ export function ProfilesPage() {
   const start = useMutation({ mutationFn: ({ name, configuration }: { name: string; configuration?: ProfileData }) => configuration ? api.startProfileConfiguration(configuration) : api.startProfile(name), onSuccess: (instance, variables) => { if (variables.configuration) { void queryClient.invalidateQueries({ queryKey: queryKeys.logs }); openLogs(variables.name) } queryClient.setQueryData<SystemData>(queryKeys.system, (current) => current ? { ...current, instances: [...current.instances.filter((item) => item.id !== instance.id), instance] } : current); void queryClient.invalidateQueries({ queryKey: queryKeys.system }); void queryClient.invalidateQueries({ queryKey: queryKeys.instances }); void queryClient.invalidateQueries({ queryKey: queryKeys.models }); void queryClient.invalidateQueries({ queryKey: queryKeys.profileSummary }) } })
   const stop = useMutation({ mutationFn: api.stopInstance, onSuccess: () => { void queryClient.invalidateQueries({ queryKey: queryKeys.system }); void queryClient.invalidateQueries({ queryKey: queryKeys.instances }); void queryClient.invalidateQueries({ queryKey: queryKeys.models }); void queryClient.invalidateQueries({ queryKey: queryKeys.profileSummary }) } })
   const runtimeInstances = useMemo(() => system.data?.instances ?? [], [system.data?.instances])
-  const orderedProfiles = useMemo(() => [...(profiles.data?.items ?? [])].sort((left, right) => Number(profileRuntimeStatus(right.name, runtimeInstances).processPresent) - Number(profileRuntimeStatus(left.name, runtimeInstances).processPresent)), [profiles.data?.items, runtimeInstances])
+  const orderedProfiles = useMemo(() => [...(profiles.data?.items ?? [])].sort((left, right) => Number(profileRuntimeStatus(right, runtimeInstances).processPresent) - Number(profileRuntimeStatus(left, runtimeInstances).processPresent)), [profiles.data?.items, runtimeInstances])
 
   useEffect(() => { if (isNew) setForm(emptyForm) }, [isNew])
   useEffect(() => { if (detail.data && selectedName) setForm(profileToForm(detail.data)) }, [detail.data, selectedName])
@@ -67,7 +67,7 @@ export function ProfilesPage() {
   function formConfiguration(): ProfileData | null {
     const installation = readyInstallations.find((item) => item.id === form.installationId)
     if (!installation || !form.name.trim() || !form.modelName.trim() || !form.modelPath.trim() || !form.command.trim()) return null
-    return { version: 1, name: form.name.trim(), model_name: form.modelName.trim(), engine: { id: installation.engine_id, installation_id: installation.id }, model: { path: form.modelPath.trim(), ...(form.draftPath ? { draft_path: form.draftPath } : {}) }, command: form.command, environment: parseEnvironment(form.environment), autostart: form.autostart, enable_metrics: form.enableMetrics, input_price_usd_per_million_tokens: parsePrice(form.inputPrice), cached_input_price_usd_per_million_tokens: parsePrice(form.cachedInputPrice), output_price_usd_per_million_tokens: parsePrice(form.outputPrice) }
+    return { version: 1, profile_id: selectedName ? detail.data?.profile_id ?? null : crypto.randomUUID(), name: form.name.trim(), model_name: form.modelName.trim(), engine: { id: installation.engine_id, installation_id: installation.id }, model: { path: form.modelPath.trim(), ...(form.draftPath ? { draft_path: form.draftPath } : {}) }, command: form.command, environment: parseEnvironment(form.environment), autostart: form.autostart, enable_metrics: form.enableMetrics, input_price_usd_per_million_tokens: parsePrice(form.inputPrice), cached_input_price_usd_per_million_tokens: parsePrice(form.cachedInputPrice), output_price_usd_per_million_tokens: parsePrice(form.outputPrice) }
   }
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -76,12 +76,12 @@ export function ProfilesPage() {
     if (selectedName) update.mutate({ name: selectedName, body })
     else create.mutate(body)
   }
-  function requestStart(name: string, editing: boolean) {
-    if (start.isPending || profileRuntimeStatus(name, runtimeInstances).processPresent) return
-    if (!editing) { start.mutate({ name }); return }
+  function requestStart(profile: ProfileData, editing: boolean) {
+    if (start.isPending || profileRuntimeStatus(profile, runtimeInstances).processPresent) return
+    if (!editing) { start.mutate({ name: profile.name }); return }
     if (!document.querySelector<HTMLFormElement>('#profile-editor-form')?.reportValidity()) return
     const configuration = formConfiguration()
-    if (configuration) start.mutate({ name, configuration })
+    if (configuration) start.mutate({ name: profile.name, configuration })
   }
   function requestDelete(name: string) { if (window.confirm(`Удалить профиль «${name}»? Файл конфигурации будет удалён. Запущенный процесс остановлен не будет.`)) void remove.mutate(name) }
 
@@ -92,8 +92,8 @@ export function ProfilesPage() {
     {remove.isError && <div className="mb-4"><QueryError error={remove.error} label="Профиль не удалось удалить" /></div>}
     {profiles.isLoading ? <QueryLoading label="Читаем YAML-профили" /> : profiles.isError ? <QueryError error={profiles.error} retry={() => void profiles.refetch()} label="Список профилей недоступен" /> : !profiles.data ? <QueryLoading label="Ожидаем профили" /> : <div className="space-y-2">{profiles.data.issues.length > 0 && <Issues issues={profiles.data.issues} />}{orderedProfiles.length === 0 ? <QueryEmpty title="Профилей нет" description="Создайте первый профиль, чтобы запускать локальные модели." /> : orderedProfiles.map((profile) => {
       const isEditing = selectedName === profile.name
-      const editor = isEditing ? (detail.isLoading ? <QueryLoading label="Получаем профиль" /> : detail.isError ? <QueryError error={detail.error} retry={() => void detail.refetch()} label="Профиль недоступен" /> : <ProfileEditor embedded form={form} updateForm={updateForm} localModels={localModels.data?.items ?? []} gpus={system.data?.gpus ?? []} readyInstallations={readyInstallations} nameLocked onSubmit={submit} onCancel={closeEditor} saving={create.isPending || update.isPending} error={create.error ?? update.error} format={() => void format.mutate()} formatting={format.isPending} formatted={format.data?.changed} formatReason={format.data?.reason} saved={saved} />) : undefined
-      return <ProfileCard key={profile.name} profile={profile} summary={summaries.data?.items.find((item) => item.profile_name === profile.name)} summaryLoading={summaries.isLoading} modelsRoot={settings.data?.models_root} installation={readyInstallations.find((item) => item.id === profile.engine.installation_id)} runtime={system.isLoading ? { label: 'Проверяем…', tone: 'idle', processPresent: false } : profileRuntimeStatus(profile.name, runtimeInstances)} edit={() => openEdit(profile.name)} cancel={closeEditor} editing={isEditing} editor={editor} start={() => requestStart(profile.name, isEditing)} starting={start.isPending && start.variables?.name === profile.name} startDisabled={start.isPending || (isEditing && (!detail.data || detail.isLoading || detail.isError || !formConfiguration()))} stop={(id) => stop.mutate(id)} stoppingId={stop.isPending ? stop.variables : undefined} remove={() => requestDelete(profile.name)} removing={remove.isPending && remove.variables === profile.name} />
+      const editor = isEditing ? (detail.isLoading ? <QueryLoading label="Получаем профиль" /> : detail.isError ? <QueryError error={detail.error} retry={() => void detail.refetch()} label="Профиль недоступен" /> : <ProfileEditor embedded form={form} updateForm={updateForm} localModels={localModels.data?.items ?? []} gpus={system.data?.gpus ?? []} readyInstallations={readyInstallations} nameLocked={false} onSubmit={submit} onCancel={closeEditor} saving={create.isPending || update.isPending} error={create.error ?? update.error} format={() => void format.mutate()} formatting={format.isPending} formatted={format.data?.changed} formatReason={format.data?.reason} saved={saved} />) : undefined
+      return <ProfileCard key={profile.profile_id ?? profile.name} profile={profile} summary={summaries.data?.items.find((item) => item.profile_id === profile.profile_id || (item.profile_id == null && item.profile_name === profile.name))} summaryLoading={summaries.isLoading} modelsRoot={settings.data?.models_root} installation={readyInstallations.find((item) => item.id === profile.engine.installation_id)} runtime={system.isLoading ? { label: 'Проверяем…', tone: 'idle', processPresent: false } : profileRuntimeStatus(profile, runtimeInstances)} edit={() => openEdit(profile.name)} cancel={closeEditor} editing={isEditing} editor={editor} start={() => requestStart(profile, isEditing)} starting={start.isPending && start.variables?.name === profile.name} startDisabled={start.isPending || (isEditing && (!detail.data || detail.isLoading || detail.isError || !formConfiguration()))} stop={(id) => stop.mutate(id)} stoppingId={stop.isPending ? stop.variables : undefined} remove={() => requestDelete(profile.name)} removing={remove.isPending && remove.variables === profile.name} />
     })}</div>}
   </div>
 }
@@ -196,8 +196,8 @@ function RuntimeStatus({ status, profileName }: { status: RuntimeStatus; profile
   const className = 'inline-flex items-center gap-1.5 text-inherit'
   return <button type="button" onClick={() => openLogs(profileName)} className={`${className} rounded-sm underline underline-offset-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-copper`} aria-label={`${status.label}: открыть логи профиля «${profileName}»`} title={`Логи профиля «${profileName}»`}>{content}</button>
 }
-function profileRuntimeStatus(name: string, instances: Instance[]): RuntimeStatus {
-  const instance = instances.filter((item) => item.profile_name === name).sort((left, right) => {
+function profileRuntimeStatus(profile: ProfileData, instances: Instance[]): RuntimeStatus {
+  const instance = instances.filter((item) => item.profile_id === profile.profile_id || (item.profile_id == null && item.profile_name === profile.name)).sort((left, right) => {
     const active = (item: Instance) => ['starting', 'ready', 'running', 'stopping'].includes(item.state)
     return Number(active(right)) - Number(active(left)) || right.observed_at.localeCompare(left.observed_at) || runtimePriority(right.state) - runtimePriority(left.state)
   })[0]

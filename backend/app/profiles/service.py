@@ -8,6 +8,7 @@ import logging
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from ..errors import AppError
 from ..schemas.profiles import FormatScriptResult, ProfileData, ProfileListData
@@ -36,18 +37,24 @@ class ProfileService:
         self.autostart_issues: list[dict[str, str]] = []
 
     def list(self) -> ProfileListData:
+        self.repository.ensure_ids()
         return self.repository.list()
 
     def get(self, name: str) -> ProfileData:
+        self.repository.ensure_ids()
         return self.repository.get(name)
 
     def create(self, profile: ProfileData) -> ProfileData:
+        if profile.profile_id is None:
+            profile = profile.model_copy(update={"profile_id": str(uuid4())})
         return self.repository.create(profile)
 
     def put(self, name: str, profile: ProfileData) -> ProfileData:
+        self.repository.ensure_ids()
         return self.repository.put(name, profile)
 
     def delete(self, name: str) -> str:
+        self.repository.ensure_ids()
         return self.repository.delete(name)
 
     def format_script(self, script: str) -> FormatScriptResult:

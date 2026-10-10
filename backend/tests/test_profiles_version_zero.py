@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import shlex
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from app.errors import AppError
@@ -61,6 +62,19 @@ def test_profile_list_keeps_valid_files_when_another_yaml_is_broken(tmp_path: Pa
     listed = repository.list()
     assert [item.name for item in listed.items] == ["demo"]
     assert listed.issues and listed.issues[0].file == "broken.yaml"
+
+
+def test_profile_id_survives_display_name_rename(tmp_path: Path) -> None:
+    repository = ProfileRepository(tmp_path / "profiles")
+    original = profile().model_copy(update={"profile_id": str(uuid4())})
+    repository.create(original)
+    stored = repository.get("demo")
+    renamed = stored.model_copy(update={"name": "renamed", "profile_id": stored.profile_id})
+    saved = repository.put("demo", renamed)
+    assert saved.profile_id == stored.profile_id
+    assert saved.name == "renamed"
+    assert not (tmp_path / "profiles" / "demo.yaml").exists()
+    assert repository.get(saved.profile_id or "") == saved
 
 
 def test_profile_placeholder_rules_and_safe_quoting() -> None:

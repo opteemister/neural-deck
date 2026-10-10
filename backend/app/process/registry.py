@@ -15,6 +15,7 @@ class RegisteredModel:
     instance_id: str
     engine_id: str
     profile_name: str | None
+    profile_id: str | None
     observed_at: datetime
 
 
@@ -52,6 +53,7 @@ class ModelRegistry:
                 instance_id=instance.id,
                 engine_id=instance.engine_id,
                 profile_name=instance.profile_name,
+                profile_id=instance.profile_id,
                 observed_at=datetime.now(UTC),
             )
             self._models[public_name] = item

@@ -43,6 +43,7 @@ class RequestJournalService:
         route: str,
         model_name: str,
         profile_name: str | None,
+        profile_id: str | None = None,
         instance_id: str | None,
         engine_id: str | None,
         status_code: int | None,
@@ -60,6 +61,7 @@ class RequestJournalService:
             if existing is not None:
                 for key, value in {
                     "profile_name": profile_name,
+                    "profile_id": profile_id,
                     "instance_id": instance_id,
                     "engine_id": engine_id,
                     "status_code": status_code,
@@ -83,6 +85,7 @@ class RequestJournalService:
                     created_at=created_at,
                     route=route,
                     model_name=model_name,
+                    profile_id=profile_id,
                     profile_name=profile_name,
                     instance_id=instance_id,
                     engine_id=engine_id,
@@ -169,7 +172,7 @@ class RequestJournalService:
             await session.commit()
 
     async def token_history(
-        self, *, profile_name: str | None = None, pid: int | None = None
+        self, *, profile_name: str | None = None, profile_id: str | None = None, pid: int | None = None
     ) -> dict[str, Any]:
         now = datetime.now(UTC)
         # 23 complete clock hours plus the current hour; boundaries stay put
@@ -199,6 +202,8 @@ class RequestJournalService:
         ).group_by(bucket)
         if profile_name is not None:
             query = query.where(RequestJournalRecord.profile_name == profile_name)
+        if profile_id is not None:
+            query = query.where(RequestJournalRecord.profile_id == profile_id)
         if pid is not None:
             query = query.where(RequestJournalRecord.pid == pid)
         async with self._session_factory() as session:
@@ -223,6 +228,7 @@ class RequestJournalService:
         self,
         *,
         profile_name: str | None = None,
+        profile_id: str | None = None,
         pid: int | None = None,
         client_id: int | None = None,
         from_: datetime | None = None,
@@ -238,6 +244,7 @@ class RequestJournalService:
         query = select(RequestJournalRecord)
         for field, value in (
             ("profile_name", profile_name),
+            ("profile_id", profile_id),
             ("pid", pid),
             ("client_id", client_id),
         ):
@@ -297,17 +304,28 @@ class RequestJournalService:
         self,
         *,
         profile_name: str | None = None,
+        profile_id: str | None = None,
         from_: datetime | None = None,
         to: datetime | None = None,
     ) -> TokenStatsData:
         conditions: list[Any] = []
         if profile_name is not None:
             conditions.append(RequestJournalRecord.profile_name == profile_name)
+        if profile_id is not None:
+            conditions.append(RequestJournalRecord.profile_id == profile_id)
         if from_ is not None:
             conditions.append(RequestJournalRecord.created_at >= from_)
         if to is not None:
             conditions.append(RequestJournalRecord.created_at <= to)
-        profile = func.coalesce(RequestJournalRecord.profile_name, "external").label("profile_name")
+        profile_key = func.coalesce(
+            RequestJournalRecord.profile_id,
+            RequestJournalRecord.profile_name,
+            "external",
+        )
+        profile = func.coalesce(
+            func.max(RequestJournalRecord.profile_name), "external"
+        ).label("profile_name")
+        profile_id_column = func.max(RequestJournalRecord.profile_id).label("profile_id")
         input_known = func.sum(RequestJournalRecord.input_tokens).label("input_known")
         output_known = func.sum(RequestJournalRecord.output_tokens).label("output_known")
         input_unknown = func.sum(
@@ -319,6 +337,7 @@ class RequestJournalService:
         query = (
             select(
                 profile,
+                profile_id_column,
                 func.count(RequestJournalRecord.id).label("requests"),
                 input_known,
                 input_unknown,
@@ -326,14 +345,15 @@ class RequestJournalService:
                 output_unknown,
             )
             .where(*conditions)
-            .group_by(profile)
-            .order_by(profile)
+            .group_by(profile_key)
+            .order_by(profile_key)
         )
         async with self._session_factory() as session:
             rows = (await session.execute(query)).all()
         return TokenStatsData(
             items=[
                 TokenStats(
+                    profile_id=row.profile_id,
                     profile_name=str(row.profile_name),
                     requests=int(row.requests or 0),
                     input_tokens=TokenCounts(

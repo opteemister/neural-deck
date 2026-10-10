@@ -67,7 +67,7 @@ class RouteInfo:
 
     @property
     def available(self) -> bool:
-        return any(candidate.available for candidate in self.candidates)
+        return not self.diagnostics and any(candidate.available for candidate in self.candidates)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -206,7 +206,40 @@ class RouteManager:
         self.profile_repository = profile_repository
 
     def profiles(self) -> list[ProfileData]:
-        return self.profile_repository.list().items
+        ensure_ids = getattr(self.profile_repository, "ensure_ids", None)
+        if ensure_ids is not None:
+            ensure_ids()
+        profiles = self.profile_repository.list().items
+        self._migrate_saved_refs(profiles)
+        return profiles
+
+    def _migrate_saved_refs(self, profiles: list[ProfileData]) -> None:
+        """Canonicalise legacy name references in route YAML to profile IDs.
+
+        A route file may predate stable profile IDs and therefore contain
+        display names.  Names that no longer resolve are deliberately kept as
+        dangling references so the management response can show
+        ``profile_missing`` instead of silently dropping history.
+        """
+        config = self.config.load()
+        by_name = {profile.name: profile.profile_id for profile in profiles if profile.profile_id}
+        changed = False
+        for section in ("auto_routes", "aliases"):
+            for name, refs in config[section].items():
+                migrated: list[str] = []
+                for ref in refs:
+                    canonical = by_name.get(ref, ref)
+                    if canonical != ref:
+                        changed = True
+                    if canonical not in migrated:
+                        migrated.append(canonical)
+                    elif canonical != ref:
+                        changed = True
+                if migrated != refs:
+                    config[section][name] = migrated
+                    changed = True
+        if changed:
+            self.config.save(config)
 
     def snapshot(
         self,
@@ -214,31 +247,57 @@ class RouteManager:
         runtime: Mapping[str, RuntimeModel],
     ) -> list[RouteInfo]:
         config = self.config.load()
-        by_name = {profile.name: profile for profile in profiles}
+        by_ref = {
+            reference: profile
+            for profile in profiles
+            for reference in (profile.profile_id, profile.name)
+            if reference
+        }
         grouped: dict[str, list[str]] = defaultdict(list)
         for profile in profiles:
-            grouped[profile.model_name].append(profile.name)
-        for names in grouped.values():
-            names.sort()
+            grouped[profile.model_name].append(profile.profile_id or profile.name)
+        for refs in grouped.values():
+            refs.sort(key=lambda reference: self._runtime_order_key(reference, runtime))
 
-        route_names = set(grouped) | set(config["auto_routes"])
+        route_names = set(grouped) | set(config["auto_routes"]) | set(config["aliases"])
         routes: list[RouteInfo] = []
         for name in sorted(route_names):
-            refs = self._ordered(
-                config["auto_routes"].get(name, []), grouped.get(name, [])
-            )
-            refs = [profile_id for profile_id in refs if profile_id in runtime]
-            routes.append(self._build_route(name, "auto", refs, by_name, runtime))
-
-        auto_names = set(route_names)
-        for name, refs in config["aliases"].items():
-            diagnostics: list[str] = []
-            if name in auto_names or name in grouped:
-                diagnostics.append("route_name_collision")
+            explicit = config["aliases"].get(name)
+            if explicit is None:
+                live_refs = [reference for reference in grouped.get(name, []) if reference in runtime]
+                refs = self._ordered(config["auto_routes"].get(name, []), live_refs)
+            else:
+                refs = list(dict.fromkeys(explicit))
+                live_auto = [
+                    reference
+                    for reference, item in runtime.items()
+                    if reference not in refs
+                    and (profile := by_ref.get(reference)) is not None
+                    and profile.model_name == name
+                    and item.instance.state not in {"exited", "error", "stopping"}
+                ]
+                live_auto.sort(key=lambda reference: self._runtime_order_key(reference, runtime))
+                refs.extend(live_auto)
             routes.append(
-                self._build_route(name, "alias", refs, by_name, runtime, diagnostics)
+                self._build_route(
+                    name,
+                    "alias" if explicit is not None else "auto",
+                    refs,
+                    by_ref,
+                    runtime,
+                )
             )
-        return sorted(routes, key=lambda route: (route.name, route.kind))
+        return routes
+
+    @staticmethod
+    def _runtime_order_key(
+        reference: str, runtime: Mapping[str, RuntimeModel]
+    ) -> tuple[int, int, str]:
+        item = runtime.get(reference)
+        if item is None:
+            return (1, 0, reference)
+        started = item.instance.process_start_time_ns or 0
+        return (0, started, reference)
 
     def resolve(
         self,
@@ -265,6 +324,17 @@ class RouteManager:
         config["aliases"][name] = list(profile_ids)
         self.config.save(config)
 
+    def update_alias(self, current_name: str, name: str, profile_ids: list[str]) -> None:
+        config = self.config.load()
+        if current_name not in config["aliases"]:
+            raise AppError("route_not_found", "Алиас не найден", status_code=404)
+        if name != current_name and name in config["aliases"]:
+            raise AppError("route_conflict", "Алиас с таким именем уже существует", status_code=409)
+        self._validate_alias(name, profile_ids, self.profiles(), allow_existing_name=current_name)
+        del config["aliases"][current_name]
+        config["aliases"][name] = list(profile_ids)
+        self.config.save(config)
+
     def delete_alias(self, name: str) -> None:
         config = self.config.load()
         if name not in config["aliases"]:
@@ -275,13 +345,18 @@ class RouteManager:
     def update_order(self, name: str, profile_ids: list[str]) -> None:
         profiles = self.profiles()
         config = self.config.load()
-        by_name = {profile.name: profile for profile in profiles}
+        by_name = {
+            reference: profile
+            for profile in profiles
+            for reference in (profile.name, profile.profile_id)
+            if reference
+        }
         if name in config["aliases"]:
             self._validate_alias_members(profile_ids)
             self._validate_profile_ids(profile_ids, by_name)
             config["aliases"][name] = list(profile_ids)
         else:
-            matching = [profile.name for profile in profiles if profile.model_name == name]
+            matching = [profile.profile_id or profile.name for profile in profiles if profile.model_name == name]
             if not matching and name not in config["auto_routes"]:
                 raise AppError("route_not_found", "Маршрут не найден", status_code=404)
             if set(profile_ids) != set(matching):
@@ -294,7 +369,7 @@ class RouteManager:
         self.config.save(config)
 
     def _validate_alias(
-        self, name: str, profile_ids: list[str], profiles: list[ProfileData]
+        self, name: str, profile_ids: list[str], profiles: list[ProfileData], *, allow_existing_name: str | None = None
     ) -> None:
         if not ALIAS_NAME_RE.fullmatch(name):
             raise AppError(
@@ -303,24 +378,16 @@ class RouteManager:
                 "буквы, цифры, точку, дефис или подчёркивание",
                 status_code=422,
             )
-        by_name = {profile.name: profile for profile in profiles}
-        if any(profile.model_name == name for profile in profiles):
-            raise AppError(
-                "route_name_collision",
-                "Имя алиаса совпадает с публичным именем профиля",
-                status_code=409,
-                details={"name": name},
-            )
         config = self.config.load()
-        if name in config["auto_routes"]:
+        if name in config["aliases"] and name != allow_existing_name:
             raise AppError(
-                "route_name_collision",
-                "Имя алиаса совпадает с auto-route",
+                "route_conflict",
+                "Ручной алиас с таким именем уже существует",
                 status_code=409,
                 details={"name": name},
             )
         self._validate_alias_members(profile_ids)
-        self._validate_profile_ids(profile_ids, by_name)
+        self._validate_profile_ids(profile_ids, {ref: profile for profile in profiles for ref in (profile.name, profile.profile_id) if ref})
 
     @staticmethod
     def _validate_alias_members(profile_ids: list[str]) -> None:

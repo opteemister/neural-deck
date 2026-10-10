@@ -9,7 +9,7 @@ import math
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..schemas.instances import Metric
@@ -97,9 +97,18 @@ def fold(row: MetricSample, daily: dict, curves: dict, baselines: dict) -> None:
     if row.profile_name is None:
         return
     at = row.observed_at.replace(tzinfo=UTC) if row.observed_at.tzinfo is None else row.observed_at
-    identity = (row.profile_name, row.model_name or "", row.engine_id)
+    profile_ref = row.profile_id or row.profile_name
+    identity = (profile_ref, row.model_name or "", row.engine_id)
     key = (at.astimezone(UTC).date().isoformat(), *identity)
-    day = daily.setdefault(key, {"statistics": {}, "distributions": {}})
+    day = daily.setdefault(
+        key,
+        {
+            "profile_name": row.profile_name,
+            "profile_id": row.profile_id,
+            "statistics": {},
+            "distributions": {},
+        },
+    )
     run = json.dumps([*identity, row.pid])
     state = baselines.setdefault(run, {"seen": {}, "histograms": {}})
     state["last_at"] = at.isoformat()
@@ -119,7 +128,15 @@ def fold(row: MetricSample, daily: dict, curves: dict, baselines: dict) -> None:
                 while left < active_at:
                     right = min(active_at, left.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1))
                     interval_key = (left.date().isoformat(), *identity)
-                    interval_day = daily.setdefault(interval_key, {"statistics": {}, "distributions": {}})
+                    interval_day = daily.setdefault(
+                        interval_key,
+                        {
+                            "profile_name": row.profile_name,
+                            "profile_id": row.profile_id,
+                            "statistics": {},
+                            "distributions": {},
+                        },
+                    )
                     add_measurement(interval_day["statistics"].setdefault("active_requests_time", {}),
                                     previous_active["requests"], (right - left).total_seconds())
                     left = right
@@ -182,21 +199,31 @@ def fold(row: MetricSample, daily: dict, curves: dict, baselines: dict) -> None:
             or state.get("curve_seen") == measured.isoformat()):
         return
     state["curve_seen"] = measured.isoformat()
-    stats = curves.setdefault((*key, int(current_n)), {})
+    curve = curves.setdefault(
+        (*key, int(current_n)),
+        {"profile_name": row.profile_name, "profile_id": row.profile_id, "statistics": {}},
+    )
+    stats = curve["statistics"]
     add_measurement(stats, speed, elapsed)
     add_measurement(day["statistics"].setdefault("per_request_tps", {}), speed / current_n, elapsed)
 
 
 async def load_and_fold(
     session: AsyncSession, *, first_day: str | None = None, profile_name: str | None = None,
+    profile_id: str | None = None,
     end: datetime | None = None,
 ) -> tuple[dict, dict, dict, int]:
     checkpoint = await session.get(MetricArchiveCheckpoint, 1)
     cursor = checkpoint.last_sample_id if checkpoint else 0
     baselines = copy.deepcopy(checkpoint.baselines) if checkpoint else {}
     query = select(MetricSample).where(MetricSample.id > cursor).order_by(MetricSample.id)
-    if profile_name is not None:
+    if profile_name is not None and profile_id is None:
         query = query.where(MetricSample.profile_name == profile_name)
+    if profile_id is not None:
+        query = query.where(or_(
+            MetricSample.profile_id == profile_id,
+            and_(MetricSample.profile_id.is_(None), MetricSample.profile_name == profile_name),
+        ))
     if end is not None:
         query = query.where(MetricSample.observed_at < end)
     rows = (await session.scalars(query)).all()
@@ -214,17 +241,32 @@ async def load_and_fold(
     else:
         daily_query = daily_query.where(MetricDaily.day.in_(touched_days))
         curve_query = curve_query.where(MetricConcurrencyDaily.day.in_(touched_days))
-    if profile_name is not None:
+    if profile_name is not None and profile_id is None:
         daily_query = daily_query.where(MetricDaily.profile_name == profile_name)
         curve_query = curve_query.where(MetricConcurrencyDaily.profile_name == profile_name)
+    if profile_id is not None:
+        daily_query = daily_query.where(or_(
+            MetricDaily.profile_id == profile_id,
+            and_(MetricDaily.profile_id.is_(None), MetricDaily.profile_name == profile_name),
+        ))
+        curve_query = curve_query.where(or_(
+            MetricConcurrencyDaily.profile_id == profile_id,
+            and_(MetricConcurrencyDaily.profile_id.is_(None), MetricConcurrencyDaily.profile_name == profile_name),
+        ))
     daily = {
-        (r.day, r.profile_name, r.model_name, r.engine_id): {
+        (r.day, r.profile_id or r.profile_name, r.model_name, r.engine_id): {
+            "profile_name": r.profile_name,
+            "profile_id": r.profile_id,
             "statistics": copy.deepcopy(r.statistics),
             "distributions": copy.deepcopy(r.distributions),
         } for r in (await session.scalars(daily_query)).all()
     }
     curves = {
-        (r.day, r.profile_name, r.model_name, r.engine_id, r.requests): copy.deepcopy(r.statistics)
+        (r.day, r.profile_id or r.profile_name, r.model_name, r.engine_id, r.requests): {
+            "profile_name": r.profile_name,
+            "profile_id": r.profile_id,
+            "statistics": copy.deepcopy(r.statistics),
+        }
         for r in (await session.scalars(curve_query)).all()
     }
     def fold_pending() -> int:
@@ -244,12 +286,14 @@ async def archive_before_cleanup(session: AsyncSession) -> int:
     daily, curves, baselines, cursor = await load_and_fold(session)
     for key, value in daily.items():
         await session.merge(MetricDaily(
-            day=key[0], profile_name=key[1], model_name=key[2], engine_id=key[3], **value
+            day=key[0], profile_name=value["profile_name"], profile_id=value["profile_id"],
+            model_name=key[2], engine_id=key[3],
+            statistics=value["statistics"], distributions=value["distributions"],
         ))
-    for key, stats in curves.items():
+    for key, item in curves.items():
         await session.merge(MetricConcurrencyDaily(
-            day=key[0], profile_name=key[1], model_name=key[2], engine_id=key[3],
-            requests=key[4], statistics=stats,
+            day=key[0], profile_name=item["profile_name"], profile_id=item["profile_id"],
+            model_name=key[2], engine_id=key[3], requests=key[4], statistics=item["statistics"],
         ))
     await session.merge(MetricArchiveCheckpoint(id=1, last_sample_id=cursor, baselines=baselines))
     await session.flush()
@@ -257,38 +301,44 @@ async def archive_before_cleanup(session: AsyncSession) -> int:
 
 
 async def historical_statistics(session: AsyncSession, *, profile_name: str | None,
+                                profile_id: str | None = None,
                                 days: int, curve: bool) -> dict[str, Any]:
     first_day = (datetime.now(UTC).date() - timedelta(days=days - 1)).isoformat()
     daily, curves, _, _ = await load_and_fold(
-        session, first_day=first_day, profile_name=profile_name,
+        session, first_day=first_day, profile_name=profile_name, profile_id=profile_id,
     )
     if curve:
         groups: dict[tuple, dict] = {}
-        for (day, profile, model, engine, requests), stats in curves.items():
-            if day < first_day or (profile_name is not None and profile != profile_name):
+        for (day, profile, model, engine, requests), item in curves.items():
+            if day < first_day:
                 continue
+            stats = item["statistics"]
             target = groups.setdefault((profile, model, engine, requests), {
+                "profile_name": item["profile_name"],
+                "profile_id": item["profile_id"],
                 "sum": 0.0, "weight": 0.0, "count": 0, "max": 0.0,
             })
             for field in ("sum", "weight", "count"):
                 target[field] += stats[field]
             target["max"] = max(target["max"], stats["max"])
         return {"items": [{
-            "profile_name": p, "model_name": m or None, "engine_id": e, "requests": n,
+            "profile_name": s["profile_name"], "profile_id": s["profile_id"],
+            "model_name": m or None, "engine_id": e, "requests": n,
             "total_avg": s["sum"] / s["weight"],
             "per_request_avg": s["sum"] / s["weight"] / n,
             "total_max": s["max"], "samples": s["count"], "seconds": s["weight"],
         } for (p, m, e, n), s in sorted(groups.items())], "days": days, "source": "sqlite"}
     items = []
-    for (day, profile, model, engine), value in sorted(daily.items()):
-        if day < first_day or (profile_name is not None and profile != profile_name):
+    for (day, _profile, model, engine), value in sorted(daily.items()):
+        if day < first_day:
             continue
         distributions = [{**h, "avg": h["sum"] / h["count"],
                           "p50": percentile(h["buckets"], .5, cumulative=True),
                           "p95": percentile(h["buckets"], .95, cumulative=True),
                           "percentile_source": "engine_request_histogram"}
                          for h in value["distributions"].values() if h["count"] > 0]
-        items.append({"day": day, "profile_name": profile, "model_name": model or None,
+        items.append({"day": day, "profile_name": value["profile_name"],
+                      "profile_id": value["profile_id"], "model_name": model or None,
                       "engine_id": engine,
                       "statistics": {k: summary(v) for k, v in value["statistics"].items()},
                       "request_distributions": distributions})

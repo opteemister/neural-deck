@@ -5,6 +5,7 @@ import { MetricLineChart } from '@/components/metric-line-chart'
 import type { Instance } from '@/types/api'
 
 export interface ConcurrencyPoint {
+  profile_id?: string | null
   profile_name: string
   model_name: string | null
   engine_id: string
@@ -18,8 +19,8 @@ export interface ConcurrencyPoint {
 
 export function ConcurrencyChart({ instance }: { instance?: Instance }) {
   const query = useQuery({
-    queryKey: ['metric-concurrency', instance?.profile_name ?? 'all'],
-    queryFn: () => api.getMetricConcurrency(instance?.profile_name ?? undefined),
+    queryKey: ['metric-concurrency', instance?.profile_id ?? instance?.profile_name ?? 'all'],
+    queryFn: () => api.getMetricConcurrency(instance?.profile_name ?? undefined, instance?.profile_id ?? undefined),
     enabled: !instance || Boolean(instance.profile_name),
     refetchInterval: 30_000, refetchIntervalInBackground: false, retry: false,
   })

@@ -53,8 +53,9 @@ duplicate-work risk в эту версию не входит.
 - TTL model metadata — 10 минут по существующему контракту; процесс и его
   доступность перепроверяются при каждом обновлении списка;
 - alias name — ASCII model id `[A-Za-z0-9][A-Za-z0-9._-]{0,127}`;
-- коллизии с profile model name, auto-route или alias блокируют сохранение и
-  показываются inline при добавлении/редактировании, с backend revalidation;
+- совпадение имени ручного алиаса с публичным именем модели объединяет очередь;
+  только совпадение двух ручных алиасов блокирует сохранение и повторно
+  проверяется backend;
 - alias включает только managed profiles; unmanaged external models остаются
   в каталоге, но не участвуют в сохранённой маршрутизации;
 - неизвестное имя получает `404 model_not_found`, известный недоступный route —
@@ -76,6 +77,15 @@ duplicate-work risk в эту версию не входит.
 совпадающих публичных `ProfileData.model_name`; alias получает произвольное
 внешнее имя и явной настройкой объединяет профили, в том числе разных моделей.
 Клиент сохраняет имя alias при изменении состава и порядка.
+
+Уточнение пользователя от 2026-10-10: имя ручного alias можно менять.
+В scope этой же задачи включены постоянный `profile_id`, переименование
+профилей и миграция всех ссылок, runtime-привязок и метрик с имени на ID.
+Правила единого маршрута, объединения одноимённых моделей и ручных алиасов,
+порядка и переименования описаны в
+[Единые публичные маршруты прокси](2026-10-10-unified-proxy-routes.md).
+Этот документ заменяет прежние правила коллизий и начального порядка ниже:
+совпадение имени объединяет кандидатов, а не блокирует маршрут.
 
 Входит: наблюдение кандидатов, `/v1/models`, ordered failover, управление
 порядком, alias CRUD, drag-and-drop UI, error/streaming policy и фактическая
@@ -188,7 +198,7 @@ capacity/latency нельзя использовать неявно. Новый 
 конец, migration не создаёт duplicate members и не теряет existing order.
 
 **R-10.** Alias name валидируется как non-empty bounded public model id и
-проверяется на коллизии с auto route, profile public name и другим alias.
+проверяется на коллизию только с другим ручным alias.
 Используется ASCII-грамматика `[A-Za-z0-9][A-Za-z0-9._-]{0,127}`; пробелы,
 слеши, Unicode и управляющие символы запрещены. Коллизия показывается inline
 при добавлении/изменении и повторно проверяется backend. Один профиль не может
@@ -322,8 +332,8 @@ Combobox и Tooltip с темой из design-system; названия, сост
    port; alias может включать profiles разных public names.
 4. Alias имеет стабильный id; при отсутствии available candidate он отсутствует
    в list и direct-call получает согласованный error.
-   Existing unmanaged external model ids не исчезают из `/v1/models` из-за
-   configured route collision.
+   Existing unmanaged external model ids не исчезают из `/v1/models`; одноимённые
+   managed candidates объединяются в одну очередь.
 5. Запросы не повторяются после uncertain send, headers или SSE content;
    pre-send policy, cap, общий deadline и reason попадают в attempt diagnostics;
    availability retry, если включён, явно показывает duplicate-work risk.

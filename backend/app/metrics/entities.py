@@ -19,6 +19,7 @@ class MetricSample(Base):
     )
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     profile_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    profile_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     pid: Mapped[int] = mapped_column(Integer)
     engine_id: Mapped[str] = mapped_column(String(80))
     model_name: Mapped[str | None] = mapped_column(String(512), nullable=True)
@@ -50,6 +51,7 @@ class MetricSample(Base):
 class MetricLaunchExtrema(Base):
     __tablename__ = "metric_launch_extrema"
     profile_name: Mapped[str] = mapped_column(String(256), primary_key=True)
+    profile_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     pid: Mapped[int] = mapped_column(Integer, primary_key=True)
     values: Mapped[dict[str, float]] = mapped_column(JSON)
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
@@ -59,6 +61,7 @@ class MetricDaily(Base):
     __tablename__ = "metric_daily"
     day: Mapped[str] = mapped_column(String(10), primary_key=True)
     profile_name: Mapped[str] = mapped_column(String(256), primary_key=True)
+    profile_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     model_name: Mapped[str] = mapped_column(String(512), primary_key=True)
     engine_id: Mapped[str] = mapped_column(String(80), primary_key=True)
     statistics: Mapped[dict[str, Any]] = mapped_column(JSON)
@@ -69,6 +72,7 @@ class MetricConcurrencyDaily(Base):
     __tablename__ = "metric_concurrency_daily"
     day: Mapped[str] = mapped_column(String(10), primary_key=True)
     profile_name: Mapped[str] = mapped_column(String(256), primary_key=True)
+    profile_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     model_name: Mapped[str] = mapped_column(String(512), primary_key=True)
     engine_id: Mapped[str] = mapped_column(String(80), primary_key=True)
     requests: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -85,5 +89,6 @@ class MetricArchiveCheckpoint(Base):
 class ProfileStatistics(Base):
     __tablename__ = "profile_statistics"
     profile_name: Mapped[str] = mapped_column(String(256), primary_key=True)
+    profile_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     vram_bytes: Mapped[float] = mapped_column(Float)
     vram_observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

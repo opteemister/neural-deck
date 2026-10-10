@@ -13,7 +13,7 @@ class OpenAIModel(BaseModel):
     id: str
     object: str = "model"
     created: int
-    owned_by: str = "llm-studio"
+    owned_by: str = "neural-deck"
     engine_id: str | None = None
     context_length: int | None = None
     reasoning_capabilities: dict[str, Any] | None = None

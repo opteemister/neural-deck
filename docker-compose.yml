@@ -1,3 +1,5 @@
+name: neural-deck
+
 services:
   app:
     build:
@@ -14,17 +16,17 @@ services:
     environment:
       # These are container mechanics, not application runtime defaults. The
       # required application values come from .env.local above.
-      LLM_STUDIO_WORKSPACE: /workspace
-      LLM_STUDIO_BACKEND_DIR: /workspace/backend
-      LLM_STUDIO_FRONTEND_DIR: /workspace/frontend
+      NEURAL_DECK_WORKSPACE: /workspace
+      NEURAL_DECK_BACKEND_DIR: /workspace/backend
+      NEURAL_DECK_FRONTEND_DIR: /workspace/frontend
       # Local Compose keeps the image-built frontend and rebuilds it only
       # after a source change. Production containers leave this disabled.
-      LLM_STUDIO_FRONTEND_WATCH: "1"
+      NEURAL_DECK_FRONTEND_WATCH: "1"
       # Local backend development also reloads the Python application when
       # files under backend/app change. The command is evaluated inside the
       # container by docker/entrypoint.sh; the doubled dollar signs keep HOST
       # and PORT for that shell instead of expanding them in Compose.
-      LLM_STUDIO_BACKEND_DEV_COMMAND: >-
+      NEURAL_DECK_BACKEND_DEV_COMMAND: >-
         exec /workspace/backend/.venv/bin/uvicorn app.main:app
         --app-dir /workspace/backend
         --host "$${HOST}"
@@ -33,7 +35,7 @@ services:
         --reload-dir /workspace/backend/app
       # The entrypoint rejects runtime paths outside these actual persistent
       # mount targets before it starts any application process.
-      LLM_STUDIO_PERSISTENT_ROOTS: /var/lib/llm-studio:/var/log/llm-studio
+      NEURAL_DECK_PERSISTENT_ROOTS: /var/lib/neural-deck:/var/log/neural-deck
     ports:
       - "127.0.0.1:3000:3000"
       - "127.0.0.1:8080:8080"
@@ -48,14 +50,14 @@ services:
       # are checked against these targets by docker/entrypoint.sh.
       - type: bind
         source: ./data
-        target: /var/lib/llm-studio
+        target: /var/lib/neural-deck
       - type: bind
         source: ./models
-        target: /var/lib/llm-studio/models
+        target: /var/lib/neural-deck/models
       - type: bind
         source: ./logs
-        target: /var/lib/llm-studio/logs
+        target: /var/lib/neural-deck/logs
       - type: bind
         source: ./logs
-        target: /var/log/llm-studio
+        target: /var/log/neural-deck
     init: true

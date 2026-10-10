@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button'
 import { ChatOptions } from '@/components/chat-options'
 import { reasoningChoices, reasoningRequest, type Reasoning } from '@/lib/chat-reasoning'
 import { ChatMarkdown } from '@/components/chat-markdown'
-import { api, queryKeys, StudioApiError } from '@/lib/api'
+import { api, queryKeys, NeuralDeckApiError } from '@/lib/api'
 import type { ChatMessage, ChatTimings, ChatUsage } from '@/types/api'
 
 type Turn = {
@@ -132,7 +132,7 @@ export function ChatPage() {
       update({ state: 'complete', elapsed: performance.now() - started, firstToken })
     } catch (caught) {
       update({ state: controller.signal.aborted ? 'cancelled' : 'error', elapsed: performance.now() - started, firstToken,
-        error: controller.signal.aborted ? undefined : caught instanceof StudioApiError ? caught.message : 'Не удалось получить ответ модели.' })
+        error: controller.signal.aborted ? undefined : caught instanceof NeuralDeckApiError ? caught.message : 'Не удалось получить ответ модели.' })
     } finally {
       controllerRef.current = null
       setBusy(false)

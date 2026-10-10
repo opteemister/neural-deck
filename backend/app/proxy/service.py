@@ -101,7 +101,7 @@ class ProxyService:
                         "id": route_info.name,
                         "object": "model",
                         "created": int(instance.observed_at.timestamp()),
-                        "owned_by": "llm-studio",
+                        "owned_by": "neural-deck",
                         "engine_id": candidate.engine_id,
                         **candidate.metadata,
                     }
@@ -122,7 +122,7 @@ class ProxyService:
                         "id": registered.id,
                         "object": "model",
                         "created": int(registered.observed_at.timestamp()),
-                        "owned_by": "llm-studio",
+                        "owned_by": "neural-deck",
                         "engine_id": registered.engine_id,
                         **engine_models[registered.upstream_model],
                     }
@@ -166,7 +166,7 @@ class ProxyService:
                         "id": registered.id,
                         "object": "model",
                         "created": int(registered.observed_at.timestamp()),
-                        "owned_by": "llm-studio",
+                        "owned_by": "neural-deck",
                         "engine_id": registered.engine_id,
                         **engine_models[registered.upstream_model],
                     }

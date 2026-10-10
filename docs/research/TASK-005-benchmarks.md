@@ -10,7 +10,7 @@ date: 2026-10-04
 Статус: **Черновик, не согласовано**.
 
 Исследование выполнено в локальном checkout
-`/Users/opteemist/Documents/MyProjects/llm-studio` по исходникам и документам.
+Neural Deck по исходникам и документам.
 Модели, нагрузка, endpoint, Docker, SSH, серверы и удалённый runtime не
 запускались. Рабочее дерево содержит изменения других задач; они считаются
 локальными и не являются доказательством deployed-состояния.
@@ -30,7 +30,7 @@ date: 2026-10-04
    Он не знает benchmark run, поэтому всплеск токенов или concurrency нельзя
    задним числом объявлять результатом теста.
 5. Reference Club 3090 полезен как набор измеряемых сигналов, но не как
-   утверждённая методика LLM Studio: он ориентирован на vLLM/OpenAI SSE,
+   утверждённая методика Neural Deck: он ориентирован на vLLM/OpenAI SSE,
    читает engine/container logs и `nvidia-smi`, а часть порогов зависит от
    конкретного железа и режима запуска.
 6. Во время performance-запуска runner должен видеть сырые времена, токены,
@@ -161,7 +161,7 @@ judge pipeline. Это не блокирует performance-часть TASK-005: 
 помечает результат как `n/a`/canvas-granularity; деление на epsilon запрещено.
 Короткий EOS ниже 25% от max tokens помечается как неиспользуемый run. Это
 защищает throughput от ложного среднего, но пороги являются параметрами
-reference, а не согласованными правилами LLM Studio.
+reference, а не согласованными правилами Neural Deck.
 
 Ограничения reference:
 
@@ -333,7 +333,7 @@ task. Точные prompt-ы и третья методика должны бы�
 - Ни одна модель, GPU, endpoint или concurrency не была измерена в этом
   checkout.
 - Нет подтверждённых порогов plateau, queue limit, retries, context depths,
-  repeats, wall budget или stop policy для LLM Studio.
+  repeats, wall budget или stop policy для Neural Deck.
 - Нет решения о включении benchmark traffic в общую статистику/стоимость.
 - TASK-006 ещё не содержит принятого judge, разрешений agent sandbox, формата
   task folders и критериев качества code/logic; это не часть текущего scope.

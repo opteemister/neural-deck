@@ -88,8 +88,8 @@ async def migrate_database(settings: Settings, paths: DataPaths) -> None:
         config = Config(str(ALEMBIC_CONFIG_PATH))
         # Embedded migrations must preserve the host application's handlers.
         config.attributes["configure_logging"] = False
-        config.attributes["llm_studio_settings"] = settings
-        config.attributes["llm_studio_paths"] = paths
+        config.attributes["neural_deck_settings"] = settings
+        config.attributes["neural_deck_paths"] = paths
         command.upgrade(config, "head")
 
     await asyncio.to_thread(upgrade)

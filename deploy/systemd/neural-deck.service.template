@@ -1,5 +1,5 @@
 [Unit]
-Description=LLM Studio local model management service
+Description=Neural Deck local model management service
 After=network-online.target user@__SERVICE_UID__.service
 Wants=network-online.target user@__SERVICE_UID__.service
 
@@ -9,13 +9,13 @@ KillMode=control-group
 User=__SERVICE_USER__
 Group=__SERVICE_GROUP__
 WorkingDirectory=__PROJECT_PATH__
-EnvironmentFile=/etc/llm-studio/llm-studio.env
-Environment=LLM_STUDIO_PROJECT_PATH=__PROJECT_PATH__
-Environment=LLM_STUDIO_BACKEND_DIR=__PROJECT_PATH__/backend
-Environment=LLM_STUDIO_APP_MODULE=app.main:app
-Environment=LLM_STUDIO_UV_BIN=__UV_BIN__
+EnvironmentFile=/etc/neural-deck/neural-deck.env
+Environment=NEURAL_DECK_PROJECT_PATH=__PROJECT_PATH__
+Environment=NEURAL_DECK_BACKEND_DIR=__PROJECT_PATH__/backend
+Environment=NEURAL_DECK_APP_MODULE=app.main:app
+Environment=NEURAL_DECK_UV_BIN=__UV_BIN__
 Environment=PYTHONDONTWRITEBYTECODE=1
-Environment=LLM_STUDIO_MODEL_LAUNCHER=systemd
+Environment=NEURAL_DECK_MODEL_LAUNCHER=systemd
 Environment="PATH=/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 Environment="CUDA_HOME=/usr/local/cuda"
 ExecStart=/bin/bash __PROJECT_PATH__/deploy/run-service.sh

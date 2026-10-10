@@ -260,7 +260,7 @@ delay, thermal policy и A/B interleaving остаются открытыми.
 - сохранять cache tokens отдельно и считать uncached только при валидном
   `0 <= cached <= input`.
 
-Reference Club 3090 использует salted deep prompt и `/tokenize`; в LLM Studio
+Reference Club 3090 использует salted deep prompt и `/tokenize`; в Neural Deck
 рабочий набор context depth — около 10k, 50k, 130k и 200k. Descriptor может
 пропустить depth, превышающий served context, с причиной `context_limit`.
 

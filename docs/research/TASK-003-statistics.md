@@ -2,7 +2,7 @@
 
 Дата: 2026-10-04
 Статус: исследование для обсуждения, реализация и решения по UX не согласованы
-Область проверки: локальный checkout `/Users/opteemist/Documents/MyProjects/llm-studio`.
+Область проверки: локальный checkout Neural Deck.
 
 ## Review 2026-10-04 — решено review
 
@@ -49,8 +49,7 @@ concurrency относительно максимальной ёмкости п�
 Прочитаны `AGENTS.md`, `DEVELOPMENT_RULES.md`,
 `docs/development/frontend.md`,
 `docs/specs/2026-09-29-design-system.md`, задача
-`docs/tasks/TASK-003-statistics.md`, референс
-`docs/research/TASK-003-statistics-reference.md`, а также связанные
+`docs/tasks/TASK-003-statistics.md`, а также связанные
 `docs/tasks/TASK-001-profile-cards.md`,
 `docs/tasks/TASK-004-proxy-routing-aliases.md` и
 `docs/tasks/TASK-005-benchmarks.md`.
@@ -243,11 +242,9 @@ Cached по 24 часовым корзинам; Cached визуально счи
 line chart и общий визуальный образец, но сама структура страницы статистики
 ещё не существует.
 
-Соседний `vllm-studio` рассмотрен в
-`docs/research/TASK-003-statistics-reference.md`: его heatmap — календарь
-дней за 53 недели, а почасовая активность вынесена в отдельные столбики. В
-референсе нет требуемых TASK-003 цены, дневного cache, concurrency и загрузки;
-UTC там не должен автоматически становиться часовым поясом LLM Studio.
+Требуемые TASK-003 цена, дневной cache, concurrency и загрузка должны иметь
+собственные источники данных в Neural Deck; UTC не должен автоматически
+становиться часовым поясом Neural Deck.
 
 ## Что реально можно получить сейчас
 
@@ -370,11 +367,9 @@ USD по текущим ставкам профиля, а benchmark traffic вх
 cost с визуальной отметкой интервала.
 
 Официальные тарифные документы подтверждают, что отдельная cache billing у
-провайдеров встречается: DeepSeek публикует cache-hit и cache-miss ставки для
-`deepseek-flash` и `deepseek-v4-pro`, а Alibaba Cloud Model Studio описывает
-отдельную цену cache-hit для Qwen и model-specific исключения. Эти цены нельзя
-зашивать в LLM Studio: в проекте они должны приходить из текущих настроек
-профиля и периодически проверяться пользователем.
+провайдеров встречается. Эти цены нельзя зашивать в Neural Deck: в проекте они
+должны приходить из текущих настроек профиля и периодически проверяться
+пользователем.
 
 Источники проверки:
 
@@ -382,11 +377,6 @@ cost с визуальной отметкой интервала.
   — отдельные cache-hit/cache-miss цены и зависимость от peak/off-peak.
 - [DeepSeek Context Caching](https://api-docs.deepseek.com/guides/kv_cache/)
   — поля `prompt_cache_hit_tokens` и `prompt_cache_miss_tokens` в usage.
-- [Alibaba Cloud Qwen Context Cache](https://www.alibabacloud.com/help/en/model-studio/context-cache)
-  — cache-hit billing и model-specific правила.
-- [Alibaba Cloud Model Pricing](https://docs.modelstudio.console.alibabacloud.com/en/model-studio/model-pricing)
-  — отдельные input/cache-hit/output ставки для поддерживаемых моделей.
-
 Отдельно нужно согласовать, как TASK-004 фиксирует served profile при
 alias/failover и как TASK-005 маркирует интервал теста. При отсутствии истории
 active requests процент загрузки должен иметь coverage/unknown state, а не

@@ -1,5 +1,5 @@
 ---
-title: LLM Studio Version Zero — контракты данных и API
+title: Neural Deck Version Zero — контракты данных и API
 status: integrated
 parent: 2026-09-29-version-zero.md
 date: 2026-09-29
@@ -84,7 +84,7 @@ Pydantic-схемы backend являются единственным источ
 Для Python-движка запрос содержит `kind: python_venv` и `venv_name`; имя не
 содержит разделителей пути, а окружение создаётся в
 `<data-root>/runtime/venvs/<venv_name>`. Для llama.cpp или NInfer запрос
-содержит `kind: binary` и абсолютный `path`; Студия не копирует и не собирает
+содержит `kind: binary` и абсолютный `path`; Neural Deck не копирует и не собирает
 этот файл, а проверяет его адаптером.
 
 Установка содержит `id`, `engine_id`, `kind`, `root_path`, `executable_path`,
@@ -306,8 +306,8 @@ MCP-приложения в lifespan FastAPI/ASGI.
 
 ## 5. Hugging Face manifest версии 1
 
-Для каталога manifest хранится в `<model-dir>/.llm-studio-hf.yaml`, для
-отдельного файла — в `<model-file>.llm-studio-hf.yaml`.
+Для каталога manifest хранится в `<model-dir>/.neural-deck-hf.yaml`, для
+отдельного файла — в `<model-file>.neural-deck-hf.yaml`.
 
 ```yaml
 schema_version: 1

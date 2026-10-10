@@ -30,15 +30,15 @@ class MetricsService:
         storage: MetricsStorage | None = None,
         prometheus_url: str = "",
         prometheus_token: str = "",
-        studio_id: str = "local",
+        neural_deck_id: str = "local",
     ) -> None:
         self.process_manager = process_manager
         self.providers = dict(providers or default_providers())
         self.journal = journal
         self.performance = PerformanceNormalizer()
         self.storage = storage
-        self.studio_id = studio_id
-        self.prometheus = PrometheusReader(prometheus_url, prometheus_token, studio_id)
+        self.neural_deck_id = neural_deck_id
+        self.prometheus = PrometheusReader(prometheus_url, prometheus_token, neural_deck_id)
         self._tasks: list[asyncio.Task[Any]] = []
         self._locks: dict[str, asyncio.Lock] = {}
         self._cache: dict[str, tuple[float, Any, MetricList]] = {}
@@ -361,7 +361,7 @@ class MetricsService:
             for entry in self._cache.values()
             if time.monotonic() - entry[0] <= 10
         ]
-        return exposition(samples, self.studio_id, self.performance.samples)
+        return exposition(samples, self.neural_deck_id, self.performance.samples)
 
     async def _collect_local(self, instance_id: str) -> MetricList:
         instance = await self.process_manager.get(instance_id)

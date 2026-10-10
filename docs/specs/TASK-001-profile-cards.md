@@ -291,7 +291,7 @@ before implementation):
 отключать port-only warning. Runtime conflict check активных процессов остаётся
 отдельной защитой и не заменяется UI-треугольником.
 
-Порт приложения Studio и внешний `OPENAI_PORT` не являются портом модели и не
+Порт приложения Neural Deck и внешний `OPENAI_PORT` не являются портом модели и не
 должны попадать в этот warning.
 
 ### 4.8. Image Generation

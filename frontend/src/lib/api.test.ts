@@ -1,6 +1,6 @@
 // spec: version-zero
 import { describe, expect, it, vi } from 'vitest'
-import { api, request, streamChat, StudioApiError } from '@/lib/api'
+import { api, request, streamChat, NeuralDeckApiError } from '@/lib/api'
 
 describe('management API client', () => {
   it('unwraps the success envelope', async () => {
@@ -11,8 +11,8 @@ describe('management API client', () => {
   it('preserves machine-readable error information', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: { code: 'profile_not_found', message: 'Профиль не найден', details: {}, request_id: 'req_2', retryable: false } }), { status: 404 })))
     const result = request('/api/v1/profiles/missing')
-    await expect(result).rejects.toBeInstanceOf(StudioApiError)
-    await expect(result).rejects.toMatchObject({ status: 404, code: 'profile_not_found', requestId: 'req_2' })
+    await expect(result).rejects.toBeInstanceOf(NeuralDeckApiError)
+    await expect(result).rejects.toMatchObject({ name: 'NeuralDeckApiError', status: 404, code: 'profile_not_found', requestId: 'req_2' })
   })
 
   it('keeps OpenAI models in their standard response shape', async () => {

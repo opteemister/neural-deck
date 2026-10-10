@@ -26,8 +26,8 @@
   /api/v1/models/local/scan` в `backend/app/api/management.py:442-450` передаёт
   `verify_hashes=True`.
 - Для каталога модели sidecar находится в
-  `<model-dir>/.llm-studio-hf.yaml`; для отдельного файла используется соседний
-  `<model-file>.llm-studio-hf.yaml` (`_read_manifest`, строки 785-793).
+  `<model-dir>/.neural-deck-hf.yaml`; для отдельного файла используется соседний
+  `<model-file>.neural-deck-hf.yaml` (`_read_manifest`, строки 785-793).
   `_merge_download_manifest()` (строки 489-550) атомарно сохраняет `repo_id`,
   commit `revision`, `scope` (`snapshot` или `selection`) и массив `files` с
   путём, размером и remote metadata. Запись выполняется до и после загрузки.

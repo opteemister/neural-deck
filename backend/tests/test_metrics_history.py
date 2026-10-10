@@ -58,7 +58,7 @@ async def test_migration_preserves_existing_usage_and_is_repeatable(tmp_path):
     paths = build_paths(settings)
     prepare_data_dirs(paths)
     config = Config(str(Path(__file__).parents[1] / "alembic.ini"))
-    config.attributes["llm_studio_settings"] = settings
+    config.attributes["neural_deck_settings"] = settings
     config.attributes["configure_logging"] = False
     await asyncio.to_thread(command.upgrade, config, "0004_request_journal_correlation_id")
     engine = create_engine(paths.sqlite_path)
@@ -425,7 +425,7 @@ async def test_background_without_browser_and_restore_peaks(database, monkeypatc
                 break
             await asyncio.sleep(0.02)
         assert len(await storage.history()) == 1
-        assert "studio_model_decode_tps" in service.export()
+        assert "neural_deck_model_decode_tps" in service.export()
     finally:
         await service.close()
     restarted = MetricsService(Manager(), providers={"vllm": Provider()}, storage=storage)
@@ -446,11 +446,16 @@ async def test_prometheus_fresh_observed_time_and_stale_fallback(database):
             return model
 
     service = MetricsService(
-        Manager(), storage=storage, prometheus_url="http://prom", studio_id="studio"
+        Manager(), storage=storage, prometheus_url="http://prom", neural_deck_id="neural-deck"
     )
     now = datetime.now(UTC).timestamp()
     stamp = now - 2
-    labels = {"studio_id": "studio", "profile_name": "profile", "pid": "10", "engine_id": "vllm"}
+    labels = {
+        "neural_deck_id": "neural-deck",
+        "profile_name": "profile",
+        "pid": "10",
+        "engine_id": "vllm",
+    }
 
     def handle(request):
         return httpx.Response(
@@ -460,13 +465,13 @@ async def test_prometheus_fresh_observed_time_and_stale_fallback(database):
                 "data": {
                     "result": [
                         {
-                            "metric": {**labels, "__name__": "studio_model_decode_tps"},
+                            "metric": {**labels, "__name__": "neural_deck_model_decode_tps"},
                             "value": [now, "99"],
                         },
                         {
                             "metric": {
                                 **labels,
-                                "__name__": "studio_model_observed_timestamp_seconds",
+                                "__name__": "neural_deck_model_observed_timestamp_seconds",
                                 "field": "decode_tps",
                             },
                             "value": [now, str(stamp)],
@@ -654,7 +659,7 @@ async def test_last_vram_migration_restores_latest_valid_sample(tmp_path):
     paths = build_paths(settings)
     prepare_data_dirs(paths)
     config = Config(str(Path(__file__).parents[1] / "alembic.ini"))
-    config.attributes["llm_studio_settings"] = settings
+    config.attributes["neural_deck_settings"] = settings
     config.attributes["configure_logging"] = False
     await asyncio.to_thread(command.upgrade, config, "0007_daily_metrics")
     engine = create_engine(paths.sqlite_path)
@@ -698,7 +703,7 @@ async def test_profile_statistics_rename_preserves_existing_vram(tmp_path):
     paths = build_paths(settings)
     prepare_data_dirs(paths)
     config = Config(str(Path(__file__).parents[1] / "alembic.ini"))
-    config.attributes["llm_studio_settings"] = settings
+    config.attributes["neural_deck_settings"] = settings
     config.attributes["configure_logging"] = False
     await asyncio.to_thread(command.upgrade, config, "0008_profile_last_vram")
     engine = create_engine(paths.sqlite_path)

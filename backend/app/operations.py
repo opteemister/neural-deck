@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 # lets cancellation clean up the actual subprocess even when the worker is
 # waiting in ``communicate``.
 _CURRENT_PROCESSES: contextvars.ContextVar[set[asyncio.subprocess.Process] | None] = (
-    contextvars.ContextVar("llm_studio_operation_processes", default=None)
+    contextvars.ContextVar("neural_deck_operation_processes", default=None)
 )
 
 

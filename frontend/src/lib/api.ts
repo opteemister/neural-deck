@@ -46,7 +46,7 @@ export async function getOpenAiEndpoint(): Promise<string> {
   return modelApiBasePromise
 }
 
-export class StudioApiError extends Error {
+export class NeuralDeckApiError extends Error {
   readonly status: number
   readonly code: string
   readonly retryable: boolean
@@ -55,7 +55,7 @@ export class StudioApiError extends Error {
 
   constructor(message: string, options: { status: number; code?: string; retryable?: boolean; requestId?: string | null; details?: Record<string, unknown> }) {
     super(message)
-    this.name = 'StudioApiError'
+    this.name = 'NeuralDeckApiError'
     this.status = options.status
     this.code = options.code ?? 'request_failed'
     this.retryable = options.retryable ?? false
@@ -64,7 +64,7 @@ export class StudioApiError extends Error {
   }
 }
 
-async function readError(response: Response): Promise<StudioApiError> {
+async function readError(response: Response): Promise<NeuralDeckApiError> {
   try {
     const body = (await response.json()) as Partial<ApiErrorResponse>
     if (body.error) {
@@ -78,7 +78,7 @@ async function readError(response: Response): Promise<StudioApiError> {
           return [`${field || 'Профиль'}: ${item.msg}`]
         })
         : []
-      return new StudioApiError(reasons.length ? `${body.error.message}: ${reasons.join('; ')}` : body.error.message, {
+      return new NeuralDeckApiError(reasons.length ? `${body.error.message}: ${reasons.join('; ')}` : body.error.message, {
         status: response.status,
         code: body.error.code,
         retryable: body.error.retryable,
@@ -89,7 +89,7 @@ async function readError(response: Response): Promise<StudioApiError> {
   } catch {
     // The response can be empty or non-JSON; the HTTP status remains useful.
   }
-  return new StudioApiError(`Запрос не выполнен (${response.status})`, { status: response.status })
+  return new NeuralDeckApiError(`Запрос не выполнен (${response.status})`, { status: response.status })
 }
 
 export async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -100,7 +100,7 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   const body = (await response.json()) as ApiSuccess<T>
   if (!body || typeof body !== 'object' || !('data' in body)) {
-    throw new StudioApiError('Ответ API имеет неверный формат', { status: response.status, code: 'invalid_response' })
+    throw new NeuralDeckApiError('Ответ API имеет неверный формат', { status: response.status, code: 'invalid_response' })
   }
   return body.data
 }
@@ -114,7 +114,7 @@ async function openAiRequest<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 function assertOpenAiError(response: Response): void {
-  throw new StudioApiError(`Запрос не выполнен (${response.status})`, { status: response.status })
+  throw new NeuralDeckApiError(`Запрос не выполнен (${response.status})`, { status: response.status })
 }
 
 export type ChatStreamChunk = { content: string; done: boolean; reasoning?: string; usage?: import('@/types/api').ChatUsage; timings?: import('@/types/api').ChatTimings; finishReason?: string | null }
@@ -130,9 +130,9 @@ export async function streamChat(
   if (!response.ok) {
     try {
       const payload = (await response.json()) as ApiErrorResponse
-      if (payload.error) throw new StudioApiError(payload.error.message, { status: response.status, code: payload.error.code, retryable: payload.error.retryable, requestId: payload.error.request_id })
+      if (payload.error) throw new NeuralDeckApiError(payload.error.message, { status: response.status, code: payload.error.code, retryable: payload.error.retryable, requestId: payload.error.request_id })
     } catch (error) {
-      if (error instanceof StudioApiError) throw error
+      if (error instanceof NeuralDeckApiError) throw error
     }
     assertOpenAiError(response)
   }

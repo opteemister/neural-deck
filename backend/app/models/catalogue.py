@@ -61,7 +61,7 @@ MODEL_EXTENSIONS = {
     ".nemo": "nemo",
     ".tflite": "tflite",
 }
-SIDECAR_DIR = ".llm-studio-hf.yaml"
+SIDECAR_DIR = ".neural-deck-hf.yaml"
 _AUXILIARY_ROLE_RE = re.compile(
     r"(^|[\\/_.-])(?:mtp|mmproj|projector|projection|vision(?:[-_]?(?:encoder|tower))?"
     r"|audio(?:[-_]?(?:encoder|tower))?|adapter|d[\s_-]?spark)(?=$|[\\/_.-])",
@@ -626,7 +626,7 @@ class ModelCatalogue:
             )
             # A child process keeps the Hub library's blocking I/O off the API
             # loop and lets operation cancellation stop all download threads.
-            descriptor, plan_path = tempfile.mkstemp(prefix="llm-studio-download-", suffix=".json")
+            descriptor, plan_path = tempfile.mkstemp(prefix="neural-deck-download-", suffix=".json")
             try:
                 with os.fdopen(descriptor, "w", encoding="utf-8") as plan:
                     json.dump({
@@ -1413,7 +1413,7 @@ def _refresh_local_hash_cache(path: Path) -> None:
 
 def _refresh_untracked_hash_cache(path: Path) -> None:
     """Persist each local digest immediately with one check date per sidecar."""
-    sidecar = path / ".llm-studio-hashes.yaml" if path.is_dir() else Path(f"{path}.llm-studio-hashes.yaml")
+    sidecar = path / ".neural-deck-hashes.yaml" if path.is_dir() else Path(f"{path}.neural-deck-hashes.yaml")
     saved: dict[str, Any] = {"schema_version": 1, "files": {}}
     if sidecar.exists():
         loaded = yaml.safe_load(sidecar.read_text(encoding="utf-8"))

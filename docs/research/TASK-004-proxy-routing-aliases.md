@@ -82,7 +82,7 @@ capability compatibility, разрешение alias на external profile, ру
 
 ## Область и метод
 
-Проверен локальный checkout `/Users/opteemist/Documents/MyProjects/llm-studio`.
+Проверен локальный checkout Neural Deck.
 Прочитаны `AGENTS.md`, `DEVELOPMENT_RULES.md`,
 `docs/development/frontend.md`, `docs/specs/2026-09-29-design-system.md`,
 `docs/tasks/TASK-004-proxy-routing-aliases.md`, связанные TASK-001/003/005,

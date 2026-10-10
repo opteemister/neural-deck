@@ -5,13 +5,13 @@ afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); vi.resetModules() }
 
 describe('OpenAI endpoint', () => {
   it('accepts overrides with and without the v1 prefix', () => {
-    expect(openAiEndpoint('https://ai.laguta.org')).toBe('https://ai.laguta.org/v1')
-    expect(openAiEndpoint('https://ai.laguta.org/v1/')).toBe('https://ai.laguta.org/v1')
+    expect(openAiEndpoint('https://ai.example.com')).toBe('https://ai.example.com/v1')
+    expect(openAiEndpoint('https://ai.example.com/v1/')).toBe('https://ai.example.com/v1')
   })
 
   it('preserves the external override while routing chat through the internal API', async () => {
     vi.stubEnv('VITE_API_BASE_URL', '')
-    vi.stubEnv('VITE_OPENAI_API_BASE_URL', 'https://ai.laguta.org/v1/')
+    vi.stubEnv('VITE_OPENAI_API_BASE_URL', 'https://ai.example.com/v1/')
     const fetchMock = vi.fn().mockImplementation((url: string) => Promise.resolve(
       url.endsWith('/models')
         ? new Response(JSON.stringify({ data: [] }))
@@ -19,7 +19,7 @@ describe('OpenAI endpoint', () => {
     ))
     vi.stubGlobal('fetch', fetchMock)
     const { api, streamChat, getOpenAiEndpoint } = await import('@/lib/api')
-    expect(await getOpenAiEndpoint()).toBe('https://ai.laguta.org/v1')
+    expect(await getOpenAiEndpoint()).toBe('https://ai.example.com/v1')
     await api.getOpenAiModels()
     fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ choices: [] })))
     await api.completeChat({ model: 'local', messages: [] })
@@ -33,12 +33,12 @@ describe('OpenAI endpoint', () => {
 
   it('uses the backend machine IP even when the interface uses a domain', async () => {
     vi.stubEnv('VITE_OPENAI_API_BASE_URL', '')
-    vi.stubEnv('VITE_API_BASE_URL', 'https://ai.laguta.org')
+    vi.stubEnv('VITE_API_BASE_URL', 'https://ai.example.com')
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ data: { url: 'http://192.168.1.50:8080/v1' } })))
     vi.stubGlobal('fetch', fetchMock)
     const { getOpenAiEndpoint } = await import('@/lib/api')
     expect(await getOpenAiEndpoint()).toBe('http://192.168.1.50:8080/v1')
-    expect(fetchMock).toHaveBeenCalledWith('https://ai.laguta.org/api/v1/openai-endpoint', expect.anything())
+    expect(fetchMock).toHaveBeenCalledWith('https://ai.example.com/api/v1/openai-endpoint', expect.anything())
   })
 
   it('propagates an unavailable machine IP instead of substituting a domain', async () => {

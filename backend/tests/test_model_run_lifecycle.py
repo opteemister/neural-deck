@@ -166,7 +166,7 @@ async def test_restored_unit_stop_uses_systemd_not_process_group(tmp_path, store
 @pytest.mark.asyncio
 async def test_crash_between_unit_start_and_database_commit_recovers(tmp_path, store):
     launcher = FakeUnits(tmp_path / "runtime")
-    unit = "llm-studio-model-pending.service"
+    unit = "neural-deck-model-pending.service"
     log = tmp_path / "pending.log"
     pending = launcher.pending(
         unit,
@@ -224,7 +224,7 @@ async def test_systemd_command_is_transient_preserves_environment_and_cleans_fil
     async def call(*args, **kwargs):
         calls.append(args)
         if args[0] == "systemd-run":
-            env_path = tmp_path / "model-launches" / "llm-studio-model-test.service.env"
+            env_path = tmp_path / "model-launches" / "neural-deck-model-test.service.env"
             value = env_path.read_text()
             assert 'CUDA_HOME="/usr/local/cuda"' in value
             assert 'VALUE="a\\$b\\"c"' in value
@@ -234,7 +234,7 @@ async def test_systemd_command_is_transient_preserves_environment_and_cleans_fil
 
     launcher._call = call
     pid = await launcher.start(
-        "llm-studio-model-test.service",
+        "neural-deck-model-test.service",
         'echo "$VALUE"',
         {"CUDA_HOME": "/usr/local/cuda", "VALUE": 'a$b"c'},
         tmp_path / "log",
@@ -288,9 +288,9 @@ async def test_old_observer_cannot_delete_new_identity_with_same_pid(tmp_path, s
 async def test_pending_unit_is_not_restarted_after_machine_reboot(tmp_path, store):
     launcher = FakeUnits(tmp_path / "runtime")
     path = launcher.pending(
-        "llm-studio-model-gone.service",
+        "neural-deck-model-gone.service",
         {
-            "unit_name": "llm-studio-model-gone.service",
+            "unit_name": "neural-deck-model-gone.service",
         },
     )
     recovered = manager(tmp_path, store, launcher)

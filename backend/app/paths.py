@@ -24,7 +24,7 @@ class DataPaths:
     runtime_dir: Path
     venvs_dir: Path
     log_root: Path
-    studio_log_dir: Path
+    neural_deck_log_dir: Path
     profiles_log_dir: Path
     operations_log_dir: Path
     api_log_dir: Path
@@ -74,12 +74,12 @@ def build_paths(settings: Settings, *, include_saved_settings: bool = True) -> D
         runtime_dir=root / "runtime",
         venvs_dir=root / "runtime" / "venvs",
         log_root=log_root,
-        studio_log_dir=log_root / "studio",
+        neural_deck_log_dir=log_root / "neural-deck",
         profiles_log_dir=log_root / "profiles",
         operations_log_dir=log_root / "operations",
         api_log_dir=log_root / "api",
         audit_dir=root / "audit",
-        sqlite_path=root / "data" / "llm-studio.sqlite3",
+        sqlite_path=root / "data" / "neural-deck.sqlite3",
         settings_path=root / "config" / "settings.yaml",
     )
 
@@ -96,7 +96,7 @@ def prepare_data_dirs(paths: DataPaths) -> None:
         paths.runtime_dir,
         paths.venvs_dir,
         paths.log_root,
-        paths.studio_log_dir,
+        paths.neural_deck_log_dir,
         paths.profiles_log_dir,
         paths.operations_log_dir,
         paths.api_log_dir,
@@ -188,7 +188,7 @@ def validate_models_root(value: Path) -> Path:
             raise PermissionError(str(canonical))
         # os.access can be affected by the effective uid.  A same-directory
         # probe also validates ACLs and mount options before settings mutate.
-        with tempfile.NamedTemporaryFile(prefix=".llm-studio-write-test-", dir=canonical) as probe:
+        with tempfile.NamedTemporaryFile(prefix=".neural-deck-write-test-", dir=canonical) as probe:
             probe.write(b"ok")
             probe.flush()
     except (OSError, RuntimeError) as exc:

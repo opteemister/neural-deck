@@ -173,7 +173,7 @@ async def test_migration_keeps_samples_and_prevents_id_reuse(tmp_path):
     paths = build_paths(settings)
     prepare_data_dirs(paths)
     config = Config(str(Path(__file__).parents[1] / "alembic.ini"))
-    config.attributes["llm_studio_settings"] = settings
+    config.attributes["neural_deck_settings"] = settings
     config.attributes["configure_logging"] = False
     await asyncio.to_thread(command.upgrade, config, "0006_model_runs")
     engine = create_engine(paths.sqlite_path)

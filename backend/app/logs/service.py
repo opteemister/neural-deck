@@ -76,7 +76,7 @@ class LogsService:
         deleted = 0
         paths = group.paths
         if group.source.kind == "application" and not paths:
-            paths = (self.paths.studio_log_dir / "app.log",)
+            paths = (self.paths.neural_deck_log_dir / "app.log",)
         for path in paths:
             if group.source.kind == "application" and path.name == "app.log":
                 try:
@@ -96,7 +96,7 @@ class LogsService:
         if group.source.kind == "application":
             # Truncating the active file keeps the current logging handler
             # attached to the visible path while rotated history is removed.
-            application_path = self.paths.studio_log_dir / "app.log"
+            application_path = self.paths.neural_deck_log_dir / "app.log"
             application_path.parent.mkdir(parents=True, exist_ok=True)
             application_path.touch(exist_ok=True)
         elif group.source.kind == "profile":
@@ -158,7 +158,7 @@ class LogsService:
         raise AppError("log_not_found", "Лог не найден", status_code=404)
 
     def _application_paths(self) -> list[Path]:
-        root = self.paths.studio_log_dir
+        root = self.paths.neural_deck_log_dir
         return self._unique_paths(path for path in root.glob("app.log*") if path.is_file())
 
     def _operation_paths(self) -> list[Path]:

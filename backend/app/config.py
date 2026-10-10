@@ -19,7 +19,7 @@ def _absolute_path(value: Any) -> Path:
 class Settings(BaseSettings):
     """Runtime settings.
 
-    ``LLM_STUDIO_DATA_ROOT``, ``HOST`` and ``PORT`` intentionally have no
+    ``NEURAL_DECK_DATA_ROOT``, ``HOST`` and ``PORT`` intentionally have no
     defaults. The service must not silently start with data in an unexpected
     location or on an unexpected network interface.
     """
@@ -32,7 +32,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    data_root: Path = Field(validation_alias=AliasChoices("LLM_STUDIO_DATA_ROOT", "data_root"))
+    data_root: Path = Field(validation_alias=AliasChoices("NEURAL_DECK_DATA_ROOT", "data_root"))
     host: str = Field(validation_alias=AliasChoices("HOST", "host"), min_length=1)
     port: int = Field(validation_alias=AliasChoices("PORT", "port"), ge=1, le=65535)
     openai_port: int = Field(

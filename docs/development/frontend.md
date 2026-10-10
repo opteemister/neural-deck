@@ -4,7 +4,7 @@
 
 Основа интерфейса — shadcn/ui. Перед работой читать
 [дизайн-систему](../specs/2026-09-29-design-system.md) и связанный
-[визуальный образец](../design/studio-reference.html).
+[визуальный образец](../design/neural-deck-reference.html).
 
 ## Переиспользование компонентов
 

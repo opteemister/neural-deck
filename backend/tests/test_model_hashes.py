@@ -22,7 +22,7 @@ def _sha256(value: bytes) -> str:
 def _write_manifest(path: Path, content: bytes, *, revision: str = "a" * 40) -> None:
     path.mkdir(parents=True)
     (path / "model.gguf").write_bytes(content)
-    (path / ".llm-studio-hf.yaml").write_text(
+    (path / ".neural-deck-hf.yaml").write_text(
         "schema_version: 2\n"
         "repo_id: org/model\n"
         "tracking_ref: main\n"
@@ -48,7 +48,7 @@ def test_local_hash_cache_reuses_saved_hash_without_reading_again(
     _write_manifest(model, content)
 
     _refresh_local_hash_cache(model)
-    first_manifest = (model / ".llm-studio-hf.yaml").read_text(encoding="utf-8")
+    first_manifest = (model / ".neural-deck-hf.yaml").read_text(encoding="utf-8")
 
     def fail_if_rehashed(_path: Path) -> dict[str, str]:
         raise AssertionError("stable files must reuse the cached digest")
@@ -57,7 +57,7 @@ def test_local_hash_cache_reuses_saved_hash_without_reading_again(
     _refresh_local_hash_cache(model)
 
     before = yaml.safe_load(first_manifest)
-    after = yaml.safe_load((model / ".llm-studio-hf.yaml").read_text())
+    after = yaml.safe_load((model / ".neural-deck-hf.yaml").read_text())
     assert before["files"] == after["files"]
     assert "last_hash_check_at" in after
 
@@ -142,7 +142,7 @@ def test_remote_difference_is_update_when_local_still_matches_downloaded_baselin
         "2026-10-04T10:00:00Z",
     )
 
-    manifest = yaml.safe_load((model / ".llm-studio-hf.yaml").read_text(encoding="utf-8"))
+    manifest = yaml.safe_load((model / ".neural-deck-hf.yaml").read_text(encoding="utf-8"))
     assert manifest["remote_update"]["status"] == "update_available"
     assert manifest["changed_paths"][0]["status"] == "changed"
     assert manifest["remote_check"]["repository_date"] == "2026-10-03T10:00:00Z"
@@ -173,7 +173,7 @@ def test_remote_difference_is_not_update_when_local_already_matches_remote(tmp_p
         "2026-10-04T10:00:00Z",
     )
 
-    manifest = yaml.safe_load((model / ".llm-studio-hf.yaml").read_text(encoding="utf-8"))
+    manifest = yaml.safe_load((model / ".neural-deck-hf.yaml").read_text(encoding="utf-8"))
     assert manifest["remote_update"]["status"] == "up_to_date"
     assert all(item["status"] != "local_divergence" for item in manifest["changed_paths"])
 
@@ -189,7 +189,7 @@ def test_scan_publishes_models_before_hashing_and_coalesces_parallel_scan(tmp_pa
     ))
     model = paths.models_root / "model"
     _write_manifest(model, b"weights")
-    sidecar = model / ".llm-studio-hf.yaml"
+    sidecar = model / ".neural-deck-hf.yaml"
     manifest = yaml.safe_load(sidecar.read_text())
     manifest["files"][0].pop("downloaded_remote_hash")
     sidecar.write_text(yaml.safe_dump(manifest))
@@ -300,7 +300,7 @@ def test_remote_hash_difference_without_newer_date_is_not_an_update(tmp_path, re
     _apply_remote_snapshot(model, {}, "main", "b" * 40, None, {
         "model.gguf": {"size": 7, "sha256": _sha256(b"new"), "file_date": remote_date},
     }, "2026-10-04T10:00:00Z")
-    manifest = yaml.safe_load((model / ".llm-studio-hf.yaml").read_text())
+    manifest = yaml.safe_load((model / ".neural-deck-hf.yaml").read_text())
     assert manifest["remote_update"]["status"] != "update_available"
 
 
@@ -309,8 +309,8 @@ def test_standalone_hf_manifest_hash_cache_is_reused(tmp_path, monkeypatch):
     _write_manifest(source, b"weights")
     weights = tmp_path / "model.gguf"
     weights.write_bytes(b"weights")
-    sidecar = Path(f"{weights}.llm-studio-hf.yaml")
-    sidecar.write_text((source / ".llm-studio-hf.yaml").read_text())
+    sidecar = Path(f"{weights}.neural-deck-hf.yaml")
+    sidecar.write_text((source / ".neural-deck-hf.yaml").read_text())
     _refresh_local_hash_cache(weights)
 
     def forbidden(path):
@@ -345,7 +345,7 @@ def test_each_hash_is_saved_before_next_file_and_survives_interruption(tmp_path,
     model.mkdir()
     for name in ("a.gguf", "b.gguf"):
         (model / name).write_bytes(name.encode())
-    sidecar = model / (".llm-studio-hf.yaml" if tracked else ".llm-studio-hashes.yaml")
+    sidecar = model / (".neural-deck-hf.yaml" if tracked else ".neural-deck-hashes.yaml")
     if tracked:
         sidecar.write_text(yaml.safe_dump({
             "schema_version": 1, "repo_id": "org/model", "revision": "a" * 40,
@@ -393,7 +393,7 @@ def test_only_mtime_after_global_check_triggers_recalculation(tmp_path, monkeypa
 
     model = tmp_path / "model"
     _write_manifest(model, b"weights")
-    sidecar = model / ".llm-studio-hf.yaml"
+    sidecar = model / ".neural-deck-hf.yaml"
     manifest = yaml.safe_load(sidecar.read_text())
     checked = datetime.now(UTC).timestamp() - 30
     manifest["last_hash_check_at"] = datetime.fromtimestamp(checked, UTC).isoformat()

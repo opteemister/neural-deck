@@ -71,7 +71,7 @@ def _safe_profile_dir(value: str) -> str:
 
 
 class ProcessManager:
-    """Own Studio launches and combine them with point-in-time discovery."""
+    """Own Neural Deck launches and combine them with point-in-time discovery."""
 
     def __init__(
         self,
@@ -233,7 +233,7 @@ class ProcessManager:
             unit_name = None
             pending_path = None
             if self.launcher is not None:
-                unit_name = f"llm-studio-model-{uuid4().hex}.service"
+                unit_name = f"neural-deck-model-{uuid4().hex}.service"
                 pending_path = self.launcher.pending(
                     unit_name,
                     {
@@ -620,7 +620,7 @@ class ProcessManager:
             pgid = os.getpgid(expected.pid)
             group_leader = psutil.Process(pgid)
             group_user = group_leader.username()
-            studio_pgid = os.getpgrp()
+            neural_deck_pgid = os.getpgrp()
         except (OSError, psutil.Error) as exc:
             raise AppError(
                 "instance_identity_changed",
@@ -628,7 +628,7 @@ class ProcessManager:
                 status_code=409,
                 details={"pid": expected.pid},
             ) from exc
-        if pgid <= 0 or pgid == studio_pgid or group_user != self.username:
+        if pgid <= 0 or pgid == neural_deck_pgid or group_user != self.username:
             raise AppError(
                 "instance_identity_changed",
                 "Группа процесса не принадлежит подтверждённому экземпляру",

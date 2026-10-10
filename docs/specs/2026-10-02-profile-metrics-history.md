@@ -212,7 +212,7 @@ Cache hit вычислять как cached_input_tokens / input_tokens при с
 - Снимки cumulative totals раз в 5 секунд не записываются как отдельные запросы.
   Будущие суммы токенов берутся по событиям запросов; periodic counters служат
   отдельным источником наблюдения и не суммируются с событиями.
-- Прямые обращения сторонних клиентов к движку не видны прокси Студии.
+- Прямые обращения сторонних клиентов к движку не видны прокси Neural Deck.
   /metrics предоставляет агрегаты, но не события отдельных запросов. Для них
   сохраняются periodic totals; полноценный per-request учёт требует источника
   в движке. Нельзя восстанавливать выдуманные запросы из разницы counters.
@@ -317,15 +317,15 @@ Extrema завершённого profile/PID удаляются, когда ег
 Docker продолжает использовать только .env.local. При непустом URL асинхронно
 проверить query API с timeout 2s; ошибка не блокирует startup.
 
-Предоставить `/metrics` Студии из локального Collector, без чтения Prometheus
-обратно, без повторного независимого scrape. Labels: постоянный studio_id,
+Предоставить `/metrics` Neural Deck из локального Collector, без чтения Prometheus
+обратно, без повторного независимого scrape. Labels: постоянный neural_deck_id,
 profile_name (если есть), pid, engine_id. Новый Run ID не вводится.
-Оператор один раз добавляет адрес Студии в scrape_configs; URL в env сам по себе
+Оператор один раз добавляет адрес Neural Deck в scrape_configs; URL в env сам по себе
 не настраивает сбор. В документации предоставить готовый YAML.
 
 Чтение через query/query_range, scopes экранируются; произвольный PromQL от
 браузера не принимается. Query timestamps не подменяют observed_at исходных
-sample. Freshness current не более 10s; пустой ответ, wrong profile/PID/studio,
+sample. Freshness current не более 10s; пустой ответ, wrong profile/PID/neural-deck,
 stale и HTTP/timeout дают локальный fallback. После ошибки cooldown 30s и
 автоматическая повторная проверка. Без повторяющихся toast на каждом polling.
 Локальная запись остаётся включена всегда. History gaps могут дополняться SQLite,

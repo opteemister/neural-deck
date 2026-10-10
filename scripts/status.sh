@@ -24,7 +24,7 @@ if [[ -n "$DEPLOY_TARGET" && "${1:-}" != "--local" ]]; then
     exit 0
 fi
 
-env_file=${LLM_STUDIO_ENV_FILE:-"$root/.env"}
+env_file=${NEURAL_DECK_ENV_FILE:-"$root/.env"}
 [[ -f "$env_file" ]] || die "runtime config is missing: ${env_file}; copy .env.example to .env"
 host=$(require_dotenv_value "$env_file" HOST)
 port=$(require_dotenv_value "$env_file" PORT)
@@ -33,25 +33,25 @@ command -v systemctl >/dev/null 2>&1 \
 
 info "status target: local machine (${root})"
 info "Autostart (systemctl is-enabled):"
-if systemctl is-enabled llm-studio.service; then
+if systemctl is-enabled neural-deck.service; then
     autostart_failed=0
 else
     autostart_failed=1
 fi
 
 info "Service status (systemctl status):"
-if ! systemctl is-active --quiet llm-studio; then
-    warn "systemd service llm-studio is not active"
-    systemctl status llm-studio --no-pager --full || true
+if ! systemctl is-active --quiet neural-deck; then
+    warn "systemd service neural-deck is not active"
+    systemctl status neural-deck --no-pager --full || true
     service_failed=1
 else
     service_failed=0
-    systemctl status llm-studio --no-pager --full || true
+    systemctl status neural-deck --no-pager --full || true
     info "systemd: active"
 fi
 
 info "Last 100 log lines from the current boot (journalctl):"
-if ! journalctl -u llm-studio.service -b --no-pager -n 100; then
+if ! journalctl -u neural-deck.service -b --no-pager -n 100; then
     warn "could not read service journal; run with a user allowed to read the system journal"
     journal_failed=1
 else

@@ -199,7 +199,7 @@ ADAPTER_BY_ID = {adapter.engine_id: adapter for adapter in ADAPTERS}
 def _manifest_engine_id(root: Path) -> str | None:
     """Read the small install manifest used to retain failed candidates."""
 
-    manifest = root / ".llm-studio-engine.yaml"
+    manifest = root / ".neural-deck-engine.yaml"
     try:
         value = yaml.safe_load(manifest.read_text(encoding="utf-8"))
     except (OSError, ValueError, yaml.YAMLError):
@@ -212,7 +212,7 @@ def _manifest_engine_id(root: Path) -> str | None:
 def read_engine_manifest(root: Path) -> EngineManifest | None:
     """Read the durable install/update marker when it is well formed."""
 
-    manifest = root / ".llm-studio-engine.yaml"
+    manifest = root / ".neural-deck-engine.yaml"
     try:
         value = yaml.safe_load(manifest.read_text(encoding="utf-8"))
     except (OSError, ValueError, yaml.YAMLError):

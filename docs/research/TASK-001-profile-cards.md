@@ -2,7 +2,7 @@
 
 Статус: **Черновик, не согласовано**
 Дата исследования: 2026-10-04
-Область: локальный checkout `/Users/opteemist/Documents/MyProjects/llm-studio`.
+Область: локальный checkout Neural Deck.
 
 Исследование выполнено по исходным файлам, тестам и документации в checkout.
 Приложение не запускалось, серверы, SSH, удалённые API и production runtime не

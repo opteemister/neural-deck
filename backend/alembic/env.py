@@ -27,7 +27,7 @@ target_metadata = Base.metadata
 def runtime_settings() -> Settings:
     """Use settings supplied by the embedded app when available."""
 
-    configured = config.attributes.get("llm_studio_settings")
+    configured = config.attributes.get("neural_deck_settings")
     return configured if isinstance(configured, Settings) else load_settings()
 
 

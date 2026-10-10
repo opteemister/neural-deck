@@ -104,7 +104,7 @@ export function ModelsPage() {
   const [downloadsClosed, setDownloadsClosed] = useState(false)
   const [favoriteModels, setFavoriteModels] = useState<string[]>(() => {
     try {
-      const saved = window.localStorage.getItem('llm-studio.favorite-models')
+      const saved = window.localStorage.getItem('neural-deck.favorite-models')
       const parsed = saved ? JSON.parse(saved) : []
       return Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === 'string') : []
     } catch {
@@ -125,7 +125,7 @@ export function ModelsPage() {
   const downloadOperations = downloadHistory
   const download = useMutation({ mutationFn: api.downloadModels, onSuccess: () => { const shouldCollapse = downloadsClosed || downloadOperations.length === 0; setDownloadsClosed(false); if (shouldCollapse) setDownloadsCollapsed(true); void queryClient.invalidateQueries({ queryKey: queryKeys.downloads }); void queryClient.invalidateQueries({ queryKey: queryKeys.localModels }) } })
   const cancelDownload = useMutation({ mutationFn: api.cancelOperation, onSuccess: () => { void queryClient.invalidateQueries({ queryKey: queryKeys.downloads }); void queryClient.invalidateQueries({ queryKey: queryKeys.localModels }) } })
-  useEffect(() => { window.localStorage.setItem('llm-studio.favorite-models', JSON.stringify(favoriteModels)) }, [favoriteModels])
+  useEffect(() => { window.localStorage.setItem('neural-deck.favorite-models', JSON.stringify(favoriteModels)) }, [favoriteModels])
   useEffect(() => { setSearchInput(hfQuery) }, [hfQuery])
   useEffect(() => {
     if (!downloads.data) return

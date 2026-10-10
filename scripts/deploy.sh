@@ -7,11 +7,11 @@ source "$script_dir/common.sh"
 
 root=$(repo_root)
 deploy_file=${DEPLOY_ENV_FILE:-"$root/deploy.env"}
-runtime_file=${LLM_STUDIO_ENV_FILE:-"$root/.env"}
+runtime_file=${NEURAL_DECK_ENV_FILE:-"$root/.env"}
 load_deploy_config "$deploy_file"
 
 if [[ -z "$DEPLOY_TARGET" ]]; then
-    info "This will install and start systemd service llm-studio on the current machine."
+    info "This will install and start systemd service neural-deck on the current machine."
     info "Exact target: ${root} (native Linux, persistent data from .env)"
     printf 'Continue with this local installation? [y/N] '
     answer=''
@@ -22,7 +22,7 @@ if [[ -z "$DEPLOY_TARGET" ]]; then
     esac
     [[ -f "$runtime_file" ]] \
         || die "runtime config is missing: ${runtime_file}; copy .env.example to .env"
-    LLM_STUDIO_INSTALL_CONFIRMED=1 LLM_STUDIO_ENV_FILE="$runtime_file" \
+    NEURAL_DECK_INSTALL_CONFIRMED=1 NEURAL_DECK_ENV_FILE="$runtime_file" \
         exec bash "$root/deploy/install.sh"
 fi
 
@@ -36,7 +36,7 @@ validate_deploy_path "$DEPLOY_PATH"
 info "Deploy target: ${DEPLOY_TARGET}:${DEPLOY_PATH}"
 info "The build, dependency installation, migration, and service restart will run on the target."
 
-archive_dir=$(mktemp -d "${TMPDIR:-/tmp}/llm-studio-deploy.XXXXXX")
+archive_dir=$(mktemp -d "${TMPDIR:-/tmp}/neural-deck-deploy.XXXXXX")
 archive_tar="$archive_dir/source.tar"
 manifest="$archive_dir/manifest"
 cleanup() {
@@ -58,11 +58,16 @@ runtime_source_roots=(
     backend/alembic
     frontend/src
     frontend/public
+    # Exact renamed resources must also be deployable before their first commit.
+    deploy/systemd/neural-deck.service.template
+    docs/design/neural-deck-reference.html
 )
 : > "$manifest"
 append_manifest() {
     local exclude_environment_files=${1:-0}
     while IFS= read -r -d '' item_path; do
+        # A rename/deletion can leave a path in the index until the next commit.
+        [[ -e "$root/$item_path" || -L "$root/$item_path" ]] || continue
         case "$item_path" in
             .DS_Store|*/.DS_Store|._*|*/._*|__MACOSX|__MACOSX/*|*/__MACOSX|*/__MACOSX/*|\
             .Spotlight-V100|.Spotlight-V100/*|.Trashes|.Trashes/*|.fseventsd|.fseventsd/*)
@@ -121,7 +126,7 @@ fi
 # needed while dependencies are installed and the service is restarted.
 cleanup
 
-install_command="cd ${remote_path} && LLM_STUDIO_INSTALL_CONFIRMED=1 bash deploy/install.sh"
+install_command="cd ${remote_path} && NEURAL_DECK_INSTALL_CONFIRMED=1 bash deploy/install.sh"
 if ! ssh -- "$DEPLOY_TARGET" "$install_command"; then
     die "remote installation failed on ${DEPLOY_TARGET}"
 fi

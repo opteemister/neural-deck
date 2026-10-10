@@ -12,7 +12,7 @@ def test_required_runtime_environment_contract(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     # spec: version-zero
-    monkeypatch.setenv("LLM_STUDIO_DATA_ROOT", str(tmp_path / "data"))
+    monkeypatch.setenv("NEURAL_DECK_DATA_ROOT", str(tmp_path / "data"))
     monkeypatch.setenv("HOST", "0.0.0.0")
     monkeypatch.setenv("PORT", "18080")
     monkeypatch.setenv("EXTRA_VENV_ROOTS", "/opt/venvs, /srv/venvs")
@@ -28,7 +28,7 @@ def test_required_runtime_environment_contract(
 @pytest.mark.version_zero
 def test_required_environment_has_no_silent_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     # spec: version-zero
-    for name in ("LLM_STUDIO_DATA_ROOT", "HOST", "PORT"):
+    for name in ("NEURAL_DECK_DATA_ROOT", "HOST", "PORT"):
         monkeypatch.delenv(name, raising=False)
 
     with pytest.raises(ValidationError):

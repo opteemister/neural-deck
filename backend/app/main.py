@@ -95,12 +95,12 @@ def _configure_application_logging(log_path: Path) -> None:
         access_logger.removeHandler(handler)
         handler.close()
     if not any(
-        getattr(handler, "_llm_studio_console_handler", False) for handler in logger.handlers
+        getattr(handler, "_neural_deck_console_handler", False) for handler in logger.handlers
     ):
         console_handler = logging.StreamHandler()
         console_handler.setLevel(logging.INFO)
         console_handler.setFormatter(formatter)
-        console_handler._llm_studio_console_handler = True  # type: ignore[attr-defined]
+        console_handler._neural_deck_console_handler = True  # type: ignore[attr-defined]
         logger.addHandler(console_handler)
     loggers = (logger, logging.getLogger("uvicorn.error"))
     for target in loggers:
@@ -108,7 +108,7 @@ def _configure_application_logging(log_path: Path) -> None:
         matching = [
             handler
             for handler in target.handlers
-            if getattr(handler, "_llm_studio_file_handler", False)
+            if getattr(handler, "_neural_deck_file_handler", False)
         ]
         for handler in matching:
             if Path(getattr(handler, "baseFilename", "")) != log_path:
@@ -120,7 +120,7 @@ def _configure_application_logging(log_path: Path) -> None:
         if any(
             Path(getattr(handler, "baseFilename", "")) == log_path
             for handler in target.handlers
-            if getattr(handler, "_llm_studio_file_handler", False)
+            if getattr(handler, "_neural_deck_file_handler", False)
         ):
             continue
 
@@ -132,7 +132,7 @@ def _configure_application_logging(log_path: Path) -> None:
         )
         handler.setFormatter(formatter)
         handler.setLevel(logging.INFO)
-        handler._llm_studio_file_handler = True  # type: ignore[attr-defined]
+        handler._neural_deck_file_handler = True  # type: ignore[attr-defined]
         target.addHandler(handler)
 
 
@@ -263,24 +263,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # in database migration must prevent a partially usable service from
     # starting; optional scanners below are deliberately isolated.
     prepare_data_dirs(paths)
-    _configure_application_logging(paths.studio_log_dir / "app.log")
+    _configure_application_logging(paths.neural_deck_log_dir / "app.log")
     service_url = _service_url(settings.host, settings.port)
-    logger.info("LLM Studio backend: запуск %s", service_url)
+    logger.info("Neural Deck backend: запуск %s", service_url)
     logger.info(
-        "LLM Studio backend: data_root=%s models_root=%s", paths.data_root, paths.models_root
+        "Neural Deck backend: data_root=%s models_root=%s", paths.data_root, paths.models_root
     )
     db_engine = create_engine(paths.sqlite_path)
     runtime: AppContainer | None = None
     try:
-        logger.info("LLM Studio backend: подготовка каталогов и базы данных")
+        logger.info("Neural Deck backend: подготовка каталогов и базы данных")
         await migrate_database(settings, paths)
         await check_database(db_engine)
         operation_manager = OperationManager(paths.operations_log_dir)
         model_registry = ModelRegistry()
         external_discovery = discover_external
-        launch_mode = os.environ.get("LLM_STUDIO_MODEL_LAUNCHER", "process")
+        launch_mode = os.environ.get("NEURAL_DECK_MODEL_LAUNCHER", "process")
         if launch_mode not in {"process", "systemd"}:
-            raise ValueError("LLM_STUDIO_MODEL_LAUNCHER must be process or systemd")
+            raise ValueError("NEURAL_DECK_MODEL_LAUNCHER must be process or systemd")
         process_manager = ProcessManager(
             log_root=paths.profiles_log_dir,
             run_store=RunStore(db_engine),
@@ -314,7 +314,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
         from .metrics.storage import MetricsStorage
 
-        identity_path = paths.data_root / "studio-id"
+        identity_path = paths.data_root / "neural-deck-id"
         if not identity_path.exists():
             identity_path.write_text(secrets.token_hex(16), encoding="utf-8")
         await journal_service.interrupt_pending()
@@ -324,7 +324,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             storage=MetricsStorage(session_factory),
             prometheus_url=settings.prometheus_url,
             prometheus_token=settings.prometheus_token,
-            studio_id=identity_path.read_text().strip(),
+            neural_deck_id=identity_path.read_text().strip(),
         )
         statistics_service = StatisticsService(journal_service, profile_service, metrics_service.storage)
         runtime = AppContainer(
@@ -350,9 +350,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         model_catalogue.prepare_background_scan()
         await model_catalogue.start_update_scheduler()
         await metrics_service.start()
-        logger.info("LLM Studio backend: готов принимать запросы %s", service_url)
+        logger.info("Neural Deck backend: готов принимать запросы %s", service_url)
     except BaseException:
-        logger.exception("LLM Studio backend: запуск не выполнен")
+        logger.exception("Neural Deck backend: запуск не выполнен")
         if runtime is None:
             await db_engine.dispose()
         else:
@@ -370,12 +370,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             if runtime.mcp_server is not None:
                 await stack.enter_async_context(mcp_lifespan(runtime.mcp_server))
             runtime.startup_task = asyncio.create_task(
-                _scan_startup(runtime), name="studio-startup-discovery"
+                _scan_startup(runtime), name="neural-deck-startup-discovery"
             )
             yield
     finally:
         await runtime.close()
-        logger.info("LLM Studio backend: остановлен")
+        logger.info("Neural Deck backend: остановлен")
 
 
 def _mcp_dependencies(app: FastAPI) -> MCPDependencies:
@@ -454,7 +454,7 @@ def create_app(
     serve_model_api: bool = False,
 ) -> FastAPI:
     app = FastAPI(
-        title="LLM Studio",
+        title="Neural Deck",
         version="0.1.0",
         lifespan=lifespan,
     )
@@ -530,7 +530,7 @@ def create_app(
 
 
 def create_proxy_app(runtime: AppContainer) -> FastAPI:
-    app = FastAPI(title="LLM Studio OpenAI API", version="0.1.0")
+    app = FastAPI(title="Neural Deck OpenAI API", version="0.1.0")
     app.state.runtime = runtime
     app.add_middleware(RequestIdMiddleware)
     app.add_middleware(ApplicationCORSMiddleware, application_port=runtime.settings.port)

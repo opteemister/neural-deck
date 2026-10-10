@@ -1,4 +1,4 @@
-"""LLM Studio backend application package."""
+"""Neural Deck backend application package."""
 
 __all__ = ["__version__"]
 

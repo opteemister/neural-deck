@@ -1,7 +1,7 @@
 [project]
-name = "llm-studio-backend"
+name = "neural-deck-backend"
 version = "0.1.0"
-description = "Backend foundation for LLM Studio"
+description = "Backend foundation for Neural Deck"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "aiosqlite>=0.20,<1",

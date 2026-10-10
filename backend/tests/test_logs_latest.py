@@ -8,9 +8,9 @@ from app.paths import build_paths, prepare_data_dirs
 def test_latest_download_is_exact_full_file_not_combined_history(tmp_path):
     paths = build_paths(Settings(data_root=tmp_path, host="127.0.0.1", port=3000))
     prepare_data_dirs(paths)
-    old = paths.studio_log_dir / "app.log.1"
+    old = paths.neural_deck_log_dir / "app.log.1"
     old.write_text("previous file\n")
-    latest = paths.studio_log_dir / "app.log"
+    latest = paths.neural_deck_log_dir / "app.log"
     content = "\r\n".join(f"line {number}" for number in range(1200)) + "\r\n\r\n"
     latest.write_bytes(content.encode())
     os.utime(old, (100, 100))

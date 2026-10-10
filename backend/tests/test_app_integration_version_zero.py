@@ -144,14 +144,14 @@ def test_frontend_fallback_serves_assets_and_preserves_api_prefixes(tmp_path: Pa
     # spec: version-zero
     dist = tmp_path / "dist"
     (dist / "assets").mkdir(parents=True)
-    (dist / "index.html").write_text("<html>studio</html>", encoding="utf-8")
+    (dist / "index.html").write_text("<html>neural-deck</html>", encoding="utf-8")
     (dist / "assets" / "app.js").write_text("console.log('ok')", encoding="utf-8")
     settings = Settings(data_root=tmp_path / "data", host="127.0.0.1", port=8080)
     app = create_app(settings, frontend_dist=dist)
 
     with TestClient(app) as client:
-        assert client.get("/").text == "<html>studio</html>"
-        assert client.get("/profiles/dashboard").text == "<html>studio</html>"
+        assert client.get("/").text == "<html>neural-deck</html>"
+        assert client.get("/profiles/dashboard").text == "<html>neural-deck</html>"
         assert client.get("/assets/app.js").text == "console.log('ok')"
         unknown_api = client.get("/api/v1/unknown")
         assert unknown_api.status_code == 404
@@ -201,7 +201,7 @@ def test_composed_services_and_mcp_mount_are_available_before_spa_fallback(
             },
         )
         assert initialize.status_code == 200
-        assert initialize.json()["result"]["serverInfo"]["name"] == "LLM Studio"
+        assert initialize.json()["result"]["serverInfo"]["name"] == "Neural Deck"
 
 
 @pytest.mark.asyncio

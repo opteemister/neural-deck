@@ -1,4 +1,4 @@
-"""Runtime composition for one LLM Studio application process.
+"""Runtime composition for one Neural Deck application process.
 
 The domain modules are intentionally usable on their own in unit tests.  This
 container is the one place where the application wires their long lived
@@ -125,7 +125,7 @@ class AppContainer:
     async def close(self) -> None:
         """Release application resources without stopping model processes."""
 
-        # ProcessManager.close only cancels Studio watcher tasks.  It does not
+        # ProcessManager.close only cancels Neural Deck watcher tasks.  It does not
         # send signals to managed processes, because shutdown must not kill
         # model servers that can outlive this web process.
         try:

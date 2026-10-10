@@ -3,7 +3,7 @@ set -euo pipefail
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 root=$(cd "$script_dir/.." && pwd)
-verify_tmp=$(mktemp -d "${TMPDIR:-/tmp}/llm-studio-verify.XXXXXX")
+verify_tmp=$(mktemp -d "${TMPDIR:-/tmp}/neural-deck-verify.XXXXXX")
 trap 'rm -rf -- "$verify_tmp"' EXIT
 
 run_step() {
@@ -53,4 +53,5 @@ else
 fi
 
 run_step "runtime shell harness" bash "$root/verify/test-runtime.sh"
+run_step "uninstall shell harness" bash "$root/verify/test-uninstall.sh"
 printf '\nverification completed\n'

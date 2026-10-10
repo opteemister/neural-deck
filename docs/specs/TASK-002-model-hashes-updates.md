@@ -37,7 +37,7 @@
 
 ### 1. Расширить состояние manifest
 
-Сохранить существующий `<model-dir>/.llm-studio-hf.yaml` как источник связи
+Сохранить существующий `<model-dir>/.neural-deck-hf.yaml` как источник связи
 модели с Hub. Для отдельного файла сохранить соседний sidecar, как описано в
 контрактах Version Zero. Версию формата поднять до `schema_version: 2` через
 additive migration.

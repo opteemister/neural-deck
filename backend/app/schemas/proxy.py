@@ -15,6 +15,9 @@ class OpenAIModel(BaseModel):
     created: int
     owned_by: str = "neural-deck"
     engine_id: str | None = None
+    # Operation capabilities let clients such as the built-in chat select only
+    # text models without inferring support from an engine's name.
+    types: list[str] = Field(default_factory=list)
     context_length: int | None = None
     reasoning_capabilities: dict[str, Any] | None = None
     capabilities: dict[str, Any] | None = None

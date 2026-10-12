@@ -9,6 +9,7 @@ import hashlib
 import json
 import logging
 import os
+import shlex
 import signal
 from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass
@@ -32,7 +33,8 @@ from ..schemas.instances import (
     ProcessOperation,
 )
 from ..schemas.profiles import ProfileData
-from .discovery import ExternalObservation, discover_external, query_readiness
+from ..schemas.engines import ResolvedEngineProfile
+from .discovery import ExternalObservation, discover_external, legacy_runtime_metadata, process_host, query_readiness
 from .external_logs import external_logs
 from .launcher import ObservedProcess, SystemdLauncher, process_start_ns
 from .registry import ModelRegistry
@@ -51,6 +53,9 @@ class _Managed:
     command: str
     installation_id: str
     unit_name: str | None = None
+    working_directory: Path | None = None
+    healthcheck: dict[str, Any] | None = None
+    model_paths_fingerprint: str | None = None
 
 
 def _identity_start_ns(pid: int) -> int | None:
@@ -84,6 +89,8 @@ class ProcessManager:
         run_store: RunStore | None = None,
         launcher: SystemdLauncher | None = None,
         external_discovery: Callable[..., Awaitable[list[ExternalObservation]]] | None = None,
+        profile_resolver: Callable[[ProfileData], ResolvedEngineProfile] | None = None,
+        model_paths_refresher: Callable[[], Path] | None = None,
     ) -> None:
         self.log_root = log_root or Path.cwd() / "logs" / "profiles"
         self.log_root.mkdir(parents=True, exist_ok=True)
@@ -95,6 +102,8 @@ class ProcessManager:
         self.registry = registry or ModelRegistry()
         self.run_store = run_store
         self.launcher = launcher
+        self.profile_resolver = profile_resolver
+        self.model_paths_refresher = model_paths_refresher
         self._managed: dict[str, _Managed] = {}
         self._external: dict[str, ExternalObservation] = {}
         self._operations: dict[str, ProcessOperation] = {}
@@ -130,7 +139,20 @@ class ProcessManager:
             "command": item.command,
             "installation_id": item.installation_id,
             "unit_name": item.unit_name,
+            "working_directory": str(item.working_directory) if item.working_directory else None,
+            "healthcheck": item.healthcheck,
+            "model_paths_fingerprint": item.model_paths_fingerprint,
         }
+
+    @property
+    def extra_model_paths_config(self) -> Path:
+        return self.runtime_root / "comfyui" / "extra_model_paths.yaml"
+
+    def _model_paths_fingerprint(self) -> str | None:
+        try:
+            return hashlib.sha256(self.extra_model_paths_config.read_bytes()).hexdigest()
+        except OSError:
+            return None
 
     def profile_runtime_dir(self, profile_name: str) -> Path:
         """Storage for our workflows and API assets, not ComfyUI's base directory."""
@@ -160,6 +182,7 @@ class ProcessManager:
                         can_stop=True,
                         port=data["port"],
                         model_name=data["model_name"],
+                        **_snapshot_metadata(data, data["engine_id"], data["command"], data["port"]),
                         state="starting",
                         observed_at=datetime.now(UTC),
                     ).model_dump(mode="json")
@@ -168,7 +191,11 @@ class ProcessManager:
                 path.unlink()
                 path.with_suffix(".env").unlink(missing_ok=True)
         for data in snapshots:
-            instance = Instance.model_validate(data["instance"])
+            raw_instance = dict(data["instance"])
+            raw_instance.update(_snapshot_metadata(
+                raw_instance, raw_instance["engine_id"], data["command"], raw_instance.get("port")
+            ))
+            instance = Instance.model_validate(raw_instance)
             actual = process_start_ns(instance.pid)
             if actual is None or actual != instance.process_start_time_ns:
                 await self.run_store.delete(instance.pid, instance.process_start_time_ns)
@@ -190,17 +217,25 @@ class ProcessManager:
                 data["command"],
                 data["installation_id"],
                 unit,
+                Path(data["working_directory"]) if data.get("working_directory") else None,
+                data.get("healthcheck"),
+                data.get("model_paths_fingerprint"),
             )
             self._managed[instance.id] = item
-            if instance.engine_id != "image":
-                self.registry.register_instance(instance)
+            self.registry.register_instance(instance)
             self._track_task(self._wait_process(instance.id))
             self._track_task(self._watch_start(instance.id))
 
-    async def start_profile(self, profile: ProfileData, engine_path: str) -> Instance:
+    async def start_profile(self, profile: ProfileData, engine_path: str | None = None) -> Instance:
         # Refresh once before evaluating model and port conflicts so a manual
         # launch cannot be shadowed by stale in-memory state.
         await self.refresh()
+        resolved = (
+            await asyncio.to_thread(self.profile_resolver, profile)
+            if self.profile_resolver is not None else None
+        )
+        if resolved is None and engine_path is None:
+            raise AppError("installation_unavailable", "Для профиля не подтверждена установка движка", status_code=409)
         async with self._guard:
             active = self._active_managed()
             active_external = [item.instance for item in self._external.values()]
@@ -214,15 +249,40 @@ class ProcessManager:
             # Several managed profiles may intentionally publish the same
             # public model name.  TASK-004 groups them into one ordered route;
             # port conflicts remain a separate safety check below.
+            model_path = resolved.model_path if resolved else (profile.model.path if profile.model else None)
+            protocol = resolved.api_protocol if resolved else legacy_runtime_metadata(profile.engine.id, [], None)["api_protocol"]
+            if protocol == "comfyui" and self.model_paths_refresher is not None:
+                await asyncio.to_thread(self.model_paths_refresher)
             command = substitute_placeholders(
-                profile.command,
-                engine=engine_path,
-                model=str(profile.model.path),
-                model_name=profile.model_name,
-                model_draft=str(profile.model.draft_path) if profile.model.draft_path else None,
-                port=profile.port or (8188 if profile.engine.id == "image" else None),
+                resolved.command if resolved else profile.command,
+                engine=str(resolved.executable_path) if resolved else str(engine_path),
+                model=str(model_path) if model_path is not None else None,
+                model_name=resolved.model_name if resolved else profile.model_name,
+                model_draft=str(profile.model.draft_path) if profile.model and profile.model.draft_path else None,
+                port=profile.port or (8188 if protocol == "comfyui" else None),
+                target=str(resolved.installation.root_path) if resolved else None,
+                extra_model_paths_config=str(self.extra_model_paths_config),
             )
-            port = resolve_effective_port(profile.engine.id, command).port
+            port = resolve_effective_port("image" if protocol == "comfyui" else profile.engine.id, command).port
+            metadata = legacy_runtime_metadata(profile.engine.id, _command_words(command), port)
+            if resolved is not None:
+                api_base_url = resolved.api_base_url
+                if api_base_url is None and port is not None and resolved.api_protocol in {"openai", "comfyui"}:
+                    host = process_host(_command_words(command)) or "127.0.0.1"
+                    if ":" in host and not host.startswith("["):
+                        host = f"[{host}]"
+                    api_base_url = f"http://{host}:{port}"
+                    if resolved.api_protocol == "openai":
+                        api_base_url += "/v1"
+                metadata = {
+                    "types": list(resolved.types),
+                    "api_protocol": resolved.api_protocol,
+                    "api_base_url": api_base_url,
+                    "ui_url": resolved.ui_url,
+                }
+            working_directory = resolved.working_directory if resolved else Path.cwd()
+            healthcheck = resolved.healthcheck.model_dump(mode="json") if resolved and resolved.healthcheck else None
+            model_paths_fingerprint = self._model_paths_fingerprint() if protocol == "comfyui" else None
             if port is not None and (
                 any(item.instance.port == port for item in active)
                 or any(item.port == port for item in active_external)
@@ -239,7 +299,7 @@ class ProcessManager:
                 (profile_dir / ".profile-name").write_text(profile.name, encoding="utf-8")
             temporary_log = profile_dir / f"starting-{uuid4().hex}.log"
             env = os.environ.copy()
-            env.update(dict(profile.environment))
+            env.update(dict(resolved.environment if resolved else profile.environment))
             process: Any
             unit_name = None
             pending_path = None
@@ -256,9 +316,13 @@ class ProcessManager:
                         "command": command,
                         "installation_id": profile.engine.installation_id,
                         "log_path": str(temporary_log),
+                        **metadata,
+                        "working_directory": str(working_directory),
+                        "healthcheck": healthcheck,
+                        "model_paths_fingerprint": model_paths_fingerprint,
                     },
                 )
-                pid = await self.launcher.start(unit_name, command, env, temporary_log)
+                pid = await self.launcher.start(unit_name, command, env, temporary_log, working_directory=working_directory)
                 start_ns = process_start_ns(pid) if pid else None
                 if start_ns is None:
                     await self.launcher.stop(unit_name)
@@ -275,6 +339,7 @@ class ProcessManager:
                         "-c",
                         command,
                         env=env,
+                        cwd=working_directory,
                         stdin=asyncio.subprocess.DEVNULL,
                         stdout=log_handle,
                         stderr=asyncio.subprocess.STDOUT,
@@ -331,6 +396,7 @@ class ProcessManager:
                 can_stop=True,
                 port=port,
                 model_name=profile.model_name,
+                **metadata,
                 state="starting",
                 observed_at=datetime.now(UTC),
             )
@@ -341,6 +407,9 @@ class ProcessManager:
                 command=command,
                 installation_id=profile.engine.installation_id,
                 unit_name=unit_name,
+                working_directory=working_directory,
+                healthcheck=healthcheck,
+                model_paths_fingerprint=model_paths_fingerprint,
             )
             if self.run_store is not None:
                 try:
@@ -355,8 +424,7 @@ class ProcessManager:
                 pending_path.unlink(missing_ok=True)
             self._managed[instance.id] = managed
             self._track_task(self._wait_process(instance.id))
-            if instance.engine_id != "image":
-                self.registry.register_instance(instance)
+            self.registry.register_instance(instance)
             self._track_task(self._watch_start(instance.id))
             logger.info(
                 "Процесс профиля запущен: profile=%s instance_id=%s pid=%s log=%s",
@@ -426,6 +494,16 @@ class ProcessManager:
         item = self._managed.get(instance_id)
         if item is None:
             return
+        if item.process.returncode is not None:
+            self._process_done(instance_id)
+            return
+        if item.healthcheck is None or item.instance.api_protocol == "none" or (
+            item.instance.api_base_url is None and item.instance.port is None
+        ):
+            item.instance.state = "running"
+            if self.run_store is not None:
+                await self.run_store.save(self._snapshot(item))
+            return
         # Loading large models can take minutes. Process liveness alone is
         # not readiness; keep probing the engine-specific health surface.
         while item.instance.state == "starting":
@@ -433,7 +511,10 @@ class ProcessManager:
                 self._process_done(instance_id)
                 return
             ready, models = await query_readiness(
-                item.instance.engine_id, item.instance.port, client=self.http_client
+                item.instance.engine_id, item.instance.port, client=self.http_client,
+                api_protocol=item.instance.api_protocol,
+                api_base_url=item.instance.api_base_url,
+                healthcheck=item.healthcheck,
             )
             # A stop or exit can happen while the HTTP request is in flight.
             if item.process.returncode is not None:
@@ -444,8 +525,9 @@ class ProcessManager:
             if ready:
                 item.instance.state = "ready"
                 item.instance.observed_at = datetime.now(UTC)
-                if item.instance.engine_id != "image":
-                    self.registry.register_instance(item.instance, upstream_models=models)
+                self.registry.register_instance(item.instance, upstream_models=models)
+                if self.run_store is not None:
+                    await self.run_store.save(self._snapshot(item))
                 return
             await asyncio.sleep(START_PROBE_INTERVAL)
 
@@ -475,6 +557,11 @@ class ProcessManager:
                         item.instance.pid, item.instance.process_start_time_ns
                     )
             item.instance.observed_at = datetime.now(UTC)
+            if item.instance.api_protocol == "comfyui" and item.process.returncode is None:
+                current = self._model_paths_fingerprint()
+                item.instance.model_paths_restart_required = (
+                    current is not None and current != item.model_paths_fingerprint
+                )
         excluded = {
             (item.instance.pid, item.instance.process_start_time_ns)
             for item in self._managed.values()
@@ -504,7 +591,6 @@ class ProcessManager:
             # operator, but must not become a routable model target.
             if (
                 probe_models
-                and observation.instance.engine_id != "image"
                 and observation.instance.identity_verified
             ):
                 self.registry.register_instance(
@@ -722,6 +808,25 @@ class ProcessManager:
         if operation is None:
             raise AppError("operation_not_found", "Операция не найдена", status_code=404)
         return operation
+
+
+def _command_words(command: str) -> list[str]:
+    try:
+        return shlex.split(command)
+    except ValueError:
+        return []
+
+
+def _snapshot_metadata(
+    snapshot: dict[str, Any], engine_id: str, command: str, port: int | None
+) -> dict[str, Any]:
+    # Missing keys identify old snapshots; an explicit new protocol=none is
+    # an operator choice and must not be replaced by legacy engine defaults.
+    legacy = legacy_runtime_metadata(engine_id, _command_words(command), port)
+    return {
+        key: snapshot[key] if key in snapshot else value
+        for key, value in legacy.items()
+    }
 
 
 def _pid_exists(pid: int) -> bool:

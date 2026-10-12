@@ -14,6 +14,8 @@ PLACEHOLDERS = (
     "{{model_name}}",
     "{{base_directory}}",
     "{{port}}",
+    "{{target}}",
+    "{{extra_model_paths_config}}",
 )
 _SEPARATORS = frozenset(" \t\r\n|;&<>\n()")
 _UNSAFE_FORMAT_CHARS = frozenset(r"'\"`$;|&<>()[\]*!?#")
@@ -100,15 +102,19 @@ def _word_end(command: str, index: int) -> bool:
     return index == len(command) or command[index] in _SEPARATORS
 
 
-def validate_placeholders(command: str) -> None:
+def validate_placeholders(
+    command: str, *, extra_placeholders: tuple[str, ...] = ()
+) -> None:
     """Validate supported placeholders without executing shell code.
 
-    The scanner intentionally rejects anything ambiguous: quotes, escaped
-    characters, assignments, comments and command substitutions.  A command
-    without a placeholder remains free to use normal shell syntax.
+    The scanner rejects ambiguous placeholder placement: quotes, escaped
+    characters, partial assignments, comments and command substitutions. A
+    placeholder may be the complete value of a simple unquoted NAME= token.
+    A command without a placeholder remains free to use normal shell syntax.
     """
 
-    if "`" in command and any(item in command for item in PLACEHOLDERS):
+    placeholders = (*PLACEHOLDERS, *extra_placeholders)
+    if "`" in command and any(item in command for item in placeholders):
         raise PlaceholderError("заполнители нельзя использовать в command substitution")
     quote: str | None = None
     escaped = False
@@ -118,7 +124,7 @@ def validate_placeholders(command: str) -> None:
     while index < len(command):
         char = command[index]
         if comment:
-            if any(command.startswith(item, index) for item in PLACEHOLDERS):
+            if any(command.startswith(item, index) for item in placeholders):
                 raise PlaceholderError("заполнитель нельзя использовать в комментарии")
             index += 1
             continue
@@ -127,14 +133,14 @@ def validate_placeholders(command: str) -> None:
             index += 1
             continue
         if quote == "'":
-            if any(command.startswith(item, index) for item in PLACEHOLDERS):
+            if any(command.startswith(item, index) for item in placeholders):
                 raise PlaceholderError("заполнитель нельзя использовать внутри кавычек")
             if char == "'":
                 quote = None
             index += 1
             continue
         if quote == '"':
-            if any(command.startswith(item, index) for item in PLACEHOLDERS):
+            if any(command.startswith(item, index) for item in placeholders):
                 raise PlaceholderError("заполнитель нельзя использовать внутри кавычек")
             if char == '"':
                 quote = None
@@ -147,7 +153,7 @@ def validate_placeholders(command: str) -> None:
             index += 1
             continue
         if char == "\\":
-            if any(command.startswith(item, index + 1) for item in PLACEHOLDERS):
+            if any(command.startswith(item, index + 1) for item in placeholders):
                 raise PlaceholderError("заполнитель нельзя экранировать")
             escaped = True
             index += 1
@@ -168,27 +174,26 @@ def validate_placeholders(command: str) -> None:
             command_substitution -= 1
             index += 1
             continue
-        matched = next((item for item in PLACEHOLDERS if command.startswith(item, index)), None)
+        matched = next((item for item in placeholders if command.startswith(item, index)), None)
         if matched is not None:
             end = index + len(matched)
+            left = index - 1
+            while left >= 0 and command[left] not in _SEPARATORS:
+                left -= 1
+            assignment_prefix = command[left + 1 : index]
+            whole_assignment_value = re.fullmatch(
+                r"[A-Za-z_][A-Za-z0-9_]*=", assignment_prefix
+            ) is not None
             if (
                 quote is not None
                 or escaped
                 or command_substitution
-                or not _word_start(command, index)
+                or (not _word_start(command, index) and not whole_assignment_value)
                 or not _word_end(command, end)
             ):
                 raise PlaceholderError(
                     f"{matched} должен быть самостоятельным shell-словом вне кавычек"
                 )
-            # A word of the form NAME={{engine}} is an assignment even though
-            # the placeholder itself starts at a token boundary after '='.
-            left = index - 1
-            while left >= 0 and command[left] not in _SEPARATORS:
-                left -= 1
-            token = command[left + 1 : end]
-            if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", token):
-                raise PlaceholderError(f"{matched} нельзя использовать в assignment")
             index = end
             continue
         index += 1
@@ -200,11 +205,13 @@ def substitute_placeholders(
     command: str,
     *,
     engine: str,
-    model: str,
+    model: str | None,
     model_draft: str | None = None,
     model_name: str | None = None,
     base_directory: str | None = None,
     port: int | None = None,
+    target: str | None = None,
+    extra_model_paths_config: str | None = None,
 ) -> str:
     """Substitute validated words with shell-quoted profile values."""
 
@@ -223,19 +230,38 @@ def substitute_placeholders(
         )
     if "{{port}}" in command and port is None:
         raise AppError("port_missing", "Для {{port}} не задан порт профиля", status_code=422)
+    if "{{model}}" in command and not model:
+        raise AppError("model_missing", "Для {{model}} не выбрана модель", status_code=422)
+    if "{{target}}" in command and not target:
+        raise AppError(
+            "installation_target_missing",
+            "Для {{target}} не определена папка установки",
+            status_code=422,
+        )
+    if "{{extra_model_paths_config}}" in command and not extra_model_paths_config:
+        raise AppError(
+            "extra_model_paths_config_missing",
+            "Для {{extra_model_paths_config}} не задан runtime-файл путей моделей",
+            status_code=422,
+        )
     values = {
         "{{engine}}": shlex.quote(engine),
-        "{{model}}": shlex.quote(model),
         "{{base_directory}}": shlex.quote(base_directory or ""),
         "{{port}}": str(port) if port is not None else "",
     }
+    if model is not None:
+        values["{{model}}"] = shlex.quote(model)
     if model_draft is not None:
         values["{{model_draft}}"] = shlex.quote(model_draft)
     if model_name is not None:
         values["{{model_name}}"] = shlex.quote(model_name)
+    if target is not None:
+        values["{{target}}"] = shlex.quote(target)
+    if extra_model_paths_config is not None:
+        values["{{extra_model_paths_config}}"] = shlex.quote(extra_model_paths_config)
     # Replace only the original placeholders, never placeholder-like text in values.
     return re.sub(
-        r"\{\{(?:engine|model|model_draft|model_name|base_directory|port)\}\}",
+        r"\{\{(?:engine|model|model_draft|model_name|base_directory|port|target|extra_model_paths_config)\}\}",
         lambda match: values[match.group()],
         command,
     )

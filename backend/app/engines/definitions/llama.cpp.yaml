@@ -1,0 +1,14 @@
+version: 1
+id: llama.cpp
+name: llama.cpp
+types: [text]
+install_script_file: llama.cpp.sh
+executable: "{{target}}/bin/llama-server"
+environment: {}
+command: "{{engine}} --model {{model}} --alias {{model_name}} --metrics --host 127.0.0.1 --port 8000"
+healthcheck:
+  path: /v1/models
+  timeout_seconds: 3
+api:
+  protocol: openai
+  base_url: http://127.0.0.1:8000/v1

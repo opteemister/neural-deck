@@ -1,7 +1,56 @@
-export type EngineId = 'vllm' | 'llama.cpp' | 'sglang' | 'ninfer' | 'freetoken' | 'image'
+export type EngineId = string
+export type EngineType = 'text' | 'tts' | 'asr' | 'video' | 'image' | 'embeddings' | 'decision'
+export type ApiProtocol = 'none' | 'openai' | 'comfyui' | 'jev'
 
-export type InstallationKind = 'python_venv' | 'binary'
+export type InstallationKind = 'python_venv' | 'binary' | 'custom'
 export type InstallationStatus = 'ready' | 'broken' | 'candidate'
+
+export interface EngineApi {
+  protocol: ApiProtocol
+  base_url: string | null
+}
+
+export interface ProfileApiOverride {
+  protocol?: ApiProtocol | null
+  base_url?: string | null
+}
+
+export interface EngineHealthcheck {
+  path: string
+  timeout_seconds: number
+}
+
+export interface EngineDefinition {
+  version: 1
+  id: EngineId
+  name: string
+  types: EngineType[]
+  install_script: string | null
+  update_script: string | null
+  executable: string
+  working_directory: string | null
+  environment: Record<string, string>
+  command: string
+  healthcheck: EngineHealthcheck | null
+  api: EngineApi | null
+  ui_url: string | null
+  version_command: string[] | null
+}
+
+export interface EngineDefinitionsData {
+  items: EngineDefinition[]
+  issues?: Array<{ file: string; code: string; message: string }>
+}
+
+export interface GenericInstallationCreateRequest {
+  target_path: string
+  run_install: boolean
+  executable_path?: string
+}
+
+export type InstallationCreateRequest = GenericInstallationCreateRequest
+  | { kind: 'python_venv'; venv_name: string; command?: string }
+  | { kind: 'binary'; path: string; command?: string }
 
 export interface Installation {
   registered?: boolean
@@ -24,6 +73,9 @@ export interface EngineData {
   installation_root: string
   installation_kinds: InstallationKind[]
   installations: Installation[]
+  types: EngineType[]
+  api: EngineApi | null
+  ui_url: string | null
 }
 
 export interface EnginesData {
@@ -88,6 +140,7 @@ export interface Instance {
   process_start_time_ns: number | null
   port: number | null
   model_name: string | null
+  model_paths_restart_required: boolean
   state: InstanceState
   observed_at: string
   /** Backend-confirmed permission to send a stop request for this process. */
@@ -256,6 +309,7 @@ export interface OpenAiModel {
   owned_by?: string
   context_length?: number
   engine_id?: string
+  types?: EngineType[]
   capabilities?: Record<string, unknown> | null
   reasoning_capabilities?: {
     efforts: string[]
@@ -283,8 +337,11 @@ export interface ProfileData {
   name: string
   model_name: string
   engine: ProfileEngineRef
-  model: ProfileModelRef
+  model?: ProfileModelRef | null
   command: string
+  types?: EngineType[] | null
+  api?: ProfileApiOverride | null
+  ui_url?: string | null
   port?: number | null
   environment: Record<string, string>
   autostart: boolean

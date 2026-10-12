@@ -1,0 +1,7 @@
+# Dependency sketch only: there is no Qwen3-VL-Embedding serving adapter yet.
+# Do not select this file as an engine install requirement until that adapter is added.
+sentence-transformers==6.1.0
+transformers==5.19.0
+qwen-vl-utils==0.0.14
+fastapi==0.143.0
+uvicorn==0.54.0

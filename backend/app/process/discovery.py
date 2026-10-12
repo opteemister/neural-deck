@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 import psutil
@@ -23,6 +24,7 @@ SUPPORTED_MARKERS: dict[str, tuple[str, ...]] = {
     "image": ("comfyui", "comfy", "comfyui/main.py"),
 }
 _PORT_RE = re.compile(r"(?:--port(?:=|\s+)|(?:^|\s)-p\s+)(\d{1,5})(?:\s|$)")
+_TEXT_ENGINES = frozenset({"vllm", "llama.cpp", "sglang", "ninfer", "freetoken"})
 
 
 @dataclass(slots=True)
@@ -88,8 +90,12 @@ def identify_engine(command: list[str], process_name: str = "") -> str | None:
             arg.split("=", 1)[0] in {"--model", "--model-path"} for arg in arguments
         ):
             return "ninfer"
-    if executable in {"comfyui", "comfy", "main.py"} and any(
-        arg.split("=", 1)[0] in {"--base-directory", "--models-directory"}
+    if executable in {"comfyui", "comfy"} or (
+        executable == "main.py" and any("comfy" in part.lower() for part in command)
+    ):
+        return "image"
+    if executable == "main.py" and any(
+        arg.split("=", 1)[0] in {"--base-directory", "--models-directory", "--extra-model-paths-config"}
         for arg in arguments
     ):
         return "image"
@@ -113,15 +119,87 @@ def process_port(process: Any, command: list[str]) -> int | None:
     return None
 
 
-async def query_models(
-    port: int | None, *, request_timeout: float = 0.35, client: Any | None = None
-) -> list[str]:
+def process_host(command: list[str]) -> str | None:
+    """Return an explicitly configured listen host from a process command."""
+
+    flags = {"--host", "--listen-host", "--listen-address", "--bind", "--address", "--listen"}
+    for index, argument in enumerate(command):
+        name, separator, value = argument.partition("=")
+        if name not in flags:
+            continue
+        if separator:
+            return value.strip("[]") or None
+        if index + 1 < len(command) and not command[index + 1].startswith("-"):
+            return command[index + 1].strip("[]") or None
+        # ComfyUI's bare --listen flag means bind on all interfaces.
+        if name == "--listen":
+            return "0.0.0.0"
+    return None
+
+
+def _format_host(host: str) -> str:
+    value = host.strip()
+    if ":" in value and not value.startswith("["):
+        return f"[{value}]"
+    return value
+
+
+def backend_probe_url(url: str) -> str:
+    """Use a local destination for wildcard binds, without inventing UI URLs."""
+
+    parsed = urlsplit(url)
+    if parsed.hostname not in {"0.0.0.0", "::"}:
+        return url
+    host = "[::1]" if parsed.hostname == "::" else "127.0.0.1"
+    netloc = f"{host}:{parsed.port}" if parsed.port is not None else host
+    return urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment))
+
+
+def _legacy_base_url(protocol: str, command: list[str], port: int | None) -> str | None:
     if port is None:
+        return None
+    host = _format_host(process_host(command) or "127.0.0.1")
+    suffix = "/v1" if protocol == "openai" else ""
+    return f"http://{host}:{port}{suffix}"
+
+
+def legacy_runtime_metadata(
+    engine_id: str, command: list[str], port: int | None
+) -> dict[str, Any]:
+    """Map pre-definition engine IDs to explicit compatibility metadata."""
+
+    if engine_id in _TEXT_ENGINES:
+        return {
+            "types": ["text"],
+            "api_protocol": "openai",
+            "api_base_url": _legacy_base_url("openai", command, port),
+            "ui_url": None,
+        }
+    if engine_id in {"image", "comfyui"}:
+        base_url = _legacy_base_url("comfyui", command, port)
+        return {
+            "types": ["image", "video"],
+            "api_protocol": "comfyui",
+            "api_base_url": base_url,
+            "ui_url": None,
+        }
+    return {"types": [], "api_protocol": "none", "api_base_url": None, "ui_url": None}
+
+
+async def query_models(
+    port: int | None,
+    *,
+    api_base_url: str | None = None,
+    request_timeout: float = 0.35,
+    client: Any | None = None,
+) -> list[str]:
+    if port is None and not api_base_url:
         return []
     own_client = client is None
     active_client = client or httpx.AsyncClient(timeout=request_timeout)
+    base_url = backend_probe_url(api_base_url).rstrip("/") if api_base_url else f"http://127.0.0.1:{port}/v1"
     try:
-        response = await active_client.get(f"http://127.0.0.1:{port}/v1/models")
+        response = await active_client.get(f"{base_url}/models")
         if response.status_code != 200:
             return []
         payload = response.json()
@@ -141,14 +219,23 @@ async def query_models(
 
 
 async def query_image_ready(
-    port: int | None, *, request_timeout: float = 0.5, client: Any | None = None
+    port: int | None,
+    *,
+    api_base_url: str | None = None,
+    request_timeout: float = 0.5,
+    client: Any | None = None,
 ) -> bool:
-    if port is None:
+    if port is None and not api_base_url:
         return False
     own_client = client is None
     active_client = client or httpx.AsyncClient(timeout=request_timeout)
+    if api_base_url:
+        parsed = urlsplit(backend_probe_url(api_base_url))
+        url = urlunsplit((parsed.scheme, parsed.netloc, "/system_stats", "", ""))
+    else:
+        url = f"http://127.0.0.1:{port}/system_stats"
     try:
-        response = await active_client.get(f"http://127.0.0.1:{port}/system_stats")
+        response = await active_client.get(url)
         return response.status_code == 200
     except (httpx.HTTPError, ValueError, TypeError, AttributeError):
         return False
@@ -158,12 +245,53 @@ async def query_image_ready(
 
 
 async def query_readiness(
-    engine_id: str, port: int | None, *, client: Any | None = None
+    engine_id: str,
+    port: int | None,
+    *,
+    client: Any | None = None,
+    api_protocol: str | None = None,
+    api_base_url: str | None = None,
+    healthcheck: Any | None = None,
 ) -> tuple[bool, list[str]]:
-    if engine_id == "image":
-        return await query_image_ready(port, client=client), []
-    models = await query_models(port, client=client)
-    return bool(models), models
+    protocol = api_protocol
+    if protocol is None:
+        # Compatibility for callers using the pre-definition function shape.
+        protocol = "comfyui" if engine_id == "image" else "openai"
+    if protocol == "none" or (port is None and not api_base_url):
+        return False, []
+    if healthcheck is None:
+        if protocol == "comfyui":
+            return await query_image_ready(port, api_base_url=api_base_url, client=client), []
+        if protocol == "openai":
+            models = await query_models(port, api_base_url=api_base_url, client=client)
+            return bool(models), models
+        # A custom protocol has no implicit readiness URL. Profiles must
+        # provide a healthcheck explicitly; otherwise startup records only
+        # that the process is running, without advertising API readiness.
+        return False, []
+
+    path = getattr(healthcheck, "path", None)
+    timeout = getattr(healthcheck, "timeout_seconds", None)
+    if isinstance(healthcheck, dict):
+        path = healthcheck.get("path")
+        timeout = healthcheck.get("timeout_seconds", 3.0)
+    if not isinstance(path, str) or not path.startswith("/") or not api_base_url:
+        return False, []
+    try:
+        parsed = urlsplit(backend_probe_url(api_base_url))
+        url = urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
+        if client is None:
+            async with httpx.AsyncClient(timeout=float(timeout or 3.0)) as active_client:
+                response = await active_client.get(url)
+        else:
+            response = await client.get(url, timeout=float(timeout or 3.0))
+        ready = 200 <= response.status_code < 300
+    except (httpx.HTTPError, TypeError, ValueError, AttributeError):
+        return False, []
+    if not ready or protocol != "openai":
+        return ready, []
+    models = await query_models(port, api_base_url=api_base_url, client=client)
+    return True, models
 
 
 async def discover_external(
@@ -208,12 +336,23 @@ async def discover_external(
         except (AttributeError, psutil.Error, OSError):
             process_user = None
         port = process_port(process, command)
-        image_ready = await query_image_ready(port, client=http_client) if engine_id == "image" and probe_models else False
-        model_names = await query_models(port, client=http_client) if probe_models and engine_id != "image" else []
+        metadata = legacy_runtime_metadata(engine_id, command, port)
+        image_ready = (
+            await query_image_ready(port, api_base_url=metadata["api_base_url"], client=http_client)
+            if engine_id in {"image", "comfyui"} and probe_models
+            else False
+        )
+        model_names = (
+            await query_models(port, api_base_url=metadata["api_base_url"], client=http_client)
+            if probe_models and engine_id not in {"image", "comfyui"}
+            else []
+        )
         model_name = model_names[0] if len(model_names) == 1 else None
         identity_verified = start_ns is not None
         can_stop = identity_verified and process_user == current_user
-        state: Literal["ready", "running"] = "ready" if (image_ready or model_name) else "running"
+        state: Literal["ready", "running"] = (
+            "ready" if (image_ready or model_names) else "running"
+        )
         # ``unknown`` is part of the public observation id when psutil cannot
         # provide create_time.  The process remains visible, but the explicit
         # capability flags prevent stop/routing code from treating it as a
@@ -230,6 +369,7 @@ async def discover_external(
             can_stop=can_stop,
             port=port,
             model_name=model_name,
+            **metadata,
             state=state,
             observed_at=datetime.now(UTC),
         )
@@ -242,6 +382,9 @@ __all__ = [
     "SUPPORTED_MARKERS",
     "discover_external",
     "identify_engine",
+    "legacy_runtime_metadata",
+    "backend_probe_url",
+    "process_host",
     "process_port",
     "query_image_ready",
     "query_models",

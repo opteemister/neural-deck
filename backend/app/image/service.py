@@ -16,6 +16,7 @@ import httpx
 
 from ..errors import AppError
 from ..process.manager import ProcessManager
+from ..process.discovery import backend_probe_url
 from ..profiles.repository import ProfileRepository
 from ..schemas.image import ImageGenerationRequest
 from ..schemas.instances import Instance
@@ -50,10 +51,11 @@ class ImageGenerationService:
         candidates = [
             item
             for item in observed.items
-            if item.engine_id == "image"
+            if item.api_protocol == "comfyui"
+            and "image" in item.types
             and item.state == "ready"
             and item.identity_verified
-            and item.port is not None
+            and (item.api_base_url is not None or item.port is not None)
             and item.profile_name is not None
         ]
         if profile_name:
@@ -90,6 +92,13 @@ class ImageGenerationService:
         if not instance.profile_name:
             raise AppError("image_profile_missing", "У image-экземпляра отсутствует профиль", status_code=409)
         profile = await asyncio.to_thread(self.profile_repository.get, instance.profile_name)
+        if profile.model is None:
+            raise AppError(
+                "image_model_required",
+                "Для image API выберите модель с компонентами workflow в профиле ComfyUI",
+                status_code=422,
+                details={"profile_name": profile.name},
+            )
         validate_model_directory(profile.model.path)
         base_directory = self.process_manager.profile_runtime_dir(profile.name)
         workflow_directory = base_directory / "workflows"
@@ -249,11 +258,12 @@ class ImageGenerationService:
         return item
 
     async def _request(self, instance: Instance, method: str, path: str, **kwargs: Any) -> httpx.Response:
-        if instance.port is None:
+        if instance.api_base_url is None and instance.port is None:
             raise AppError("image_upstream_unavailable", "У ComfyUI отсутствует API-порт", status_code=503, retryable=True)
         client = await self._client()
         try:
-            response = await client.request(method, f"http://127.0.0.1:{instance.port}{path}", **kwargs)
+            base_url = backend_probe_url(instance.api_base_url) if instance.api_base_url else f"http://127.0.0.1:{instance.port}"
+            response = await client.request(method, f"{base_url.rstrip('/')}{path}", **kwargs)
             await response.aread()
             return response
         except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as exc:

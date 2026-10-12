@@ -76,6 +76,8 @@ def _max_metric(
 
 
 def _disk_metric(profile: ProfileData, catalogue_items: list[Any]) -> SummaryMetric:
+    if profile.model is None:
+        return _metric(None, unit="bytes", state="unavailable", source="unavailable", reason="model_not_selected")
     model = next(
         (item for item in catalogue_items if Path(item.path) == profile.model.path),
         None,

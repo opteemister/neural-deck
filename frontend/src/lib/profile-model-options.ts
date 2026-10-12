@@ -1,15 +1,16 @@
-import type { LocalModelArtifact } from '@/types/api'
+import type { EngineType, LocalModelArtifact } from '@/types/api'
 
 export type ProfileModelOption = { path: string; label: string; disabled: boolean }
 
 /** Resolve catalogue groups into launch targets, preserving nested directories. */
-export function profileModelOptions(models: LocalModelArtifact[], engineId?: string, auxiliary = false): ProfileModelOption[] {
+export function profileModelOptions(models: LocalModelArtifact[], engineTypes: EngineType[] = [], auxiliary = false): ProfileModelOption[] {
   const options: ProfileModelOption[] = []
   for (const model of models) {
     const name = model.hf_match.repo_id ?? ([model.vendor, model.model_name].filter(Boolean).join('/') || model.path.split('/').pop()!)
-    if (engineId === 'image' && model.model_kind !== 'image') continue
-    if (engineId !== 'image' && model.model_kind === 'image') continue
-    if (engineId === 'image') {
+    const isImage = model.model_kind === 'image'
+    if (isImage && !engineTypes.includes('image')) continue
+    if (!isImage && !engineTypes.includes('text')) continue
+    if (isImage) {
       const diffusers = model.format === 'diffusers'
       options.push({ path: model.path, label: `${name} · ${diffusers ? 'Diffusers — нужен набор ComfyUI' : 'ComfyUI Image'}`, disabled: diffusers })
       continue

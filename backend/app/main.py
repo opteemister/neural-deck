@@ -286,6 +286,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         launch_mode = os.environ.get("NEURAL_DECK_MODEL_LAUNCHER", "process")
         if launch_mode not in {"process", "systemd"}:
             raise ValueError("NEURAL_DECK_MODEL_LAUNCHER must be process or systemd")
+        model_catalogue = ModelCatalogue(paths, operations=operation_manager)
         process_manager = ProcessManager(
             log_root=paths.profiles_log_dir,
             runtime_root=paths.runtime_dir,
@@ -293,6 +294,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             launcher=(SystemdLauncher(paths.runtime_dir) if launch_mode == "systemd" else None),
             registry=model_registry,
             external_discovery=external_discovery,
+            model_paths_refresher=model_catalogue.refresh_comfyui_model_paths,
         )
         engine_service = EngineService(
             settings,
@@ -300,8 +302,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             operations=operation_manager,
             installation_in_use=process_manager.is_installation_running,
         )
-        model_catalogue = ModelCatalogue(paths, operations=operation_manager)
+        process_manager.profile_resolver = engine_service.resolve_profile
         profile_repository = ProfileRepository(paths.profiles_dir)
+        migration_backup = profile_repository.migrate_legacy_image_engine_id()
+        if migration_backup is not None:
+            logger.info("Профили image переведены на comfyui; копия: %s", migration_backup)
         profile_service = ProfileService(
             paths.profiles_dir,
             repository=profile_repository,
@@ -311,12 +316,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         session_factory = create_session_factory(db_engine)
         journal_service = RequestJournalService(session_factory=session_factory)
         route_manager = RouteManager(paths.config_dir, profile_repository)
+        image_service = ImageGenerationService(process_manager, profile_repository)
         proxy_service = ProxyService(
             process_manager,
             journal=journal_service,
             route_manager=route_manager,
+            image_service=image_service,
         )
-        image_service = ImageGenerationService(process_manager, profile_repository)
         import secrets
 
         from .metrics.storage import MetricsStorage
@@ -418,8 +424,8 @@ def _mcp_dependencies(app: FastAPI) -> MCPDependencies:
         return await app.state.runtime.process_manager.stop(instance_id)
 
     async def generate_image(**payload: Any) -> object:
-        return await app.state.runtime.image_service.generate(
-            payload, request_id=f"mcp_{uuid4().hex}", url_prefix="/v1"
+        return await app.state.runtime.proxy_service.generate_image(
+            payload, request_id=f"mcp_{uuid4().hex}"
         )
 
     return MCPDependencies(

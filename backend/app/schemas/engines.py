@@ -8,7 +8,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-EngineId = Literal["vllm", "llama.cpp", "sglang", "ninfer", "freetoken"]
+EngineId = Literal["vllm", "llama.cpp", "sglang", "ninfer", "freetoken", "image"]
 InstallationKind = Literal["python_venv", "binary"]
 InstallationStatus = Literal["ready", "broken", "candidate"]
 OperationState = Literal["queued", "running", "succeeded", "failed"]

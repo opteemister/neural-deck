@@ -11,8 +11,8 @@ from ..config import Settings
 from ..paths import DataPaths
 from ..schemas.engines import Engine, Installation
 from .adapters import ADAPTER_BY_ID, ADAPTERS, Candidate, read_engine_manifest
-from .templates import LAUNCH_TEMPLATES
 from .installation_templates import frontend_installation_template
+from .templates import LAUNCH_TEMPLATES
 
 
 def installation_id(engine_id: str, kind: str, path: Path) -> str:

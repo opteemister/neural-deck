@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from ..errors import AppError
+from ..image.workflow import validate_model_directory
 from ..schemas.profiles import FormatScriptResult, ProfileData, ProfileListData
 from .formatting import enable_command_metrics, format_script, substitute_placeholders
 from .repository import ProfileRepository
@@ -74,6 +75,7 @@ class ProfileService:
             model=str(profile.model.path),
             model_name=profile.model_name,
             model_draft=str(profile.model.draft_path) if profile.model.draft_path else None,
+            port=profile.port or (8188 if profile.engine.id == "image" else None),
         )}
 
     async def _prepare_configuration(self, profile: ProfileData) -> tuple[ProfileData, str]:
@@ -103,6 +105,8 @@ class ProfileService:
                 status_code=409,
                 details={"installation_id": profile.engine.installation_id},
             )
+        if profile.engine.id == "image":
+            validate_model_directory(profile.model.path)
         profile = profile.model_copy(
             update={
                 "command": enable_command_metrics(

@@ -27,6 +27,7 @@ from .profiles.service import ProfileService
 from .token_stats import RequestJournalService
 
 if TYPE_CHECKING:
+    from .image.service import ImageGenerationService
     from .metrics.service import MetricsService
     from .proxy.service import ProxyService
 
@@ -66,6 +67,7 @@ class AppContainer:
     process_manager: ProcessManager
     journal_service: RequestJournalService
     proxy_service: ProxyService
+    image_service: ImageGenerationService
     metrics_service: MetricsService
     external_discovery: ExternalDiscovery = discover_external
     diagnostics: list[RuntimeDiagnostic] = field(default_factory=list)
@@ -126,6 +128,7 @@ class AppContainer:
         try:
             await self.metrics_service.close()
             await self.proxy_service.close()
+            await self.image_service.close()
             await self.process_manager.close()
         finally:
             try:

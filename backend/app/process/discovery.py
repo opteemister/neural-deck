@@ -20,6 +20,7 @@ SUPPORTED_MARKERS: dict[str, tuple[str, ...]] = {
     "sglang": ("sglang", "sglang.launch_server"),
     "ninfer": ("ninfer", "ninfer-serve"),
     "freetoken": ("freetoken", "free_token", "ft"),
+    "image": ("comfyui", "comfy", "comfyui/main.py"),
 }
 _PORT_RE = re.compile(r"(?:--port(?:=|\s+)|(?:^|\s)-p\s+)(\d{1,5})(?:\s|$)")
 
@@ -87,6 +88,11 @@ def identify_engine(command: list[str], process_name: str = "") -> str | None:
             arg.split("=", 1)[0] in {"--model", "--model-path"} for arg in arguments
         ):
             return "ninfer"
+    if executable in {"comfyui", "comfy", "main.py"} and any(
+        arg.split("=", 1)[0] in {"--base-directory", "--models-directory"}
+        for arg in arguments
+    ):
+        return "image"
     return None
 
 
@@ -134,6 +140,32 @@ async def query_models(
     return result
 
 
+async def query_image_ready(
+    port: int | None, *, request_timeout: float = 0.5, client: Any | None = None
+) -> bool:
+    if port is None:
+        return False
+    own_client = client is None
+    active_client = client or httpx.AsyncClient(timeout=request_timeout)
+    try:
+        response = await active_client.get(f"http://127.0.0.1:{port}/system_stats")
+        return response.status_code == 200
+    except (httpx.HTTPError, ValueError, TypeError, AttributeError):
+        return False
+    finally:
+        if own_client:
+            await active_client.aclose()
+
+
+async def query_readiness(
+    engine_id: str, port: int | None, *, client: Any | None = None
+) -> tuple[bool, list[str]]:
+    if engine_id == "image":
+        return await query_image_ready(port, client=client), []
+    models = await query_models(port, client=client)
+    return bool(models), models
+
+
 async def discover_external(
     *,
     excluded_keys: set[tuple[int, int | None]] | None = None,
@@ -176,11 +208,12 @@ async def discover_external(
         except (AttributeError, psutil.Error, OSError):
             process_user = None
         port = process_port(process, command)
-        model_names = await query_models(port, client=http_client) if probe_models else []
+        image_ready = await query_image_ready(port, client=http_client) if engine_id == "image" and probe_models else False
+        model_names = await query_models(port, client=http_client) if probe_models and engine_id != "image" else []
         model_name = model_names[0] if len(model_names) == 1 else None
         identity_verified = start_ns is not None
         can_stop = identity_verified and process_user == current_user
-        state: Literal["ready", "running"] = "ready" if model_name else "running"
+        state: Literal["ready", "running"] = "ready" if (image_ready or model_name) else "running"
         # ``unknown`` is part of the public observation id when psutil cannot
         # provide create_time.  The process remains visible, but the explicit
         # capability flags prevent stop/routing code from treating it as a
@@ -210,5 +243,7 @@ __all__ = [
     "discover_external",
     "identify_engine",
     "process_port",
+    "query_image_ready",
     "query_models",
+    "query_readiness",
 ]

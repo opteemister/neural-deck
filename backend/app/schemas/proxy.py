@@ -17,6 +17,7 @@ class OpenAIModel(BaseModel):
     engine_id: str | None = None
     context_length: int | None = None
     reasoning_capabilities: dict[str, Any] | None = None
+    capabilities: dict[str, Any] | None = None
 
 
 class OpenAIModelList(BaseModel):

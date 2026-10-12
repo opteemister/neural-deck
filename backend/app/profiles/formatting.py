@@ -7,7 +7,14 @@ import shlex
 
 from ..errors import AppError
 
-PLACEHOLDERS = ("{{engine}}", "{{model}}", "{{model_draft}}", "{{model_name}}")
+PLACEHOLDERS = (
+    "{{engine}}",
+    "{{model}}",
+    "{{model_draft}}",
+    "{{model_name}}",
+    "{{base_directory}}",
+    "{{port}}",
+)
 _SEPARATORS = frozenset(" \t\r\n|;&<>\n()")
 _UNSAFE_FORMAT_CHARS = frozenset(r"'\"`$;|&<>()[\]*!?#")
 
@@ -196,6 +203,8 @@ def substitute_placeholders(
     model: str,
     model_draft: str | None = None,
     model_name: str | None = None,
+    base_directory: str | None = None,
+    port: int | None = None,
 ) -> str:
     """Substitute validated words with shell-quoted profile values."""
 
@@ -208,14 +217,25 @@ def substitute_placeholders(
         raise AppError(
             "model_name_missing", "Укажите публичное имя модели для {{model_name}}", status_code=422
         )
-    values = {"{{engine}}": shlex.quote(engine), "{{model}}": shlex.quote(model)}
+    if "{{base_directory}}" in command and not base_directory:
+        raise AppError(
+            "base_directory_missing", "Для {{base_directory}} не задан runtime-каталог", status_code=422
+        )
+    if "{{port}}" in command and port is None:
+        raise AppError("port_missing", "Для {{port}} не задан порт профиля", status_code=422)
+    values = {
+        "{{engine}}": shlex.quote(engine),
+        "{{model}}": shlex.quote(model),
+        "{{base_directory}}": shlex.quote(base_directory or ""),
+        "{{port}}": str(port) if port is not None else "",
+    }
     if model_draft is not None:
         values["{{model_draft}}"] = shlex.quote(model_draft)
     if model_name is not None:
         values["{{model_name}}"] = shlex.quote(model_name)
     # Replace only the original placeholders, never placeholder-like text in values.
     return re.sub(
-        r"\{\{(?:engine|model|model_draft|model_name)\}\}",
+        r"\{\{(?:engine|model|model_draft|model_name|base_directory|port)\}\}",
         lambda match: values[match.group()],
         command,
     )

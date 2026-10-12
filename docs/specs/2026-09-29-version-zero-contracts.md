@@ -80,12 +80,14 @@ Pydantic-схемы backend являются единственным источ
 | `POST` | `/api/v1/installations/{installation_id}/maintenance` | Разовая подтверждённая команда; `202` |
 | `GET` | `/api/v1/operations/{operation_id}` | Состояние длительной операции |
 
-`engine_id`: `vllm`, `llama.cpp`, `sglang`, `ninfer`, `freetoken`.
+`engine_id`: `vllm`, `llama.cpp`, `sglang`, `ninfer`, `freetoken`, `image`.
 Для Python-движка запрос содержит `kind: python_venv` и `venv_name`; имя не
 содержит разделителей пути, а окружение создаётся в
 `<data-root>/runtime/venvs/<venv_name>`. Для llama.cpp или NInfer запрос
 содержит `kind: binary` и абсолютный `path`; Студия не копирует и не собирает
 этот файл, а проверяет его адаптером.
+Для `image` используется `kind: python_venv`; установка содержит checkout
+ComfyUI, wrapper `comfyui` и manifest проверки.
 
 Установка содержит `id`, `engine_id`, `kind`, `root_path`, `executable_path`,
 `version`, `status`, `verified`, `diagnostic`. `id` детерминированно строится
@@ -128,9 +130,12 @@ manifest.
 ответе только для безопасной операции удаления и диагностики. Удаление группы
 выполняется через `DELETE /api/v1/models/local/{model_id}/groups/{group_id}`.
 
-Локальный артефакт содержит `id`, `path`, `kind`, `format`, `compatibility`,
-`size_bytes` и `hf_match`. `hf_match.status`: `downloaded`, `incomplete`,
-`unknown`; неизвестное значение не подменяется отрицательным результатом.
+Локальный артефакт содержит `id`, `path`, `kind`, `model_kind`, `format`,
+`compatibility`, `size_bytes` и `hf_match`. `model_kind` равен `llm`, `image`
+или `unknown`. Image-блок распознаётся по наличию файлов в
+`diffusion_models`, `text_encoders` и `vae`. `hf_match.status`: `downloaded`,
+`incomplete`, `unknown`; неизвестное значение не подменяется отрицательным
+результатом.
 Для вручную скопированного артефакта Hub-связь определяется автоматически
 только из sidecar, HF cache metadata или проверяемого совпадения выбранной
 ревизии. Отдельного ручного назначения repo в первой версии нет. Провал
@@ -235,7 +240,16 @@ OpenAI API сохраняет отдельный стандартный contract
 GET  /v1/models
 POST /v1/chat/completions
 POST /v1/embeddings
+POST /v1/images/generations
+GET  /v1/images/{asset_id}
 ```
+
+`POST /v1/images/generations` принимает OpenAI-совместимые поля `prompt`,
+`model`, `size`, `n` и `response_format`; для image-профиля дополнительно
+поддерживаются `seed`, `steps`, `transparent` и base64/data URL поле `image`.
+Ответ содержит `data` с `url` либо `b64_json`. Нативный ComfyUI API доступен
+через scoped-прокси `/comfyui/{profile_name}/...`, включая `/prompt`,
+`/history`, `/view` и WebSocket `/ws`.
 
 ## 3. YAML-профиль версии 1
 
@@ -265,18 +279,24 @@ environment:
 autostart: false
 ```
 
+Для `engine.id: image` `model.path` указывает на один ComfyUI Image-блок с
+подкаталогами `diffusion_models`, `text_encoders` и `vae`. Поле `port`
+необязательно и по умолчанию равно `8188`; команда image-профиля обычно
+использует placeholders `{{base_directory}}`, `{{model}}` и `{{port}}`.
+
 Правила:
 
 - `version` равно целому числу `1`.
 - `name` непустое, не содержит `/`, `\`, управляющие символы или `..` и
   совпадает с именем файла без `.yaml`.
 - `model_name` — публичное имя модели, уникальное среди активного реестра.
-- `engine.id` входит в список пяти движков.
+- `engine.id` входит в список шести движков.
 - `engine.installation_id` ссылается на конкретную подтверждённую установку;
   исчезновение установки не вызывает автоматического переключения.
 - `model.path` — абсолютный путь к локальному файлу или каталогу.
 - `command` — единственный источник текста запуска.
 - `{{engine}}` и `{{model}}` допустимы только как отдельные shell words.
+  Для image-профиля также допустимы `{{base_directory}}` и `{{port}}`.
 - `environment` — карта строк, по умолчанию пустая.
 - `autostart` — boolean.
 - Неизвестные поля, пользовательские YAML tags и неверные типы являются
@@ -295,6 +315,7 @@ MCP-приложения в lifespan FastAPI/ASGI.
 | `list_profiles` | `{}` | Profile list response вместе с issues |
 | `start_profile` | `{ "profile_name": string }` | Созданный instance |
 | `stop_instance` | `{ "instance_id": string }` | Operation |
+| `generate_image` | `{ "prompt": string, "model": string, ... }` | OpenAI image response |
 
 Каждый запрос независим; `Mcp-Session-Id` не создаётся и не требуется.
 Успешный результат содержит полный success envelope management API в

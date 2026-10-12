@@ -31,7 +31,7 @@ from ..schemas.instances import (
     ProcessOperation,
 )
 from ..schemas.profiles import ProfileData
-from .discovery import ExternalObservation, discover_external, query_models
+from .discovery import ExternalObservation, discover_external, query_readiness
 from .external_logs import external_logs
 from .launcher import ObservedProcess, SystemdLauncher, process_start_ns
 from .registry import ModelRegistry
@@ -76,6 +76,7 @@ class ProcessManager:
         self,
         *,
         log_root: Path | None = None,
+        runtime_root: Path | None = None,
         username: str | None = None,
         http_client: Any | None = None,
         registry: ModelRegistry | None = None,
@@ -85,6 +86,8 @@ class ProcessManager:
     ) -> None:
         self.log_root = log_root or Path.cwd() / "logs" / "profiles"
         self.log_root.mkdir(parents=True, exist_ok=True)
+        self.runtime_root = runtime_root or self.log_root.parent / "runtime"
+        self.runtime_root.mkdir(parents=True, exist_ok=True)
         self.username = username or getpass.getuser()
         self.http_client = http_client
         self.external_discovery = external_discovery or discover_external
@@ -127,6 +130,12 @@ class ProcessManager:
             "installation_id": item.installation_id,
             "unit_name": item.unit_name,
         }
+
+    def profile_runtime_dir(self, profile_name: str) -> Path:
+        """Storage for our workflows and API assets, not ComfyUI's base directory."""
+        path = self.runtime_root / "comfyui" / _safe_profile_dir(profile_name)
+        path.mkdir(parents=True, exist_ok=True)
+        return path
 
     async def _restore(self) -> None:
         if self.run_store is None:
@@ -182,7 +191,8 @@ class ProcessManager:
                 unit,
             )
             self._managed[instance.id] = item
-            self.registry.register_instance(instance)
+            if instance.engine_id != "image":
+                self.registry.register_instance(instance)
             self._track_task(self._wait_process(instance.id))
             self._track_task(self._watch_start(instance.id))
 
@@ -200,7 +210,7 @@ class ProcessManager:
                     status_code=409,
                     details={"profile_name": profile.name},
                 )
-            registry_model = self.registry.get(profile.model_name)
+            registry_model = self.registry.get(profile.model_name) if profile.engine.id != "image" else None
             if any(item.instance.model_name == profile.model_name for item in active) or any(
                 item.model_name == profile.model_name for item in active_external
             ):
@@ -225,6 +235,7 @@ class ProcessManager:
                 model=str(profile.model.path),
                 model_name=profile.model_name,
                 model_draft=str(profile.model.draft_path) if profile.model.draft_path else None,
+                port=profile.port or (8188 if profile.engine.id == "image" else None),
             )
             port = _extract_port(command)
             if port is not None and (
@@ -359,7 +370,8 @@ class ProcessManager:
                 pending_path.unlink(missing_ok=True)
             self._managed[instance.id] = managed
             self._track_task(self._wait_process(instance.id))
-            self.registry.register_instance(instance)
+            if instance.engine_id != "image":
+                self.registry.register_instance(instance)
             self._track_task(self._watch_start(instance.id))
             logger.info(
                 "Процесс профиля запущен: profile=%s instance_id=%s pid=%s log=%s",
@@ -430,22 +442,25 @@ class ProcessManager:
         if item is None:
             return
         # Loading large models can take minutes. Process liveness alone is
-        # not readiness; keep probing until the engine publishes its models.
+        # not readiness; keep probing the engine-specific health surface.
         while item.instance.state == "starting":
             if item.process.returncode is not None:
                 self._process_done(instance_id)
                 return
-            models = await query_models(item.instance.port, client=self.http_client)
+            ready, models = await query_readiness(
+                item.instance.engine_id, item.instance.port, client=self.http_client
+            )
             # A stop or exit can happen while the HTTP request is in flight.
             if item.process.returncode is not None:
                 self._process_done(instance_id)
                 return
             if item.instance.state != "starting":
                 return
-            if models:
+            if ready:
                 item.instance.state = "ready"
                 item.instance.observed_at = datetime.now(UTC)
-                self.registry.register_instance(item.instance, upstream_models=models)
+                if item.instance.engine_id != "image":
+                    self.registry.register_instance(item.instance, upstream_models=models)
                 return
             await asyncio.sleep(START_PROBE_INTERVAL)
 
@@ -502,7 +517,11 @@ class ProcessManager:
         for observation in found:
             # An observation without process identity is still visible to an
             # operator, but must not become a routable model target.
-            if probe_models and observation.instance.identity_verified:
+            if (
+                probe_models
+                and observation.instance.engine_id != "image"
+                and observation.instance.identity_verified
+            ):
                 self.registry.register_instance(
                     observation.instance,
                     upstream_models=observation.upstream_models,

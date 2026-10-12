@@ -1,4 +1,4 @@
-export type EngineId = 'vllm' | 'llama.cpp' | 'sglang' | 'ninfer' | 'freetoken'
+export type EngineId = 'vllm' | 'llama.cpp' | 'sglang' | 'ninfer' | 'freetoken' | 'image'
 
 export type InstallationKind = 'python_venv' | 'binary'
 export type InstallationStatus = 'ready' | 'broken' | 'candidate'
@@ -136,6 +136,7 @@ export interface LocalModelArtifact {
   id: string
   path: string
   kind: 'file' | 'directory'
+  model_kind?: 'llm' | 'image' | 'unknown'
   vendor?: string
   model_name?: string
   format: string
@@ -201,6 +202,7 @@ export interface OpenAiModel {
   owned_by?: string
   context_length?: number
   engine_id?: string
+  capabilities?: Record<string, unknown> | null
   reasoning_capabilities?: {
     efforts: string[]
     effort_parameter: 'reasoning_effort' | 'chat_template_kwargs'
@@ -229,6 +231,7 @@ export interface ProfileData {
   engine: ProfileEngineRef
   model: ProfileModelRef
   command: string
+  port?: number | null
   environment: Record<string, string>
   autostart: boolean
   enable_metrics?: boolean

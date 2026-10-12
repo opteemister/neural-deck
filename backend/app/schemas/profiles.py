@@ -18,7 +18,7 @@ from pydantic import (
 
 from ..profiles.formatting import validate_placeholders
 
-EngineId = Literal["vllm", "llama.cpp", "sglang", "ninfer", "freetoken"]
+EngineId = Literal["vllm", "llama.cpp", "sglang", "ninfer", "freetoken", "image"]
 
 
 def _profile_name(value: str) -> str:
@@ -65,6 +65,7 @@ class ProfileData(BaseModel):
     engine: ProfileEngine
     model: ProfileModel
     command: StrictStr = Field(min_length=1)
+    port: StrictInt | None = Field(default=None, ge=1, le=65535)
     environment: dict[StrictStr, StrictStr] = Field(default_factory=dict)
     autostart: StrictBool = False
     enable_metrics: StrictBool = True
@@ -73,6 +74,12 @@ class ProfileData(BaseModel):
     def draft_placeholder_has_path(self) -> ProfileData:
         if "{{model_draft}}" in self.command and self.model.draft_path is None:
             raise ValueError("для {{model_draft}} необходимо выбрать draft-модель")
+        return self
+
+    @model_validator(mode="after")
+    def image_profile_has_port(self) -> ProfileData:
+        if self.engine.id == "image" and self.port is None:
+            self.port = 8188
         return self
 
     @field_validator("version")

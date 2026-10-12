@@ -18,10 +18,10 @@ from ..paths import DataPaths
 from ..schemas.engines import Engine, Installation, Operation
 from .adapters import ADAPTER_BY_ID, ADAPTERS
 from .discovery import DiscoveryCoordinator, DiscoveryResult, installation_id
+from .installation_templates import frontend_installation_template, installation_template
 from .templates import LAUNCH_TEMPLATES
-from .installation_templates import installation_template, frontend_installation_template
 
-VERSION_COMMANDS = {"vllm": "vllm", "sglang": "sglang", "freetoken": "ft"}
+VERSION_COMMANDS = {"vllm": "vllm", "sglang": "sglang", "freetoken": "ft", "image": "comfyui"}
 
 
 class EngineService:
@@ -165,6 +165,9 @@ class EngineService:
                 self.operations.append_output(operation, 'stdout', '$ ' + command + '\n')
                 code, out, err = await run_command(
                     ['/bin/bash', '-c', command], cwd=str(build_root), timeout_seconds=14400,
+                    # Persist managed interpreters beside venvs in both native
+                    # deployments and containers; venvs reference them by path.
+                    env={**os.environ, 'UV_PYTHON_INSTALL_DIR': str(self.paths.runtime_dir / 'uv-python')},
                     on_stdout_line=lambda line: self.operations.append_output(operation, 'stdout', line),
                     on_stderr_line=lambda line: self.operations.append_output(operation, 'stderr', line),
                 )
@@ -222,6 +225,7 @@ class EngineService:
                 self.operations.append_output(operation, 'stdout', '$ ' + command + '\n')
                 code, out, err = await run_command(
                     ['/bin/bash', '-c', command], cwd=str(installation.root_path),
+                    env={**os.environ, 'UV_PYTHON_INSTALL_DIR': str(self.paths.runtime_dir / 'uv-python')},
                     on_stdout_line=lambda line: self.operations.append_output(operation, 'stdout', line),
                     on_stderr_line=lambda line: self.operations.append_output(operation, 'stderr', line),
                 )

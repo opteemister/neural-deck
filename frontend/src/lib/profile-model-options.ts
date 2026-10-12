@@ -3,10 +3,17 @@ import type { LocalModelArtifact } from '@/types/api'
 export type ProfileModelOption = { path: string; label: string; disabled: boolean }
 
 /** Resolve catalogue groups into launch targets, preserving nested directories. */
-export function profileModelOptions(models: LocalModelArtifact[], auxiliary = false): ProfileModelOption[] {
+export function profileModelOptions(models: LocalModelArtifact[], engineId?: string, auxiliary = false): ProfileModelOption[] {
   const options: ProfileModelOption[] = []
   for (const model of models) {
     const name = model.hf_match.repo_id ?? ([model.vendor, model.model_name].filter(Boolean).join('/') || model.path.split('/').pop()!)
+    if (engineId === 'image' && model.model_kind !== 'image') continue
+    if (engineId !== 'image' && model.model_kind === 'image') continue
+    if (engineId === 'image') {
+      const diffusers = model.format === 'diffusers'
+      options.push({ path: model.path, label: `${name} · ${diffusers ? 'Diffusers — нужен набор ComfyUI' : 'ComfyUI Image'}`, disabled: diffusers })
+      continue
+    }
     const groups = auxiliary ? model.auxiliary_blocks ?? [] : model.groups ?? []
     if (!auxiliary && model.kind === 'file') {
       const path = model.format === 'gguf' || model.path.toLowerCase().endsWith('.gguf') ? model.path : model.path.slice(0, model.path.lastIndexOf('/')) || '/'

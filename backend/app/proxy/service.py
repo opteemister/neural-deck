@@ -91,11 +91,16 @@ class ProxyService:
             for instance_id in list(self._models_cache):
                 if instance_id not in instances:
                     del self._models_cache[instance_id]
+            llm_instances = {
+                instance_id: instance
+                for instance_id, instance in instances.items()
+                if instance.engine_id != "image"
+            }
             metadata = dict(
                 zip(
-                    instances,
+                    llm_instances,
                     await asyncio.gather(
-                        *(self._cached_model_metadata(instance) for instance in instances.values())
+                        *(self._cached_model_metadata(instance) for instance in llm_instances.values())
                     ),
                     strict=True,
                 )
@@ -121,6 +126,27 @@ class ProxyService:
                         **engine_models[registered.upstream_model],
                     }
                 )
+            existing_ids = {item["id"] for item in result}
+            for instance in instances.values():
+                if instance.engine_id != "image":
+                    continue
+                if instance.state != "ready":
+                    continue
+                image_id = instance.model_name or instance.profile_name
+                if not image_id or image_id in existing_ids:
+                    continue
+                result.append(
+                    {
+                        "id": image_id,
+                        "object": "model",
+                        "created": int(instance.observed_at.timestamp()),
+                        "owned_by": "llm-studio",
+                        "engine_id": "image",
+                        "capabilities": {"image_generation": True},
+                    }
+                )
+                existing_ids.add(image_id)
+            result.sort(key=lambda item: item["id"])
             return {"object": "list", "data": result}
 
     async def _cached_model_metadata(self, instance: Instance) -> dict[str, dict[str, Any]]:

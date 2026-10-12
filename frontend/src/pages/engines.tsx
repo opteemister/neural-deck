@@ -15,7 +15,7 @@ import { StatusBadge } from '@/components/status-badge'
 import { api, queryKeys, StudioApiError } from '@/lib/api'
 import type { EngineId, Installation, Operation } from '@/types/api'
 
-const ENGINE_ORDER: EngineId[] = ['vllm', 'llama.cpp', 'sglang', 'ninfer', 'freetoken']
+const ENGINE_ORDER: EngineId[] = ['vllm', 'llama.cpp', 'sglang', 'ninfer', 'freetoken', 'image']
 
 export function EnginesPage() {
   const openLogs = useLogsDrawer()
@@ -76,7 +76,7 @@ export function EnginesPage() {
   if (!data) return <QueryLoading label="Ожидаем список движков" />
   const orderedEngines = [...data.items].sort((left, right) => ENGINE_ORDER.indexOf(left.id) - ENGINE_ORDER.indexOf(right.id))
   return <div>
-    <PageHeader eyebrow="Студия / каталог" title="Движки" description="Пять поддерживаемых движков, подтверждённые установки и результаты операций." action={<div className="flex gap-2"><Button variant="secondary" size="sm" onClick={() => openLogs(undefined, 'operations')}><TerminalSquare className="size-3.5" />Логи</Button><Button variant="secondary" size="sm" onClick={() => void scan.mutate()} disabled={scan.isPending}><RefreshCw className={`size-3.5 ${scan.isPending ? 'animate-spin' : ''}`} />{scan.isPending ? 'Сканируем…' : 'Повторить поиск'}</Button></div>} />
+    <PageHeader eyebrow="Студия / каталог" title="Движки" description="Шесть поддерживаемых движков, подтверждённые установки и результаты операций." action={<div className="flex gap-2"><Button variant="secondary" size="sm" onClick={() => openLogs(undefined, 'operations')}><TerminalSquare className="size-3.5" />Логи</Button><Button variant="secondary" size="sm" onClick={() => void scan.mutate()} disabled={scan.isPending}><RefreshCw className={`size-3.5 ${scan.isPending ? 'animate-spin' : ''}`} />{scan.isPending ? 'Сканируем…' : 'Повторить поиск'}</Button></div>} />
     {scan.isError && <div className="mb-4"><QueryError error={scan.error} retry={() => void scan.mutate()} label="Повторный поиск не выполнен" /></div>}
     {update.isError && <div className="mb-4"><QueryError error={update.error} label="Обновление установки не запущено" /></div>}
     {maintenance.isError && <div className="mb-4"><QueryError error={maintenance.error} label="Команда обслуживания не запущена" /></div>}

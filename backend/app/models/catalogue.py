@@ -7,10 +7,10 @@ import contextlib
 import hashlib
 import json
 import os
-import shutil
 import re
-import tempfile
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -225,6 +225,7 @@ class ModelCatalogue:
             id=identifier,
             path=path,
             kind="directory" if path.is_dir() else "file",
+            model_kind="image" if (_is_image_model_directory(path) or _is_diffusers_image_directory(path)) else "llm" if path.is_dir() else "unknown",
             vendor=_model_vendor(path, self.paths.models_root),
             model_name=_model_name(path, self.paths.models_root),
             format=format_name,
@@ -249,7 +250,9 @@ class ModelCatalogue:
             except OSError:
                 return "unknown"
             names = {item.name for item in children}
-            if "config.json" in names or "model_index.json" in names:
+            if "model_index.json" in names:
+                return "diffusers"
+            if "config.json" in names:
                 return "transformers"
             if any(item.is_file() and item.suffix.lower() in {".gguf", ".ggml"} for item in path.rglob("*")):
                 return "gguf"
@@ -663,6 +666,8 @@ def _is_directory(path: Path) -> bool:
 
 
 def _has_model_marker(path: Path) -> bool:
+    if _is_image_model_directory(path):
+        return True
     try:
         children = list(path.iterdir())
     except OSError:
@@ -675,6 +680,38 @@ def _has_model_marker(path: Path) -> bool:
         or "model.safetensors.index.json" in names
         or any(child.is_file() and child.suffix.lower() in MODEL_EXTENSIONS for child in children)
     )
+
+
+def _is_diffusers_image_directory(path: Path) -> bool:
+    """Identify image pipelines independently of ComfyUI bundle compatibility."""
+
+    try:
+        index = json.loads((path / "model_index.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, RuntimeError):
+        return False
+    return (
+        isinstance(index, dict)
+        and isinstance(index.get("_class_name"), str)
+        and "vae" in index
+        and ("transformer" in index or "unet" in index)
+    )
+
+
+def _is_image_model_directory(path: Path) -> bool:
+    """Recognise a ComfyUI image bundle by its required model subfolders."""
+
+    if not path.is_dir():
+        return False
+    try:
+        return all(
+            any(
+                item.is_file() and item.suffix.lower() in MODEL_EXTENSIONS
+                for item in (path / category).rglob("*")
+            )
+            for category in ("diffusion_models", "text_encoders", "vae")
+        )
+    except (OSError, RuntimeError):
+        return False
 
 
 def _model_directories(root: Path, directories: list[Path]) -> list[Path]:

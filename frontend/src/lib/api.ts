@@ -285,7 +285,7 @@ export const api = {
   },
   getOpenAiModels: async (): Promise<OpenAiModelsData> => {
     const response = await openAiRequest<{ data: OpenAiModel[] }>('/models')
-    return { items: response.data }
+    return { items: response.data.filter((item) => item.capabilities?.image_generation !== true) }
   },
   completeChat: (body: { model: string; messages: Array<{ role: 'user' | 'assistant'; content: string }>; stream?: boolean }) => openAiRequest<import('@/types/api').ChatCompletionResponse>('/chat/completions', { method: 'POST', body: JSON.stringify(body) }),
   streamChat,

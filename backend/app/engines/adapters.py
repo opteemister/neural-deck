@@ -185,12 +185,60 @@ class BinaryEngineAdapter:
         return Verification(ok, None, diagnostic if not ok else None)
 
 
+class ComfyUIEngineAdapter:
+    """Verify a managed ComfyUI source plus the generated console wrapper."""
+
+    kind = "python_venv"
+    engine_id = "image"
+    display_name = "ComfyUI Image"
+    installation_kinds = (kind,)
+    command = "comfyui"
+
+    def candidates_from_venv(self, root: Path, source: str) -> list[Candidate]:
+        if not root.is_dir():
+            return []
+        # Discovery passes venv *containers* such as runtime/venvs, while a
+        # ComfyUI installation lives one level below them (for example,
+        # runtime/venvs/comfyui-latest). Also accept an explicitly configured
+        # root that is itself an installation.
+        roots = [root]
+        try:
+            roots.extend(sorted(path for path in root.iterdir() if path.is_dir()))
+        except OSError:
+            return []
+
+        candidates = []
+        for venv in roots:
+            if _manifest_engine_id(venv) != self.engine_id:
+                continue
+            executable = venv / "bin" / self.command
+            candidates.append(Candidate(self.engine_id, self.kind, venv, executable, source))
+        return candidates
+
+    def candidates_from_path(self) -> list[Candidate]:
+        return []
+
+    def verify(self, candidate: Candidate) -> Verification:
+        executable = candidate.executable_path
+        source = candidate.root_path / "ComfyUI" / "main.py"
+        python = candidate.root_path / "bin" / "python"
+        if not python.is_file() or not source.is_file() or not executable.is_file():
+            return Verification(False, None, "ComfyUI source, Python или wrapper отсутствует")
+        if not os.access(executable, os.X_OK):
+            return Verification(False, None, "wrapper ComfyUI недоступен для запуска")
+        ok, version, diagnostic = _run_version(
+            [str(python), "-I", "-c", "from pathlib import Path; print('ComfyUI source')"]
+        )
+        return Verification(ok, version or "source", diagnostic if not ok else None)
+
+
 ADAPTERS = (
     PythonEngineAdapter("vllm", "vLLM", "vllm"),
     PythonEngineAdapter("sglang", "SGLang", "sglang"),
     PythonEngineAdapter("freetoken", "FreeToken", "ft"),
     BinaryEngineAdapter("llama.cpp", "llama.cpp", "llama-server", version=True),
     BinaryEngineAdapter("ninfer", "NInfer", "ninfer-serve", version=False),
+    ComfyUIEngineAdapter(),
 )
 
 ADAPTER_BY_ID = {adapter.engine_id: adapter for adapter in ADAPTERS}

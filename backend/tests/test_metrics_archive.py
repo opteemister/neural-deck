@@ -151,6 +151,11 @@ async def test_daily_weights_and_repeated_measurements(database):
     stats = result["items"][0]["statistics"]["prefill_tps"]
     assert stats["avg"] == 1750 and stats["max"] == 2000 and stats["count"] == 2
     assert 950 <= stats["p10"] <= 1050 and 1900 <= stats["p95"] <= 2100
+    start = at.replace(hour=0, minute=0, second=0, microsecond=0)
+    end = at + timedelta(seconds=10)
+    assert (await storage.statistics_window(start=start, end=end, profile_name="profile"))["prefill_tps"] == 1750
+    await storage.cleanup(set())
+    assert (await storage.statistics_window(start=start, end=end, profile_name="profile"))["prefill_tps"] == 1750
 
 
 async def test_migration_keeps_samples_and_prevents_id_reuse(tmp_path):
@@ -168,7 +173,7 @@ async def test_migration_keeps_samples_and_prevents_id_reuse(tmp_path):
     paths = build_paths(settings)
     prepare_data_dirs(paths)
     config = Config(str(Path(__file__).parents[1] / "alembic.ini"))
-    config.attributes["llm_studio_settings"] = settings
+    config.attributes["neural_deck_settings"] = settings
     config.attributes["configure_logging"] = False
     await asyncio.to_thread(command.upgrade, config, "0006_model_runs")
     engine = create_engine(paths.sqlite_path)
@@ -195,3 +200,57 @@ async def test_migration_keeps_samples_and_prevents_id_reuse(tmp_path):
         current = await session.scalar(select(MetricSample))
         assert current.id > old_id
     await engine.dispose()
+
+
+async def test_all_time_concurrency_peak_survives_archive_and_new_launch(database):
+    storage = MetricsStorage(database)
+    old = datetime.now(UTC) - timedelta(days=30)
+    await write(storage, old, requests=8, pid=10)
+    await write(storage, datetime.now(UTC), requests=1, pid=20)
+    assert await storage.all_time_active_requests_max("profile") == 8
+    assert await storage.all_time_active_requests_max("other-profile") is None
+
+    await storage.cleanup(set())
+    async with database() as session:
+        assert await session.scalar(select(func.count()).select_from(MetricSample)) == 1
+    assert await storage.all_time_active_requests_max("profile") == 8
+
+    await write(storage, datetime.now(UTC), requests=12, pid=30)
+    assert await storage.all_time_active_requests_max("profile") == 12
+
+
+async def test_statistics_window_merges_rates_and_observed_load_without_double_counting(database):
+    storage = MetricsStorage(database)
+    old = (datetime.now(UTC) - timedelta(days=2)).replace(hour=12, minute=0, second=0, microsecond=0)
+    await write(storage, old, speed=100, requests=2)
+    await write(storage, old + timedelta(seconds=5), speed=200, requests=2)
+    await write(storage, old + timedelta(seconds=10), speed=0, requests=0)
+    # A long gap is not interpolated as work.
+    await write(storage, old + timedelta(hours=1), speed=300, requests=8)
+    start = old.replace(hour=0)
+    end = datetime.now(UTC)
+    before = await storage.statistics_window(start=start, end=end, profile_name="profile")
+    assert before["decode_tps"] == 200
+    assert before["active_seconds"] == 20
+    assert before["load_known"]
+    await storage.cleanup(set())
+    assert await storage.statistics_window(start=start, end=end, profile_name="profile") == before
+    assert await storage.all_time_active_requests_max("profile") == 8
+    await write(storage, datetime.now(UTC) - timedelta(seconds=10), speed=400, requests=1, pid=20)
+    await write(storage, datetime.now(UTC) - timedelta(seconds=5), speed=500, requests=1, pid=20)
+    after = await storage.statistics_window(start=start, end=datetime.now(UTC), profile_name="profile")
+    assert after["decode_tps"] == 300
+    assert after["active_seconds"] == pytest.approx(25, abs=0.1)
+
+
+async def test_old_rollups_do_not_invent_load_time(database):
+    storage = MetricsStorage(database)
+    at = datetime.now(UTC)
+    async with database() as session:
+        session.add(MetricDaily(day=at.date().isoformat(), profile_name="profile", model_name="m",
+            engine_id="vllm", statistics={"active_requests": {"sum": 8, "weight": 1, "count": 1, "max": 8}},
+            distributions={}))
+        await session.commit()
+    result = await storage.statistics_window(start=at.replace(hour=0, minute=0, second=0, microsecond=0),
+                                             end=at, profile_name="profile")
+    assert not result["load_known"]

@@ -1,4 +1,4 @@
-# Идеи и задачи LLM Studio
+# Идеи и задачи Neural Deck
 
 В этом файле — только список задач: постоянный номер, тема, статус,
 следующий шаг и ссылки на материалы. Обращаться к задаче можно по номеру или теме.
@@ -19,8 +19,9 @@
 
 | ID | Тема | Статус | Следующий шаг | Материалы |
 |---|---|---|---|---|
-| TASK-001 | Улучшения профилей: статистика, порты, Image Generation, цены токенов | На согласовании | Обсудить открытые вопросы и утвердить спецификацию | [Описание](tasks/TASK-001-profile-cards.md), [Исследование](research/TASK-001-profile-cards.md), [Спецификация](specs/TASK-001-profile-cards.md) |
-| TASK-002 | Хэши файлов моделей и уведомления об обновлениях Hugging Face | На согласовании | Обсудить открытые вопросы и утвердить спецификацию | [Описание](tasks/TASK-002-model-hashes-updates.md), [Исследование](research/TASK-002-model-hashes-updates.md), [Спецификация](specs/TASK-002-model-hashes-updates.md) |
-| TASK-003 | Страница статистики: токены, стоимость, активность и загруженность профилей | На согласовании | Обсудить открытые вопросы и утвердить спецификацию | [Описание](tasks/TASK-003-statistics.md), [Исследование](research/TASK-003-statistics.md), [Спецификация](specs/TASK-003-statistics.md), [Референс](research/TASK-003-statistics-reference.md) |
-| TASK-004 | Маршрутизация прокси: одинаковые имена моделей, порядок профилей и алиасы | На согласовании | Обсудить открытые вопросы и утвердить спецификацию | [Описание](tasks/TASK-004-proxy-routing-aliases.md), [Исследование](research/TASK-004-proxy-routing-aliases.md), [Спецификация](specs/TASK-004-proxy-routing-aliases.md) |
-| TASK-005 | Бенчмарки: производительность и интеллект моделей | На согласовании | Обсудить открытые вопросы и утвердить спецификацию | [Описание](tasks/TASK-005-benchmarks.md), [Исследование](research/TASK-005-benchmarks.md), [Спецификация](specs/TASK-005-benchmarks.md) |
+| TASK-001 | Улучшения профилей: статистика, порты, Image Generation, цены токенов | На согласовании | Уточнить Image Generation, тарифы и временный порог optimal; затем утвердить спецификацию | [Описание](tasks/TASK-001-profile-cards.md), [Исследование](research/TASK-001-profile-cards.md), [Спецификация](specs/TASK-001-profile-cards.md) |
+| TASK-002 | Хэши файлов моделей и уведомления об обновлениях Hugging Face | Готово | Отдельно развернуть при необходимости | [Описание](tasks/TASK-002-model-hashes-updates.md), [Исследование](research/TASK-002-model-hashes-updates.md), [Спецификация](specs/TASK-002-model-hashes-updates.md) |
+| TASK-003 | Страница статистики: токены, стоимость, активность и загруженность профилей | На согласовании | Уточнить UI-агрегации и performance-поля; затем утвердить спецификацию | [Описание](tasks/TASK-003-statistics.md), [Исследование](research/TASK-003-statistics.md), [Спецификация](specs/TASK-003-statistics.md) |
+| TASK-004 | Маршрутизация прокси: одинаковые имена моделей, порядок профилей и алиасы | На согласовании | Согласовать архитектурные стыки с TASK-003/005 и утвердить спецификацию | [Описание](tasks/TASK-004-proxy-routing-aliases.md), [Исследование](research/TASK-004-proxy-routing-aliases.md), [Спецификация](specs/TASK-004-proxy-routing-aliases.md) |
+| TASK-005 | Бенчмарки производительности: prefill, decode, concurrency и кэширование | На согласовании | Уточнить контракт performance scripts и утвердить спецификацию | [Описание](tasks/TASK-005-benchmarks.md), [Исследование](research/TASK-005-benchmarks.md), [Спецификация](specs/TASK-005-benchmarks.md) |
+| TASK-006 | Интеллект и решение задач моделями | Идея | Подготовить отдельное исследование и спецификацию sandbox/judge | [Описание](tasks/TASK-006-intelligence-benchmarks.md) |

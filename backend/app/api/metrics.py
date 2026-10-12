@@ -11,8 +11,9 @@ from fastapi.responses import JSONResponse, Response
 from ..metrics.service import MetricsService
 from ..schemas.common import SuccessEnvelope
 from ..schemas.instances import MetricList, TokenStatsData
+from ..statistics import StatisticsService
 from ..token_stats import RequestJournalService
-from .dependencies import get_journal_service, get_metrics_service
+from .dependencies import get_journal_service, get_metrics_service, get_statistics_service
 from .management import success
 
 router = APIRouter(prefix="/api/v1", tags=["metrics"])
@@ -41,6 +42,28 @@ async def token_stats(
     return success(
         request,
         await service.stats(profile_name=profile_name, from_=from_, to=to),
+    )
+
+
+@router.get("/statistics")
+async def statistics(
+    request: Request,
+    period: Literal["week", "month", "quarter", "half_year", "year", "custom"] = "month",
+    model_name: str | None = None,
+    profile_name: str | None = None,
+    from_: datetime | None = Query(default=None, alias="from"),
+    to: datetime | None = None,
+    service: StatisticsService = Depends(get_statistics_service),
+) -> JSONResponse:
+    return success(
+        request,
+        await service.read(
+            period=period,
+            from_=from_,
+            to=to,
+            model_name=model_name,
+            profile_name=profile_name,
+        ),
     )
 
 

@@ -30,15 +30,15 @@ class MetricsService:
         storage: MetricsStorage | None = None,
         prometheus_url: str = "",
         prometheus_token: str = "",
-        studio_id: str = "local",
+        neural_deck_id: str = "local",
     ) -> None:
         self.process_manager = process_manager
         self.providers = dict(providers or default_providers())
         self.journal = journal
         self.performance = PerformanceNormalizer()
         self.storage = storage
-        self.studio_id = studio_id
-        self.prometheus = PrometheusReader(prometheus_url, prometheus_token, studio_id)
+        self.neural_deck_id = neural_deck_id
+        self.prometheus = PrometheusReader(prometheus_url, prometheus_token, neural_deck_id)
         self._tasks: list[asyncio.Task[Any]] = []
         self._locks: dict[str, asyncio.Lock] = {}
         self._cache: dict[str, tuple[float, Any, MetricList]] = {}
@@ -95,6 +95,10 @@ class MetricsService:
                         peaks[item.name] = min(peaks.get(item.name, item.value), item.value)
                         peaks["ttft_max_ms"] = max(peaks.get("ttft_max_ms", item.value), item.value)
                 data.peaks = dict(peaks)
+                if self.storage:
+                    vram = next((item for item in data.items if item.name == "vram_bytes"), None)
+                    if vram is not None:
+                        await self.storage.remember_vram(instance.profile_name, vram)
             self._cache[instance_id] = (time.monotonic(), instance, data)
             return data
 
@@ -191,10 +195,10 @@ class MetricsService:
                 self._peaks = {key: value for key, value in self._peaks.items() if key in active}
             except Exception:
                 logger.exception("Очистка истории метрик не выполнена")
-            now = datetime.now().astimezone()
+            now = datetime.now(UTC)
             next_midnight = datetime.combine(
-                now.date() + timedelta(days=1), datetime.min.time()
-            ).astimezone()
+                now.date() + timedelta(days=1), datetime.min.time(), tzinfo=UTC
+            )
             await asyncio.sleep(max(1, (next_midnight - now).total_seconds()))
 
     async def read(
@@ -357,7 +361,7 @@ class MetricsService:
             for entry in self._cache.values()
             if time.monotonic() - entry[0] <= 10
         ]
-        return exposition(samples, self.studio_id, self.performance.samples)
+        return exposition(samples, self.neural_deck_id, self.performance.samples)
 
     async def _collect_local(self, instance_id: str) -> MetricList:
         instance = await self.process_manager.get(instance_id)

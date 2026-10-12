@@ -1,5 +1,5 @@
 ---
-title: TASK-005 — Исследование бенчмарков
+title: TASK-005 — Исследование бенчмарков производительности
 status: draft_not_agreed
 status_ru: Черновик, не согласовано
 date: 2026-10-04
@@ -10,7 +10,7 @@ date: 2026-10-04
 Статус: **Черновик, не согласовано**.
 
 Исследование выполнено в локальном checkout
-`/Users/opteemist/Documents/MyProjects/llm-studio` по исходникам и документам.
+Neural Deck по исходникам и документам.
 Модели, нагрузка, endpoint, Docker, SSH, серверы и удалённый runtime не
 запускались. Рабочее дерево содержит изменения других задач; они считаются
 локальными и не являются доказательством deployed-состояния.
@@ -30,15 +30,16 @@ date: 2026-10-04
    Он не знает benchmark run, поэтому всплеск токенов или concurrency нельзя
    задним числом объявлять результатом теста.
 5. Reference Club 3090 полезен как набор измеряемых сигналов, но не как
-   утверждённая методика LLM Studio: он ориентирован на vLLM/OpenAI SSE,
+   утверждённая методика Neural Deck: он ориентирован на vLLM/OpenAI SSE,
    читает engine/container logs и `nvidia-smi`, а часть порогов зависит от
    конкретного железа и режима запуска.
-6. Для performance нужно хранить сырые времена, токены, ошибки и параметры
-   каждого case/repetition. Одного среднего TPS недостаточно для различения
-   очереди, плохой генерации, короткого EOS и плато.
-7. Группа intelligence пока не имеет в проекте runner-а агента, каталога задач,
-   sandbox contract или judge. Качество результата нельзя смешивать с
-   performance throughput и нельзя автоматически оценивать выбранным judge.
+6. Во время performance-запуска runner должен видеть сырые времена, токены,
+   ошибки и параметры каждого case/repetition, чтобы отличить очередь, плохую
+   генерацию, короткий EOS и плато. В постоянное хранилище при этом достаточно
+   записывать компактный итог запуска; отдельные строки measurements не нужны.
+7. Intelligence не является частью текущего контура TASK-005: качество
+   результата нельзя смешивать с performance throughput. Эта часть вынесена в
+   отдельную TASK-006, где позднее нужно спроектировать runner, sandbox и judge.
 
 ## Локальные источники и факты
 
@@ -113,13 +114,12 @@ display name и цена относятся к представлению/тар
   token stats и daily/concurrency routes. Новый benchmark API этим контрактом
   не покрывается.
 
-### Что отсутствует для intelligence
+### Граница с TASK-006
 
 По локальному `rg` и просмотренным backend/frontend routes нет runner-а агента,
 изолированного task directory, модели разрешений файлов, artifact manifest или
-judge pipeline. Есть общий proxy/chat и страницы профилей, но это не доказательство
-безопасного agent sandbox. Требование о custom prompts/files и отдельном judge
-остаётся проектированием будущей подсистемы.
+judge pipeline. Это не блокирует performance-часть TASK-005: требования к
+интеллекту, агенту, sandbox и judge перенесены в отдельную TASK-006.
 
 ## Разбор reference Club 3090
 
@@ -161,7 +161,7 @@ judge pipeline. Есть общий proxy/chat и страницы профил�
 помечает результат как `n/a`/canvas-granularity; деление на epsilon запрещено.
 Короткий EOS ниже 25% от max tokens помечается как неиспользуемый run. Это
 защищает throughput от ложного среднего, но пороги являются параметрами
-reference, а не согласованными правилами LLM Studio.
+reference, а не согласованными правилами Neural Deck.
 
 Ограничения reference:
 
@@ -256,30 +256,59 @@ decode windows 2.0 и 2.5 s, per-stream estimates равны 50 и 32 tok/s, med
 
 Прямой запрос к engine в обход proxy не попадает в текущий `request_journal`;
 interval overlay на графике не доказывает attribution и не должен подменять
-его. Техническая рекомендация: хранить отдельное нормализованное logical
-`benchmark_request_event` для каждого запроса с `benchmark_run_id`, case/
-repetition, generated request id, selected instance/PID/start, token counts,
-timings, status и tariff revision. Если managed bypass проходит через proxy,
-передавать тот же run/request marker и deduplicate по стабильному logical id;
-если запрос direct, benchmark event остаётся его единственным источником.
-TASK-003 должен объединять journal и benchmark events по id, а не по времени.
-Один public header не может быть доверенным маркером: режим benchmark должен
-приходить из backend-runner context с проверенными run/attempt identity.
-Неподтверждённый внешний header можно сохранить как opaque metadata, но он не
-исключает запрос из totals/cost и не включает benchmark attribution.
-Рекомендуемая безопасная default policy — исключать benchmark traffic из
-обычных totals/cost, но позволить явный `include_benchmarks` filter; включение
-остаётся product decision.
+его. По уточнённому решению отдельные benchmark request events не сохраняются:
+сырые времена, токены и ошибки нужны runner-у только во время запуска для
+расчёта компактного итога. Профильные metric samples и существующий request
+journal, если они собираются обычным путём, остаются обычными данными
+приложения; `benchmark_runs` хранит только запуск, параметры и summary.
+Один public header не является доверенным маркером benchmark attribution и не
+должен менять totals/cost. Рекомендуемая policy по включению benchmark traffic
+в обычные totals/cost остаётся продуктовым решением TASK-003/TASK-001.
 
-### Intelligence scope
+### Intelligence вынесен в TASK-006
 
-В локальном checkout нет agent runner, sandbox или judge, но пользовательский
-scope (logic/code bug tasks, custom prompts/files, agent execution и отдельный
-judge) нельзя незаметно вырезать. Performance и intelligence требуют разных
-контрактов: для intelligence нужна отдельная стадия с собственной
-sub-specification sandbox/permissions, task revision, artifacts и judge
-provenance. Отсутствие текущей реализации — ограничение исследования, а не
-отмена этой группы.
+В локальном checkout нет agent runner, sandbox или judge. После уточнения scope
+это не является пробелом TASK-005: logic/code tasks, custom prompts/files,
+agent execution, artifacts и judge перенесены в отдельную TASK-006 с собственной
+sub-specification sandbox/permissions.
+
+## Уточнение требований пользователя 2026-10-04
+
+Пользователь подтвердил, что за основу performance нужно взять Club 3090, но
+разделить результаты по семантике нагрузки, а не выдавать один общий TPS:
+
+- **decode-only concurrency:** синхронно запускаются N запросов с пустым или
+  минимальным prompt и контролируемым output. Этот режим показывает нагрузку
+  одновременной генерации без длинного prefill; prefill/TTFT всё равно
+  сохраняется отдельно, если runtime его сообщает.
+- **mixed concurrency:** несколько генераций уже выполняются, а после завершения
+  отдельных потоков сразу запускаются новые запросы с большим контекстом. Новый
+  prefill должен быть виден отдельно и не смешиваться с decode-only результатом.
+- Базовые глубины context: примерно 10k, 50k, 130k и 200k токенов. Превышение
+  served context — skipped cell с причиной.
+- Каждый сценарий выполняется несколькими повторениями, предварительное рабочее
+  значение — пять measured repetitions, если ограничения конкретного runtime не
+  потребуют иного. Club 3090 остаётся источником формул и структуры, а не
+  безусловным переносом hardware-specific порогов.
+- Отдельно нужны cache reuse, capacity и concurrent capacity tests: повторный
+  запрос с тем же prefix, последовательное заполнение 5/10/20 уникальных
+  prefixes и повторная проверка hit/miss. Основные доказательства — latency,
+  cached tokens и engine/runtime cache metrics; отсутствие cache telemetry даёт
+  `unknown`, не `miss`.
+- Performance cases должны быть независимыми scripts в выделенной папке. UI
+  сканирует только scripts с descriptor-контрактом, получает metadata, запускает
+  выбранный script и принимает единый JSONL output, поэтому новый script не
+  требует отдельной ветки frontend-кода.
+- Каждый запуск должен попадать в единственную общую `benchmark_runs` history
+  table. В ней хранятся только выбранный профиль, script/version, параметры,
+  интервалы, статус и компактный нормализованный итог. Отдельной таблицы
+  измерений, `payload_json` и копии JSONL/script-а не требуется: обычные
+  профильные metric samples уже собираются существующим collector-ом, а вывод
+  script-а разбирается runner-ом во время запуска и после этого не сохраняется.
+
+Предварительный набор workload-профилей: prose, coding и reasoning/structured
+task. Точные prompt-ы и третья методика должны быть зафиксированы в descriptor,
+когда будет утверждён набор scripts.
 
 ## Сопоставление с задачами 001/003/004
 
@@ -296,15 +325,17 @@ provenance. Отсутствие текущей реализации — огр�
   нужен pinned direct target или согласованный managed bypass маршрутизации.
   Benchmark по alias/failover требует отдельного сценария и attribution;
   сейчас безопаснее ограничить performance тест прямым profile.
+- **TASK-006:** intelligence benchmark, agent execution, task folders,
+  sandbox и judge исследуются и специфицируются отдельно.
 
 ## Не доказано исследованием
 
 - Ни одна модель, GPU, endpoint или concurrency не была измерена в этом
   checkout.
 - Нет подтверждённых порогов plateau, queue limit, retries, context depths,
-  repeats, wall budget или stop policy для LLM Studio.
+  repeats, wall budget или stop policy для Neural Deck.
 - Нет решения о включении benchmark traffic в общую статистику/стоимость.
-- Нет принятого judge, разрешений agent sandbox, формата task folders и
-  критериев качества code/logic.
+- TASK-006 ещё не содержит принятого judge, разрешений agent sandbox, формата
+  task folders и критериев качества code/logic; это не часть текущего scope.
 - Нет доказательства, что все локальные engine exporters дают одинаковую
   prefill/decode semantics; mapping зависит от engine и metadata.

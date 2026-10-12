@@ -45,8 +45,17 @@ def create_engine(sqlite_path: Path, *, echo: bool = False) -> AsyncEngine:
         future=True,
         hide_parameters=True,
         pool_pre_ping=True,
-        connect_args={"check_same_thread": False},
+        connect_args={"check_same_thread": False, "timeout": 30},
     )
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def configure_sqlite(connection: Any, _record: Any) -> None:
+        # Readers of history must not prevent the metrics writer from committing.
+        cursor = connection.cursor()
+        try:
+            cursor.execute("PRAGMA journal_mode=WAL")
+        finally:
+            cursor.close()
 
     @event.listens_for(engine.sync_engine, "handle_error")
     def report_connection_error(context: ExceptionContext) -> None:
@@ -79,8 +88,8 @@ async def migrate_database(settings: Settings, paths: DataPaths) -> None:
         config = Config(str(ALEMBIC_CONFIG_PATH))
         # Embedded migrations must preserve the host application's handlers.
         config.attributes["configure_logging"] = False
-        config.attributes["llm_studio_settings"] = settings
-        config.attributes["llm_studio_paths"] = paths
+        config.attributes["neural_deck_settings"] = settings
+        config.attributes["neural_deck_paths"] = paths
         command.upgrade(config, "head")
 
     await asyncio.to_thread(upgrade)

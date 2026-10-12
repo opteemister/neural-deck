@@ -12,12 +12,12 @@ from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ..schemas.instances import Instance, Metric, MetricList
-from .archive import archive_before_cleanup, historical_statistics
-from .entities import MetricLaunchExtrema, MetricSample
+from .archive import archive_before_cleanup, historical_statistics, load_and_fold
+from .entities import MetricDaily, MetricLaunchExtrema, MetricSample, ProfileStatistics
 from .performance import FIELDS, UNITS
 
 AGGREGATE_FIELDS = (
-    "prefill_tps", "decode_tps", "active_requests", "ttft_mean_ms",
+    "prefill_tps", "decode_tps", "active_requests", "vram_bytes", "ttft_mean_ms",
     "prefix_cache_hit_percent", "spec_acceptance_percent", "kv_cache_percent", "queue_requests",
 )
 
@@ -84,7 +84,7 @@ class MetricsStorage:
         peaks: dict[tuple[str, int], dict[str, float]],
     ) -> None:
         now = datetime.now(UTC)
-        async with self.sessions() as session:
+        async with self.archive_lock, self.sessions() as session:
             for instance, data in samples:
                 meta = {
                     item.name: {
@@ -174,6 +174,75 @@ class MetricsStorage:
         async with self.sessions() as session:
             row = await session.get(MetricLaunchExtrema, (profile_name, pid))
             return dict(row.values) if row else {}
+
+    async def remember_vram(self, profile_name: str, item: Metric) -> None:
+        if item.state != "ok" or not isinstance(item.value, (int, float)) or item.value <= 0:
+            return
+        async with self.archive_lock, self.sessions() as session:
+            previous = await session.get(ProfileStatistics, profile_name)
+            if previous is not None and (
+                previous.vram_bytes == item.value
+                or utc(previous.vram_observed_at) > utc(item.observed_at)
+            ):
+                return
+            await session.merge(ProfileStatistics(
+                profile_name=profile_name, vram_bytes=float(item.value),
+                vram_observed_at=item.observed_at,
+            ))
+            await session.commit()
+
+    async def last_vram(self, profile_name: str) -> float | None:
+        async with self.sessions() as session:
+            row = await session.get(ProfileStatistics, profile_name)
+            return row.vram_bytes if row else None
+
+    async def all_time_active_requests_max(self, profile_name: str) -> float | None:
+        """Preserve the observed peak across days, launches and raw-sample pruning."""
+        async with self.archive_lock, self.sessions() as session:
+            raw = await session.scalar(select(func.max(MetricSample.active_requests)).where(
+                MetricSample.profile_name == profile_name,
+                MetricSample.active_requests > 0,
+                func.json_extract(MetricSample.metric_meta, "$.active_requests.state") == "ok",
+            ))
+            archived = await session.scalar(select(func.max(func.json_extract(
+                MetricDaily.statistics, "$.active_requests.max",
+            ))).where(MetricDaily.profile_name == profile_name))
+        values = [float(value) for value in (raw, archived) if value is not None]
+        return max(values) if values else None
+
+    async def statistics_window(self, *, start: datetime, end: datetime,
+                                profile_name: str) -> dict[str, Any]:
+        """Merge daily engine measurements with pending raw samples, once."""
+        async with self.archive_lock, self.sessions() as session:
+            daily, _, _, _ = await load_and_fold(
+                session, first_day=utc(start).date().isoformat(),
+                profile_name=profile_name, end=end,
+            )
+        combined: dict[str, dict[str, float]] = {}
+        active_seconds = 0.0
+        load_known = True
+        for (day, _, _, _), item in daily.items():
+            if not utc(start).date().isoformat() <= day <= (utc(end) - timedelta(microseconds=1)).date().isoformat():
+                continue
+            stats = item["statistics"]
+            for field in ("prefill_tps", "decode_tps"):
+                value = stats.get(field)
+                if value and value["weight"] > 0:
+                    target = combined.setdefault(field, {"sum": 0.0, "weight": 0.0})
+                    target["sum"] += value["sum"]
+                    target["weight"] += value["weight"]
+            active_time = stats.get("active_requests_time")
+            if active_time:
+                active_seconds += active_time["sum"]
+            elif stats.get("active_requests"):
+                # Old rollups have peaks, but no observed concurrency durations.
+                load_known = False
+        return {
+            "prefill_tps": combined["prefill_tps"]["sum"] / combined["prefill_tps"]["weight"] if "prefill_tps" in combined else None,
+            "decode_tps": combined["decode_tps"]["sum"] / combined["decode_tps"]["weight"] if "decode_tps" in combined else None,
+            "active_seconds": active_seconds,
+            "load_known": load_known,
+        }
 
     async def aggregates(
         self, *, start: datetime, end: datetime, profile_name: str | None = None,

@@ -67,7 +67,7 @@ def test_managed_start_does_not_invent_identity_when_create_time_is_unknown(
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
     monkeypatch.setattr("app.process.manager._identity_start_ns", lambda pid: None)
-    manager = ProcessManager(log_root=tmp_path, username="studio")
+    manager = ProcessManager(log_root=tmp_path, username="neural-deck")
     manager.refresh = _empty_refresh.__get__(manager, ProcessManager)  # type: ignore[method-assign]
 
     async def run() -> None:
@@ -99,7 +99,7 @@ def test_external_discovery_keeps_process_without_real_create_time_read_only(
     monkeypatch.setattr("app.process.discovery.psutil.process_iter", lambda *a, **k: [Process()])
 
     async def run() -> None:
-        found = await discover_external(username="studio")
+        found = await discover_external(username="neural-deck")
         assert len(found) == 1
         assert found[0].instance.process_start_time_ns is None
         assert found[0].instance.identity_verified is False
@@ -132,11 +132,11 @@ def test_external_identity_exposes_same_user_stop_and_other_user_read_only(
 
     monkeypatch.setattr(
         "app.process.discovery.psutil.process_iter",
-        lambda *args, **kwargs: [Process(903, "studio"), Process(904, "other")],
+        lambda *args, **kwargs: [Process(903, "neural-deck"), Process(904, "other")],
     )
 
     async def run() -> None:
-        found = await discover_external(username="studio")
+        found = await discover_external(username="neural-deck")
         by_pid = {item.instance.pid: item.instance for item in found}
         assert by_pid[903].identity_verified is True
         assert by_pid[903].can_stop is True
@@ -378,7 +378,7 @@ def test_stop_rechecks_identity_and_signals_only_the_selected_process(
             return starts[self.pid]
 
         def username(self) -> str:
-            return "studio"
+            return "neural-deck"
 
     class Child:
         def __init__(self) -> None:
@@ -397,7 +397,7 @@ def test_stop_rechecks_identity_and_signals_only_the_selected_process(
     monkeypatch.setattr("app.process.manager._pid_exists", lambda pid: True)
     monkeypatch.setattr(ProcessManager, "_wait_exit", lambda *args, **kwargs: asyncio.sleep(0))
 
-    manager = ProcessManager(log_root=tmp_path, username="studio")
+    manager = ProcessManager(log_root=tmp_path, username="neural-deck")
     manager.refresh = _empty_refresh.__get__(manager, ProcessManager)  # type: ignore[method-assign]
     children: dict[int, Child] = {}
     for pid, start in ((101, 1), (202, 2)):
@@ -448,12 +448,12 @@ def test_stop_refuses_pid_reuse_before_sending_signal(
             return 9.0
 
         def username(self) -> str:
-            return "studio"
+            return "neural-deck"
 
     signals: list[tuple[int, int]] = []
     monkeypatch.setattr("app.process.manager.psutil.Process", lambda pid: Proc())
     monkeypatch.setattr("app.process.manager.os.killpg", lambda *args: signals.append(args))
-    manager = ProcessManager(log_root=tmp_path, username="studio")
+    manager = ProcessManager(log_root=tmp_path, username="neural-deck")
     manager.refresh = _empty_refresh.__get__(manager, ProcessManager)  # type: ignore[method-assign]
     instance = Instance(
         id="managed/p/101-1",

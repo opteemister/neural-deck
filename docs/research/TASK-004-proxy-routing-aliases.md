@@ -39,14 +39,50 @@ client content нельзя сшивать потоки. Cancellation закры
 попытка ограничена остатком бюджета. Availability-oriented retry можно
 предложить отдельно как opt-in с явным duplicate-work risk.
 
-Оставшиеся product choices: grammar/collisions и error 404/503, правило
+До архитектурного обсуждения оставались product choices: grammar/collisions и
+error 404/503, правило
 скрытия auto route при нулевых кандидатах, точный allowlist availability retry,
 capability compatibility, разрешение alias на external profile, ручное
 редактирование route config и отображение direct stream error.
 
+## Решения пользователя и технические дефолты 2026-10-04
+
+Пользователь подтвердил, что auto-route и alias скрываются из `/v1/models`,
+если ни один кандидат не доступен. На основном экране автоматические маршруты
+показываются только при наличии запущенного профиля, а ручные алиасы остаются
+видимыми и удаляемыми независимо от доступности. Если ничего не запущено,
+автоматических маршрутов нет. Backend management response продолжает отдавать
+такой route и причины недоступности.
+Создание алиаса выполняется через центрированный popup из шапки страницы.
+
+Остальные вопросы, не требующие отдельного продуктового выбора, закрываются
+следующими дефолтами:
+
+- TTL проверки model metadata сохраняется существующий — 10 минут; состояние
+  процесса проверяется при каждом обновлении списка;
+- alias id использует ASCII-грамматику `[A-Za-z0-9][A-Za-z0-9._-]{0,127}`;
+  точные коллизии с profile model name, auto-route и alias блокируют сохранение
+  и диагностируются inline в UI и повторно на backend;
+- alias может ссылаться только на managed profiles; unmanaged external models
+  не теряются из каталога, но в сохранённые маршруты не добавляются;
+- неизвестный route отвечает `404 model_not_found`, известный route без
+  доступных кандидатов — `503 route_unavailable`;
+- failover выполняется по порядку при техническом отказе до upstream headers;
+  ошибки входного запроса и уже начавшийся ответ не переключаются, streaming
+  не сшивается;
+- строгая capability-матрица не вводится: mixed managed profiles допустимы,
+  известные расхождения отображаются предупреждением, а upstream остаётся
+  источником фактического ответа;
+- route config хранится отдельно в YAML под `data_root/config` с версией схемы
+  и atomic write; ручная правка поддерживается, а последняя сохранённая запись
+  заменяет предыдущую (last-write-wins).
+
+Таким образом, из списка ниже остаётся один архитектурный стык: правила
+передачи alias-attribution к фактически вызванному профилю в TASK-003 и TASK-005.
+
 ## Область и метод
 
-Проверен локальный checkout `/Users/opteemist/Documents/MyProjects/llm-studio`.
+Проверен локальный checkout Neural Deck.
 Прочитаны `AGENTS.md`, `DEVELOPMENT_RULES.md`,
 `docs/development/frontend.md`, `docs/specs/2026-09-29-design-system.md`,
 `docs/tasks/TASK-004-proxy-routing-aliases.md`, связанные TASK-001/003/005,
@@ -266,31 +302,22 @@ request, а не независимый timeout на каждый candidate; att
   upstream model id, `state`, readiness probe timestamp и причина недоступности.
   В `/v1/models` попадает route только при наличии хотя бы одного кандидата,
   отвечающего согласованному `available`.
-- **Attempt**: logical request id, route name/kind, ordinal, profile/instance,
-  upstream id, phase (`not_started|sent|headers|streaming|finished`), outcome
-  (`success|http_error|unavailable|unknown|partial`), status и token-known
-  flags. Это нужно хранить отдельно от одной итоговой строки. Рекомендуется
-  нормализованная child таблица/коллекция `request_attempts`, а не opaque JSON,
-  чтобы TASK-003 мог дедуплицировать токены и неизвестные исходы.
+- **Attempt**: технический результат выбора кандидата, а не отдельный
+  статистический запрос. Для базовой версии достаточно сохранить итоговый
+  `routing_outcome` и фактически вызванный profile/instance; подробности
+  неудачных pre-header попыток могут оставаться диагностикой без отдельной
+  агрегируемой таблицы.
 - **Logical request**: requested public model, selected actual profile/instance
   и upstream id, итоговый status/error, `attempt_count`, `routing_outcome`.
-  Для статистики токены считаются только по фактически учтённому результату;
-  неизвестные/частичные значения остаются `NULL` с причиной.
+  Статистика и токены относятся только к фактически вызванному профилю;
+  requested alias сохраняется как дополнительное поле фильтра/диагностики.
+  Неизвестные/частичные значения остаются `NULL` с причиной.
 
 ## Открытые вопросы исследования
 
-После review технические рекомендации выше считаются рабочей основой черновика;
-они не являются product approval. На согласование остаются только:
+После review технические рекомендации и решения пользователя считаются рабочей
+основой черновика. На согласование остаётся один архитектурный стык:
 
-1. grammar/collisions alias и direct-call error (`404 model_not_found` или
-   `503 route_unavailable`) для скрытого/недоступного route;
-2. распространяется ли правило скрытия при нуле running candidates также на
-   auto route, и какой TTL/refresh считается достаточным;
-3. exact allowlist availability-oriented retry после 408/429/5xx, timeout/write
-   и remote disconnect, включая idempotency acknowledgement и duplicate risk;
-4. capability compatibility разных profiles (text/tools/reasoning/context),
-   alias references на unmanaged external model и optional metadata;
-5. Management API visibility и допустимое ручное редактирование рекомендованного
-   versioned YAML под `data_root/config` (atomic write + optimistic version);
-6. формат ошибки после cancellation/partial stream и нужная видимость
-   attempt diagnostics в management UI.
+1. контракт TASK-003/TASK-005: requested alias сохраняется для фильтра и
+   диагностики, но токены, latency и фактическая нагрузка относятся к
+   profile/instance, который был вызван прокси.

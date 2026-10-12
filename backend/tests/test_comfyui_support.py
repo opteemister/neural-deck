@@ -59,7 +59,7 @@ async def test_image_service_queues_workflow_and_returns_openai_image(tmp_path: 
             "model_name": "qwen-image-2.1",
             "engine": {"id": "image", "installation_id": "inst-image"},
             "model": {"path": str(model)},
-            "command": "{{engine}} --port {{port}} --base-directory {{base_directory}} --models-directory {{model}}",
+            "command": "{{engine}} --port 8188 --models-directory {{model}}",
             "environment": {},
             "autostart": False,
             "enable_metrics": True,

@@ -68,7 +68,7 @@ def decode_image_bytes(value: str) -> bytes:
 def decode_input_image(value: str, destination: Path) -> str:
     """Decode an image into an explicitly supplied directory."""
     content = decode_image_bytes(value)
-    name = f"llm-studio-{uuid4().hex}.png"
+    name = f"neural-deck-{uuid4().hex}.png"
     destination.mkdir(parents=True, exist_ok=True)
     (destination / name).write_bytes(content)
     return name
@@ -152,7 +152,7 @@ def build_workflow(
         "8": {"class_type": "VAEDecode", "inputs": {"samples": ["7", 0], "vae": ["5", 0]}},
         "9": {
             "class_type": "SaveImage",
-            "inputs": {"filename_prefix": "llm-studio/qwen-image", "images": ["8", 0]},
+            "inputs": {"filename_prefix": "neural-deck/qwen-image", "images": ["8", 0]},
         },
     }
     if input_image:

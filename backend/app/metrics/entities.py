@@ -80,3 +80,10 @@ class MetricArchiveCheckpoint(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     last_sample_id: Mapped[int] = mapped_column(Integer)
     baselines: Mapped[dict[str, Any]] = mapped_column(JSON)
+
+
+class ProfileStatistics(Base):
+    __tablename__ = "profile_statistics"
+    profile_name: Mapped[str] = mapped_column(String(256), primary_key=True)
+    vram_bytes: Mapped[float] = mapped_column(Float)
+    vram_observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

@@ -1,4 +1,4 @@
-"""Runtime composition for one LLM Studio application process.
+"""Runtime composition for one Neural Deck application process.
 
 The domain modules are intentionally usable on their own in unit tests.  This
 container is the one place where the application wires their long lived
@@ -8,6 +8,8 @@ instances together.  FastAPI dependencies expose the same objects through
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -30,6 +32,7 @@ if TYPE_CHECKING:
     from .image.service import ImageGenerationService
     from .metrics.service import MetricsService
     from .proxy.service import ProxyService
+    from .statistics import StatisticsService
 
 ExternalDiscovery = Callable[..., Awaitable[list[ExternalObservation]]]
 
@@ -69,9 +72,11 @@ class AppContainer:
     proxy_service: ProxyService
     image_service: ImageGenerationService
     metrics_service: MetricsService
+    statistics_service: StatisticsService
     external_discovery: ExternalDiscovery = discover_external
     diagnostics: list[RuntimeDiagnostic] = field(default_factory=list)
     mcp_server: Any | None = None
+    startup_task: asyncio.Task[None] | None = None
 
     def add_diagnostic(self, component: str, code: str, message: str) -> None:
         if any(
@@ -122,10 +127,16 @@ class AppContainer:
     async def close(self) -> None:
         """Release application resources without stopping model processes."""
 
-        # ProcessManager.close only cancels Studio watcher tasks.  It does not
+        # ProcessManager.close only cancels Neural Deck watcher tasks.  It does not
         # send signals to managed processes, because shutdown must not kill
         # model servers that can outlive this web process.
         try:
+            if self.startup_task is not None:
+                self.startup_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self.startup_task
+                self.startup_task = None
+            await self.model_catalogue.stop_update_scheduler()
             await self.metrics_service.close()
             await self.proxy_service.close()
             await self.image_service.close()

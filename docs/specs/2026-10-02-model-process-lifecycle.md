@@ -33,7 +33,7 @@
 
 ## Реализация
 
-Нативный установщик выбирает LLM_STUDIO_MODEL_LAUNCHER=systemd и готовит
+Нативный установщик выбирает NEURAL_DECK_MODEL_LAUNCHER=systemd и готовит
 пользовательский менеджер systemd того же пользователя, что запускает backend:
 пакет пользовательского D-Bus, loginctl enable-linger и user@UID.service.
 Backend зависит по порядку запуска от готовности менеджера. Он управляет
@@ -41,7 +41,7 @@ Backend зависит по порядку запуска от готовнос�
 Linger запускает менеджер пользователя после загрузки ОС, но не включает
 автозапуск профилей или моделей.
 
-systemd-run --user создаёт llm-studio-model-<случайное имя>.service с Type=exec,
+systemd-run --user создаёт neural-deck-model-<случайное имя>.service с Type=exec,
 Restart=no и KillMode=control-group. Имя unit — техническое имя systemd;
 отдельного идентификатора запуска в таблице нет. Окружение backend, включая
 PATH и CUDA_HOME, дополняется переменными профиля. Временный файл окружения
@@ -54,7 +54,7 @@ PATH и CUDA_HOME, дополняется переменными профиля.
 unit по этому описанию, восстанавливает живой запуск либо удаляет описание
 завершённого запуска. Это не история и не конфигурация профилей.
 
-В Docker LLM_STUDIO_MODEL_LAUNCHER=process (по умолчанию). Автоматического
+В Docker NEURAL_DECK_MODEL_LAUNCHER=process (по умолчанию). Автоматического
 перехода с systemd на дочерний процесс при ошибке systemd нет.
 
 ## Проверки

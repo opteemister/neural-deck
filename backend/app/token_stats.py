@@ -132,6 +132,28 @@ class RequestJournalService:
             await session.commit()
             return row.id
 
+    async def client_labels(self) -> dict[int, str]:
+        """Resolve journal client IDs to their API token or anonymous IP."""
+
+        async with self._session_factory() as session:
+            clients = await session.scalars(select(ApiClientRecord))
+            return {
+                client.id: client.api_key or client.anonymous_ip or "Неизвестный клиент"
+                for client in clients
+            }
+
+    async def records(self) -> list[RequestJournalRecord]:
+        """Return journal rows for read-only aggregate/reporting services."""
+
+        async with self._session_factory() as session:
+            return list(
+                (
+                    await session.scalars(
+                        select(RequestJournalRecord).order_by(RequestJournalRecord.created_at)
+                    )
+                ).all()
+            )
+
     async def interrupt_pending(self) -> None:
         from sqlalchemy import update
 

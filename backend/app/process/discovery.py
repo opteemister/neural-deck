@@ -1,4 +1,4 @@
-"""Discovery of supported inference processes outside Studio."""
+"""Discovery of supported inference processes outside Neural Deck."""
 
 from __future__ import annotations
 

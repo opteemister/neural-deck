@@ -1,22 +1,24 @@
 import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
-import { Activity, Boxes, Check, Clock, Copy, Cpu, FlaskConical, LayoutDashboard, Menu, MessageSquare, Settings2, Terminal, X } from 'lucide-react'
+import { Activity, BarChart3, Boxes, Check, Clock, Copy, Cpu, FlaskConical, LayoutDashboard, Menu, MessageSquare, Route, Settings2, Terminal, X } from 'lucide-react'
 import { LogsDrawerProvider, useLogsDrawer } from '@/components/logs-drawer'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { api, getOpenAiEndpoint, queryKeys } from '@/lib/api'
 
 const navGroups = [
-  { label: 'Студия', items: [
+  { label: 'Neural Deck', items: [
     { to: '/', label: 'Обзор', icon: LayoutDashboard, end: true },
     { to: '/chat', label: 'Чат', icon: MessageSquare },
     { to: '/profiles', label: 'Профили', icon: Terminal },
     { to: '/models', label: 'Модели', icon: Boxes },
     { to: '/engines', label: 'Движки', icon: Cpu },
+    { to: '/proxy', label: 'Прокси', icon: Route },
   ] },
   { label: 'Наблюдение', items: [
     { to: '/status', label: 'Статус', icon: Activity },
+    { to: '/statistics', label: 'Статистика', icon: BarChart3 },
     { to: '/benchmarks', label: 'Benchmarks', icon: FlaskConical },
   ] },
 ]
@@ -58,7 +60,7 @@ function ServiceUptime() {
   }, [])
   const seconds = sample ? Math.floor(sample.seconds + Math.max(0, now - sample.at) / 1000) : null
   const elapsed = seconds === null ? '—' : `${Math.floor(seconds / 86400) ? `${Math.floor(seconds / 86400)}д ` : ''}${String(Math.floor(seconds / 3600) % 24).padStart(2, '0')}:${String(Math.floor(seconds / 60) % 60).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`
-  return <span className="flex shrink-0 items-center gap-1.5 text-[11px] text-muted-foreground" title="Время работы сервиса LLM Studio"><Clock className="size-3.5" /><span className="hidden md:inline">Uptime</span><span className="font-mono tabular-nums">{elapsed}</span></span>
+  return <span className="flex shrink-0 items-center gap-1.5 text-[11px] text-muted-foreground" title="Время работы сервиса Neural Deck"><Clock className="size-3.5" /><span className="hidden md:inline">Uptime</span><span className="font-mono tabular-nums">{elapsed}</span></span>
 }
 
 export function AppShell() {
@@ -69,16 +71,16 @@ function ShellContent() {
   const openLogs = useLogsDrawer()
   const [mobileOpen, setMobileOpen] = useState(false)
   const [collapsed, setCollapsed] = useState(() => {
-    try { return window.localStorage.getItem('llm-studio.navigation-collapsed') === 'true' }
+    try { return window.localStorage.getItem('neural-deck.navigation-collapsed') === 'true' }
     catch { return false }
   })
   useEffect(() => {
-    try { window.localStorage.setItem('llm-studio.navigation-collapsed', String(collapsed)) }
+    try { window.localStorage.setItem('neural-deck.navigation-collapsed', String(collapsed)) }
     catch { /* Navigation still works when browser storage is disabled. */ }
   }, [collapsed])
   const isChat = useLocation().pathname === '/chat'
   return <div className="min-h-screen bg-background text-foreground">
-    <header className="sticky top-0 z-40 flex h-16 items-center gap-4 border-b border-border bg-secondary px-4 sm:px-6"><Button variant="ghost" size="icon" className="hidden lg:inline-flex" aria-label={collapsed ? 'Развернуть меню' : 'Свернуть меню'} title={collapsed ? 'Развернуть меню' : 'Свернуть меню'} aria-expanded={!collapsed} onClick={() => setCollapsed((current) => !current)}><Menu className="size-5" /></Button><Button variant="ghost" size="icon" className="lg:hidden" aria-label="Открыть навигацию" aria-expanded={mobileOpen} onClick={() => setMobileOpen(true)}><Menu className="size-5" /></Button><NavLink to="/" className="flex shrink-0 items-center gap-2.5 text-lg font-semibold tracking-tight"><img src="/llm-studio.svg" alt="" width={32} height={32} className="size-8 shrink-0" /><span>llm<span className="mx-0.5 text-copper">/</span>studio</span></NavLink><ApiEndpoint /><div className="ml-auto flex items-center gap-2"><button type="button" onClick={() => openLogs()} className="rounded-md px-3 py-2 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">Логи</button></div></header>
+    <header className="sticky top-0 z-40 flex h-16 items-center gap-4 border-b border-border bg-secondary px-4 sm:px-6"><Button variant="ghost" size="icon" className="hidden lg:inline-flex" aria-label={collapsed ? 'Развернуть меню' : 'Свернуть меню'} title={collapsed ? 'Развернуть меню' : 'Свернуть меню'} aria-expanded={!collapsed} onClick={() => setCollapsed((current) => !current)}><Menu className="size-5" /></Button><Button variant="ghost" size="icon" className="lg:hidden" aria-label="Открыть навигацию" aria-expanded={mobileOpen} onClick={() => setMobileOpen(true)}><Menu className="size-5" /></Button><NavLink to="/" className="flex shrink-0 items-center gap-2.5 text-lg font-semibold tracking-tight"><img src="/neural-deck.svg" alt="" width={32} height={32} className="size-8 shrink-0" /><span>Neural Deck</span></NavLink><ApiEndpoint /><div className="ml-auto flex items-center gap-2"><button type="button" onClick={() => openLogs()} className="rounded-md px-3 py-2 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">Логи</button></div></header>
     <div className="flex min-h-[calc(100vh-4rem)]">
       {!collapsed && <aside className="hidden w-56 shrink-0 flex-col border-r border-border bg-secondary px-3 py-6 lg:flex">
         <Navigation />

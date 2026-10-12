@@ -149,6 +149,31 @@ export interface LocalModelArtifact {
     scope?: 'snapshot' | 'selection' | null
     missing_files?: string[]
     unverified_files?: string[]
+    remote_check?: {
+      availability: 'success' | 'unavailable' | 'not_tracked'
+      last_attempted_at?: string | null
+      last_successful_at?: string | null
+      current_revision?: string | null
+      repository_date?: string | null
+      last_error?: string | null
+      stale?: boolean
+    } | null
+    remote_update?: {
+      status: 'up_to_date' | 'update_available' | 'unknown' | 'not_tracked'
+      changed_files: number
+    } | null
+    local_integrity?: {
+      baseline_status: 'matches_downloaded' | 'diverged_from_downloaded' | 'unknown' | 'unavailable'
+      remote_status: 'matches_current_remote' | 'differs_from_current_remote' | 'unknown' | 'unavailable'
+    } | null
+    changed_paths?: Array<{
+      path: string
+      status: 'changed' | 'added' | 'removed' | 'local_divergence'
+      downloaded_file_date?: string | null
+      remote_file_date?: string | null
+    }>
+    downloaded_revision_date?: string | null
+    remote_revision_date?: string | null
   }
   variants: Array<{ path: string; format: string; size_bytes: number | null }>
   auxiliary_files: Array<{ path: string; format: string; size_bytes: number | null }>
@@ -178,6 +203,8 @@ export interface LocalModelArtifact {
 }
 
 export interface LocalModelsData {
+  scanning?: boolean
+  scan_error?: string | null
   items: LocalModelArtifact[]
 }
 
@@ -192,6 +219,33 @@ export interface ModelRegistryItem {
 
 export interface ModelRegistryData {
   items: ModelRegistryItem[]
+}
+
+export type ProxyRouteKind = 'auto' | 'alias'
+
+export interface ProxyRouteCandidate {
+  profile_id: string
+  profile_name: string | null
+  instance_id: string | null
+  upstream_model: string | null
+  engine_id: string | null
+  port: number | null
+  state: string
+  available: boolean
+  reason: string | null
+}
+
+export interface ProxyRoute {
+  name: string
+  kind: ProxyRouteKind
+  candidate_profile_ids: string[]
+  candidates: ProxyRouteCandidate[]
+  available: boolean
+  diagnostics: string[]
+}
+
+export interface ProxyRoutesData {
+  items: ProxyRoute[]
 }
 
 /** Models exposed by the OpenAI-compatible /v1/models endpoint. */
@@ -235,6 +289,9 @@ export interface ProfileData {
   environment: Record<string, string>
   autostart: boolean
   enable_metrics?: boolean
+  input_price_usd_per_million_tokens?: number | null
+  output_price_usd_per_million_tokens?: number | null
+  cached_input_price_usd_per_million_tokens?: number | null
 }
 
 export interface ProfileIssue {
@@ -246,6 +303,130 @@ export interface ProfileIssue {
 export interface ProfileListData {
   items: ProfileData[]
   issues: ProfileIssue[]
+}
+
+export type ProfileSummaryState = 'ok' | 'unavailable' | 'stale' | 'unknown' | 'not_measured'
+
+export interface ProfileSummaryMetric {
+  value: number | null
+  unit: string
+  state: ProfileSummaryState
+  source: string
+  reason?: string | null
+}
+
+export interface ProfileSummary {
+  profile_name: string
+  period: { from: string; to: string; timezone: 'UTC' }
+  performance: { prefill_tps: ProfileSummaryMetric; decode_tps: ProfileSummaryMetric }
+  memory: {
+    disk_bytes: ProfileSummaryMetric
+    vram_current_bytes: ProfileSummaryMetric
+    vram_last_bytes: ProfileSummaryMetric
+    vram_avg_bytes: ProfileSummaryMetric
+    vram_peak_bytes: ProfileSummaryMetric
+  }
+  concurrency: {
+    optimal: ProfileSummaryMetric
+    limit: ProfileSummaryMetric
+    observed_max: ProfileSummaryMetric
+    limit_source: string
+    benchmark_state: 'not_measured' | 'measured'
+  }
+  load: { percent: ProfileSummaryMetric }
+  endpoint: {
+    port: number | null
+    state: 'ok' | 'unknown'
+    source: string
+    conflict: boolean
+    conflict_with: string[]
+    reason?: string | null
+  }
+}
+
+export interface ProfileSummaryData {
+  items: ProfileSummary[]
+  period: { from: string; to: string; timezone: 'UTC' }
+  source: string
+}
+
+export interface StatisticsTokenMetric {
+  known_total: number | null
+  unknown_requests: number
+}
+
+export interface StatisticsAggregate {
+  requests: {
+    total: number
+    success: number
+    failed: number
+    interrupted: number
+    unknown: number
+  }
+  tokens: {
+    input: StatisticsTokenMetric
+    cached_input: StatisticsTokenMetric
+    output: StatisticsTokenMetric
+  }
+  performance: {
+    latency_p95_ms: number | null
+    latency_ms: number | null
+    prefill_tps: number | null
+    decode_tps: number | null
+  }
+  cost: {
+    usd: number | null
+    state: 'ok' | 'partial' | 'unknown' | 'unavailable'
+    unknown_requests: number
+    prices: { input: number | null; cached_input: number | null; output: number | null }
+  }
+}
+
+export interface StatisticsProfile extends StatisticsAggregate {
+  profile_name: string
+  model_name: string | null
+  load: {
+    percent: number
+    active_seconds: number
+    period_seconds: number
+    max_concurrency: number
+    basis: 'engine_active_requests'
+    state: 'ok' | 'unknown'
+  }
+}
+
+export interface StatisticsClient extends StatisticsAggregate {
+  client_id: number | null
+  label: string
+  profiles: string[]
+}
+
+export interface StatisticsData {
+  summary: {
+    sessions: number | null
+    sessions_state: 'not_recorded'
+    active_days: number
+    period_days: number
+    streak_days: number
+    success_rate: number | null
+  }
+  period: {
+    name: string
+    from: string
+    to: string
+    timezone: 'UTC'
+    boundary: '[from,to)'
+    bucket: 'day'
+    request_event_time: string
+  }
+  filters: { model_name: string | null; profile_name: string | null }
+  filters_options: { models: string[]; profiles: string[] }
+  totals: StatisticsAggregate
+  activity: Array<StatisticsAggregate & { date: string; benchmark: boolean }>
+  profiles: StatisticsProfile[]
+  clients: StatisticsClient[]
+  benchmarks: { intervals: Array<{ from: string; to: string; label?: string }>; traffic_included: boolean; state: string }
+  source: string
 }
 
 export interface Metric {
@@ -317,15 +498,40 @@ export interface HfFile {
   size: number | null
   etag?: string | null
   sha256?: string | null
+  hash_kind?: 'git_blob' | 'md5' | null
+  file_date?: string | null
+}
+
+export interface HfModelItem {
+  repo_id: string
+  revision?: string | null
+  description?: string | null
+  tags: string[]
+  author?: string | null
+  avatar_url?: string | null
+  downloads?: number | null
+  likes?: number | null
+  trending_score?: number | null
+  used_storage?: number | null
+  safetensors?: { parameters?: Record<string, number>; total?: number } | null
+  gguf?: { total?: number; architecture?: string; totalFileSize?: number } | null
+  eval_results?: Array<{ dataset_name?: string; metric_name?: string; metric_value?: number | string }> | null
+  pipeline_tag?: string | null
+  library_name?: string | null
+  created_at?: string | null
+  last_modified?: string | null
 }
 
 export interface HfSearchData {
-  items: Array<{ repo_id: string; revision?: string | null; description?: string | null; tags: string[] }>
+  items: HfModelItem[]
 }
 
 export interface HfRepoData {
   repo_id: string
   revision: string
+  author?: string | null
+  avatar_url?: string | null
+  revision_date?: string | null
   description?: string | null
   readme?: string | null
   files: HfFile[]

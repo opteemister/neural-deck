@@ -9,8 +9,8 @@ source "$project_root/scripts/common.sh"
 # ``scripts/deploy.sh`` confirms the local/remote target before invoking this
 # procedure.  Keep a second guard for direct invocation so an operator cannot
 # accidentally mutate the current machine without an explicit Y/N response.
-if [[ "${LLM_STUDIO_INSTALL_CONFIRMED:-}" != "1" ]]; then
-    info "This will install and start systemd service llm-studio on the current machine."
+if [[ "${NEURAL_DECK_INSTALL_CONFIRMED:-}" != "1" ]]; then
+    info "This will install and start systemd service neural-deck on the current machine."
     printf 'Continue with this local installation? [y/N] '
     answer=''
     IFS= read -r answer || answer=''
@@ -23,17 +23,17 @@ fi
 [[ "$(uname -s)" == "Linux" ]] \
     || die "native installation requires Linux with systemd"
 command -v systemctl >/dev/null 2>&1 \
-    || die "systemctl is required for the llm-studio service"
-runtime_file=${LLM_STUDIO_ENV_FILE:-"$project_root/.env"}
+    || die "systemctl is required for the neural-deck service"
+runtime_file=${NEURAL_DECK_ENV_FILE:-"$project_root/.env"}
 [[ -f "$runtime_file" ]] \
     || die "runtime config is missing: ${runtime_file}"
 
-if [[ -n "${LLM_STUDIO_SERVICE_USER:-}" ]]; then
-    service_user=$LLM_STUDIO_SERVICE_USER
+if [[ -n "${NEURAL_DECK_SERVICE_USER:-}" ]]; then
+    service_user=$NEURAL_DECK_SERVICE_USER
 elif [[ $EUID -eq 0 ]]; then
     # Preserve the interactive operator when the script itself was entered
     # through sudo; a bare root SSH session intentionally remains root unless
-    # LLM_STUDIO_SERVICE_USER is set explicitly.
+    # NEURAL_DECK_SERVICE_USER is set explicitly.
     service_user=${SUDO_USER:-root}
 else
     service_user=$(id -un)
@@ -42,7 +42,7 @@ id "$service_user" >/dev/null 2>&1 \
     || die "service user does not exist: ${service_user}"
 service_group=$(id -gn "$service_user")
 
-data_root=$(require_dotenv_value "$runtime_file" LLM_STUDIO_DATA_ROOT)
+data_root=$(require_dotenv_value "$runtime_file" NEURAL_DECK_DATA_ROOT)
 host=$(require_dotenv_value "$runtime_file" HOST)
 port=$(require_dotenv_value "$runtime_file" PORT)
 models_root=$(dotenv_value "$runtime_file" MODELS_ROOT || true)
@@ -59,7 +59,7 @@ validate_runtime_path() {
         || die "${key} must not contain newlines"
 }
 
-validate_runtime_path LLM_STUDIO_DATA_ROOT "$data_root"
+validate_runtime_path NEURAL_DECK_DATA_ROOT "$data_root"
 validate_runtime_path MODELS_ROOT "$models_root"
 validate_runtime_path LOG_ROOT "$log_root"
 [[ "$port" =~ ^[0-9]+$ ]] || die "PORT must be numeric"
@@ -67,7 +67,7 @@ validate_runtime_path LOG_ROOT "$log_root"
 # Alembic imports the same settings boundary as the service. Export the
 # already validated values so migrations work even when invoked from the
 # backend directory, where the project-root .env is not auto-discovered.
-export LLM_STUDIO_DATA_ROOT="$data_root"
+export NEURAL_DECK_DATA_ROOT="$data_root"
 export HOST="$host"
 export PORT="$port"
 export MODELS_ROOT="$models_root"
@@ -164,7 +164,7 @@ as_service() {
     fi
 }
 
-info "Installing LLM Studio at ${project_root} for ${service_user}:${service_group}"
+info "Installing Neural Deck at ${project_root} for ${service_user}:${service_group}"
 info "Persistent data: ${data_root}"
 info "Persistent logs: ${log_root}"
 
@@ -202,7 +202,7 @@ for source_dir in \
 done
 
 as_root install -d -m 0750 -o "$service_user" -g "$service_group" \
-    /etc/llm-studio \
+    /etc/neural-deck \
     "$data_root" \
     "$data_root/config" \
     "$data_root/data" \
@@ -212,7 +212,7 @@ as_root install -d -m 0750 -o "$service_user" -g "$service_group" \
     "$data_root/audit" \
     "$models_root" \
     "$log_root" \
-    "$log_root/studio" \
+    "$log_root/neural-deck" \
     "$log_root/profiles" \
     "$log_root/api"
 
@@ -261,29 +261,29 @@ sed \
     -e "s|__UV_BIN__|${uv_replacement}|g" \
     -e "s|__DATA_ROOT__|${data_replacement}|g" \
     -e "s|__LOG_ROOT__|${log_replacement}|g" \
-    "$project_root/deploy/systemd/llm-studio.service.template" > "$service_tmp"
+    "$project_root/deploy/systemd/neural-deck.service.template" > "$service_tmp"
 
 as_root install -m 0644 -o root -g root "$service_tmp" \
-    /etc/systemd/system/llm-studio.service
+    /etc/systemd/system/neural-deck.service
 as_root install -m 0640 -o "$service_user" -g "$service_group" \
-    "$runtime_file" /etc/llm-studio/llm-studio.env
+    "$runtime_file" /etc/neural-deck/neural-deck.env
 # The user manager owns transient model units independently of the backend.
 # Linger starts only the manager after boot; no model unit is enabled.
 as_root loginctl enable-linger "$service_user"
 as_root systemctl start "user@${service_uid}.service"
 as_root systemctl daemon-reload
-as_root systemctl enable llm-studio.service
-as_root systemctl restart llm-studio.service
+as_root systemctl enable neural-deck.service
+as_root systemctl restart neural-deck.service
 
 info "systemd service restarted; waiting for health response"
 for attempt in {1..30}; do
-    if systemctl is-active --quiet llm-studio.service \
+    if systemctl is-active --quiet neural-deck.service \
         && check_http_health "$host" "$port"; then
-        info "LLM Studio installation completed successfully"
+        info "Neural Deck installation completed successfully"
         exit 0
     fi
     sleep 1
 done
 
-systemctl status llm-studio.service --no-pager --full || true
+systemctl status neural-deck.service --no-pager --full || true
 die "service did not become healthy after 30 seconds"

@@ -145,7 +145,7 @@ class ProfileService:
                 logger.info("Автозапуск профиля: попытка name=%s", profile.name)
                 result.append(await self.start(profile.name))
             except Exception as exc:  # noqa: BLE001 - autostart is non-fatal
-                # A broken autostart profile must not prevent Studio from
+                # A broken autostart profile must not prevent Neural Deck from
                 # starting. The failed attempt is never retried in this run.
                 code = exc.code if isinstance(exc, AppError) else "autostart_failed"
                 self.autostart_issues.append(

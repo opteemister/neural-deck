@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-workspace=${LLM_STUDIO_WORKSPACE:-/workspace}
-backend_dir=${LLM_STUDIO_BACKEND_DIR:-"$workspace/backend"}
-frontend_dir=${LLM_STUDIO_FRONTEND_DIR:-"$workspace/frontend"}
-backend_module=${LLM_STUDIO_APP_MODULE:-app.main:app}
+workspace=${NEURAL_DECK_WORKSPACE:-/workspace}
+backend_dir=${NEURAL_DECK_BACKEND_DIR:-"$workspace/backend"}
+frontend_dir=${NEURAL_DECK_FRONTEND_DIR:-"$workspace/frontend"}
+backend_module=${NEURAL_DECK_APP_MODULE:-app.main:app}
 
 : "${HOST:?HOST is required}"
 : "${PORT:?PORT is required}"
 
 die_runtime() {
-    printf 'LLM Studio runtime configuration error: %s\n' "$*" >&2
+    printf 'Neural Deck runtime configuration error: %s\n' "$*" >&2
     exit 1
 }
 
@@ -42,13 +42,13 @@ mountpoint_exists() {
 }
 
 validate_persistent_paths() {
-    local roots=${LLM_STUDIO_PERSISTENT_ROOTS-}
-    [[ -n "$roots" ]] || die_runtime 'LLM_STUDIO_PERSISTENT_ROOTS is required by the Compose runtime'
+    local roots=${NEURAL_DECK_PERSISTENT_ROOTS-}
+    [[ -n "$roots" ]] || die_runtime 'NEURAL_DECK_PERSISTENT_ROOTS is required by the Compose runtime'
 
     local -a persistent_roots=()
     local root_path resolved_root path resolved_path
     IFS=: read -r -a persistent_roots <<< "$roots"
-    (( ${#persistent_roots[@]} > 0 )) || die_runtime 'LLM_STUDIO_PERSISTENT_ROOTS is empty'
+    (( ${#persistent_roots[@]} > 0 )) || die_runtime 'NEURAL_DECK_PERSISTENT_ROOTS is empty'
 
     for root_path in "${persistent_roots[@]}"; do
         [[ "$root_path" == /* && "$root_path" != "/" ]] \
@@ -61,7 +61,7 @@ validate_persistent_paths() {
             || die_runtime "persistent mount target is not mounted: $root_path"
     done
 
-    for path in LLM_STUDIO_DATA_ROOT MODELS_ROOT LOG_ROOT; do
+    for path in NEURAL_DECK_DATA_ROOT MODELS_ROOT LOG_ROOT; do
         require_runtime_path "$path"
         resolved_path=$(readlink -f -- "${!path}") \
             || die_runtime "cannot resolve $path: ${!path}"
@@ -84,26 +84,26 @@ validate_persistent_paths
 cd "$workspace"
 
 if [[ ! -d "$backend_dir" ]]; then
-    printf 'LLM Studio backend directory is missing: %s\n' "$backend_dir" >&2
+    printf 'Neural Deck backend directory is missing: %s\n' "$backend_dir" >&2
     exit 1
 fi
 if [[ ! -d "$frontend_dir" ]]; then
-    printf 'LLM Studio frontend directory is missing: %s\n' "$frontend_dir" >&2
+    printf 'Neural Deck frontend directory is missing: %s\n' "$frontend_dir" >&2
     exit 1
 fi
 if [[ ! -f "$frontend_dir/dist/index.html" ]]; then
-    printf 'LLM Studio frontend build is missing: %s. Rebuild the image.\n' "$frontend_dir/dist/index.html" >&2
+    printf 'Neural Deck frontend build is missing: %s. Rebuild the image.\n' "$frontend_dir/dist/index.html" >&2
     exit 1
 fi
 
 start_backend() {
-    if [[ -n "${LLM_STUDIO_BACKEND_DEV_COMMAND:-}" ]]; then
-        bash -lc "$LLM_STUDIO_BACKEND_DEV_COMMAND"
+    if [[ -n "${NEURAL_DECK_BACKEND_DEV_COMMAND:-}" ]]; then
+        bash -lc "$NEURAL_DECK_BACKEND_DEV_COMMAND"
         return
     fi
 
     if [[ -x "$backend_dir/.venv/bin/uvicorn" ]]; then
-        if [[ "${LLM_STUDIO_FRONTEND_WATCH:-0}" == "1" ]]; then
+        if [[ "${NEURAL_DECK_FRONTEND_WATCH:-0}" == "1" ]]; then
             "$backend_dir/.venv/bin/uvicorn" "$backend_module" \
                 --app-dir "$backend_dir" \
                 --host "$HOST" \
@@ -124,7 +124,7 @@ watch_frontend() {
     exec pnpm --dir "$frontend_dir" exec vite build --watch
 }
 
-if [[ "${LLM_STUDIO_FRONTEND_WATCH:-0}" == "1" ]]; then
+if [[ "${NEURAL_DECK_FRONTEND_WATCH:-0}" == "1" ]]; then
     frontend_watch_pid=""
     backend_pid=""
 

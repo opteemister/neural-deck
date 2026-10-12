@@ -39,7 +39,7 @@ function runUptime(instance: Instance): string {
   return `${Math.floor(minutes / 60)}ч ${String(minutes % 60).padStart(2, '0')}м`
 }
 
-const gpuSortStorage = 'llm-studio.gpu-sort'
+const gpuSortStorage = 'neural-deck.gpu-sort'
 function readGpuSort(): GpuSort {
   try {
     const saved = JSON.parse(window.localStorage.getItem(gpuSortStorage) ?? 'null') as GpuSort | null
@@ -170,7 +170,7 @@ export function DashboardPage() {
         <div>
           <RunTabs panelId="run-metrics-panel" value={selected?.id ?? 'all'} onChange={selectInstance} items={[{ value: 'all', title: 'Все', subtitle: `${activeInstances.length} активных запусков` }, ...activeInstances.map((instance) => ({ value: instance.id, title: instance.profile_name ?? instance.model_name ?? 'Внешний запуск', subtitle: instance.model_name ?? 'модель неизвестна', uptime: runUptime(instance), meta: `${instance.engine_id} · ${instance.port === null ? '—' : `:${instance.port}`}` }))]} />
           <Card className="rounded-t-none border-t-0" role="tabpanel" id="run-metrics-panel" aria-labelledby={`run-metrics-panel-tab-${encodeURIComponent(selected?.id ?? 'all')}`}>
-            <CardHeader><div className="flex h-8 items-center justify-between gap-3">{selected ? <><span className="min-w-0 truncate text-xs text-muted-foreground">{selected.source === 'external' ? 'Внешний процесс' : 'Профиль LLM Studio'} · PID {selected.pid}</span><div className="flex shrink-0 items-center gap-2"><StatusBadge state={selected.state} onClick={selected.profile_name ? () => openLogs(selected.profile_name!) : undefined} title={selected.profile_name ? `Логи профиля «${selected.profile_name}»` : undefined} /><Button size="sm" variant="danger" disabled={!selectedCanStop || stop.isPending || selected.state === 'stopping'} title={selectedCanStop ? undefined : 'Backend не подтвердил право остановки этого процесса'} onClick={() => void stop.mutate(selected.id)}>{selected.source === 'external' ? 'Остановить внешний' : 'Остановить'}</Button></div></> : <span className="text-xs text-muted-foreground">Сводные показатели всех активных моделей</span>}</div></CardHeader>
+            <CardHeader><div className="flex h-8 items-center justify-between gap-3">{selected ? <><span className="min-w-0 truncate text-xs text-muted-foreground">{selected.source === 'external' ? 'Внешний процесс' : 'Профиль Neural Deck'} · PID {selected.pid}</span><div className="flex shrink-0 items-center gap-2"><StatusBadge state={selected.state} onClick={selected.profile_name ? () => openLogs(selected.profile_name!) : undefined} title={selected.profile_name ? `Логи профиля «${selected.profile_name}»` : undefined} /><Button size="sm" variant="danger" disabled={!selectedCanStop || stop.isPending || selected.state === 'stopping'} title={selectedCanStop ? undefined : 'Backend не подтвердил право остановки этого процесса'} onClick={() => void stop.mutate(selected.id)}>{selected.source === 'external' ? 'Остановить внешний' : 'Остановить'}</Button></div></> : <span className="text-xs text-muted-foreground">Сводные показатели всех активных моделей</span>}</div></CardHeader>
             {selected ? <>
 
               <CardContent className="pt-4"><ModelPerformance instance={selected} data={selectedMetrics?.data} /><LogsPanel key={selected.id} instance={selected} data={logs.data} loading={logs.isLoading} error={logs.error} retry={() => void logs.refetch()} /></CardContent>

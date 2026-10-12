@@ -197,7 +197,9 @@ async def patch_settings(
     app_settings.models_root = models_root
     # Publish the validated bundle only after the atomic settings replacement.
     runtime = get_runtime(request)
+    await runtime.model_catalogue.stop_update_scheduler()
     runtime.replace_paths(updated, catalogue)
+    await catalogue.start_update_scheduler()
     request.app.state.paths = updated
     request.app.state.model_catalogue = catalogue
     logger.info(
@@ -376,7 +378,11 @@ async def operation_detail(
 async def local_models(
     request: Request, catalogue: ModelCatalogue = Depends(get_model_catalogue)
 ) -> JSONResponse:
-    return success(request, {"items": await asyncio.to_thread(catalogue.items)})
+    return success(request, {
+        "items": await asyncio.to_thread(catalogue.items),
+        "scanning": catalogue.scanning,
+        "scan_error": catalogue.scan_error,
+    })
 
 
 @router.delete("/models/local/{model_id}", response_model=SuccessEnvelope[LocalModelList])
@@ -443,12 +449,26 @@ async def models_registry(
 async def scan_local_models(
     request: Request, catalogue: ModelCatalogue = Depends(get_model_catalogue)
 ) -> JSONResponse:
-    # An explicit user sync is the expensive, authoritative operation: refresh
-    # Hub metadata and verify every manifest file, including its content hash.
+    # The scan computes a missing local hash once and reuses it while the
+    # mtime/size fingerprint remains stable.  It never downloads or replaces
+    # model files.
     return success(
         request,
-        {"items": await asyncio.to_thread(catalogue.scan, verify_hashes=True)},
+        {
+            "items": await asyncio.to_thread(catalogue.scan, verify_hashes=True),
+            "scanning": catalogue.scanning,
+            "scan_error": catalogue.scan_error,
+        },
     )
+
+
+@router.post("/models/local/check-updates", response_model=SuccessEnvelope[LocalModelList])
+async def check_local_model_updates(
+    request: Request, catalogue: ModelCatalogue = Depends(get_model_catalogue)
+) -> JSONResponse:
+    """Run the same remote check used by the background scheduler."""
+
+    return success(request, {"items": await catalogue.check_updates()})
 
 
 @router.get("/models/hf/search", response_model=SuccessEnvelope[HfSearchData])
@@ -456,6 +476,16 @@ async def hf_search(
     request: Request, q: str, catalogue: ModelCatalogue = Depends(get_model_catalogue)
 ) -> JSONResponse:
     return success(request, await catalogue.hf_search(q))
+
+
+@router.get("/models/hf/trending", response_model=SuccessEnvelope[HfSearchData])
+async def hf_trending(
+    request: Request,
+    group: str = "all",
+    limit: int = 50,
+    catalogue: ModelCatalogue = Depends(get_model_catalogue),
+) -> JSONResponse:
+    return success(request, await catalogue.hf_trending(group=group, limit=limit))
 
 
 @router.get("/models/hf/repos/{namespace}/{name}", response_model=SuccessEnvelope[HfRepoData])

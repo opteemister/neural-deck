@@ -7,7 +7,7 @@ import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { QueryEmpty, QueryError, QueryLoading } from '@/components/query-state'
-import { api, queryKeys, StudioApiError } from '@/lib/api'
+import { api, queryKeys, NeuralDeckApiError } from '@/lib/api'
 import type { LogLine, LogSource } from '@/types/api'
 
 const LOG_PAGE_SIZE = 500
@@ -184,7 +184,7 @@ export function LogsViewer({ initialProfile, initialSource = '', drawer = false 
       anchor.remove()
       URL.revokeObjectURL(url)
     } catch (error) {
-      setDownloadError(error instanceof StudioApiError ? error.message : 'Лог не удалось скачать.')
+      setDownloadError(error instanceof NeuralDeckApiError ? error.message : 'Лог не удалось скачать.')
     }
   }
 
@@ -198,7 +198,7 @@ export function LogsViewer({ initialProfile, initialSource = '', drawer = false 
       await navigator.clipboard.writeText(await file.text())
       setCopied(true)
     } catch (error) {
-      setCopyError(error instanceof StudioApiError ? error.message : 'Не удалось скопировать последний файл лога.')
+      setCopyError(error instanceof NeuralDeckApiError ? error.message : 'Не удалось скопировать последний файл лога.')
     } finally {
       setCopying(false)
     }

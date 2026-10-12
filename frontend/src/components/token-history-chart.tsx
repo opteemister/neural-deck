@@ -12,7 +12,7 @@ const series = [
 ] as const
 const format = (number: number | null) => number === null ? '—' : number.toLocaleString('ru-RU', { maximumFractionDigits: 0 })
 const compact = new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 })
-const time = (at?: string) => at ? new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''
+const time = (at?: string) => at ? new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' }) : ''
 
 export function TokenHistoryChart({ instance }: { instance?: Instance }) {
   const query = useQuery({ queryKey: ['token-history', instance?.profile_name ?? instance?.id ?? 'all'],
@@ -42,7 +42,7 @@ export function TokenHistoryChart({ instance }: { instance?: Instance }) {
       </div>
       <div className="mt-1 flex min-w-0 items-center gap-2 whitespace-nowrap text-[10px]">
         <span className="shrink-0 opacity-60">1 d</span>
-        <span className="min-w-0 truncate opacity-60" title={`Завершённые запросы через API Студии за последние 24 часа. in: ${compact.format(inputTotal)}; out: ${compact.format(outputTotal)}; total: ${compact.format(total)}. Cached — часть in, а не дополнительные токены.`}>in {compact.format(inputTotal)} · out {compact.format(outputTotal)} · total {compact.format(total)}</span>
+        <span className="min-w-0 truncate opacity-60" title={`Завершённые запросы через API Neural Deck за последние 24 часа. in: ${compact.format(inputTotal)}; out: ${compact.format(outputTotal)}; total: ${compact.format(total)}. Cached — часть in, а не дополнительные токены.`}>in {compact.format(inputTotal)} · out {compact.format(outputTotal)} · total {compact.format(total)}</span>
       </div>
     </div>
     <div className="relative" onPointerLeave={() => setHoveredIndex(null)}>

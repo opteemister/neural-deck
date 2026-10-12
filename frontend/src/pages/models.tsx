@@ -1,9 +1,10 @@
 import { marked } from 'marked'
 import { FormEvent, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, ArrowLeft, ChevronDown, ChevronUp, Download, ExternalLink, FolderOpen, RefreshCw, Search, Star, Trash2, X } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, ChevronDown, ChevronUp, Download, ExternalLink, FolderOpen, Heart, RefreshCw, Search, Star, Trash2, TrendingUp, X } from 'lucide-react'
 import { useSearchParams } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardTitle } from '@/components/ui/card'
 import { IconButton } from '@/components/ui/icon-button'
 import { Input } from '@/components/ui/input'
@@ -13,12 +14,55 @@ import { QueryEmpty, QueryError, QueryLoading } from '@/components/query-state'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { api, queryKeys } from '@/lib/api'
 import { formatBytes } from '@/lib/utils'
-import type { HfFile, HfRepoData, LocalModelArtifact, Operation } from '@/types/api'
+import type { HfFile, HfModelItem, HfRepoData, LocalModelArtifact, Operation } from '@/types/api'
 
 type ModelView = 'local' | 'huggingface'
 type RepoTab = 'description' | 'files' | 'quantizations'
-type HfModelItem = { repo_id: string; revision?: string | null; description?: string | null; tags: string[] }
+type HfModelFilter = 'all' | string
 type RepoNavigation = { repo_id: string; revision?: string; tab: RepoTab }
+
+type HfBadgeGroup = 'format' | 'library' | 'task' | 'capability' | 'generation'
+type HfBadgeDefinition = { group: HfBadgeGroup; label: string; values: string[] }
+
+const HF_BADGE_DEFINITIONS: HfBadgeDefinition[] = [
+  { group: 'format', label: 'SafeTensors', values: ['safetensors'] },
+  { group: 'format', label: 'GGUF', values: ['gguf'] },
+  { group: 'format', label: 'GGML', values: ['ggml'] },
+  { group: 'format', label: 'PyTorch', values: ['pytorch'] },
+  { group: 'format', label: 'TensorFlow', values: ['tensorflow'] },
+  { group: 'format', label: 'Flax', values: ['flax'] },
+  { group: 'format', label: 'ONNX', values: ['onnx'] },
+  { group: 'format', label: 'MLX', values: ['mlx'] },
+  { group: 'format', label: 'OpenVINO', values: ['openvino'] },
+  { group: 'format', label: 'Core ML', values: ['coreml'] },
+  { group: 'format', label: 'TFLite', values: ['tflite'] },
+  { group: 'format', label: 'AWQ', values: ['awq'] },
+  { group: 'format', label: 'GPTQ', values: ['gptq'] },
+  { group: 'format', label: 'EXL2', values: ['exl2'] },
+  { group: 'library', label: 'Transformers', values: ['transformers'] },
+  { group: 'library', label: 'Diffusers', values: ['diffusers'] },
+  { group: 'library', label: 'llama.cpp', values: ['llama.cpp', 'llamacpp'] },
+  { group: 'library', label: 'vLLM', values: ['vllm'] },
+  { group: 'library', label: 'Sentence Transformers', values: ['sentence-transformers'] },
+  { group: 'library', label: 'PEFT', values: ['peft'] },
+  { group: 'task', label: 'Текст', values: ['text-generation', 'text-classification', 'text-to-text', 'summarization', 'translation', 'question-answering'] },
+  { group: 'task', label: 'Изображения', values: ['image-text-to-text', 'text-to-image', 'image-to-image', 'image-classification', 'image-segmentation', 'semantic-segmentation', 'mask-generation', 'image-feature-extraction'] },
+  { group: 'task', label: 'Видео', values: ['image-to-video', 'image-text-to-video', 'text-to-video', 'video-to-video', 'video-classification', 'video-feature-extraction'] },
+  { group: 'task', label: 'Аудио', values: ['automatic-speech-recognition', 'text-to-speech', 'audio-classification', 'voice-activity-detection', 'audio-feature-extraction'] },
+  { group: 'task', label: 'Embeddings', values: ['embedding', 'embeddings', 'multimodal-embedding', 'feature-extraction', 'sentence-similarity'] },
+  { group: 'capability', label: 'Conversational', values: ['conversational'] },
+  { group: 'capability', label: 'Multimodal', values: ['multimodal'] },
+  { group: 'capability', label: 'Vision', values: ['vision'] },
+  { group: 'capability', label: 'Reasoning', values: ['reasoning'] },
+  { group: 'capability', label: 'MoE', values: ['moe', 'mixture-of-experts'] },
+  { group: 'capability', label: 'Decision model', values: ['decision-model'] },
+  { group: 'capability', label: 'Multilingual', values: ['multilingual'] },
+  { group: 'capability', label: 'Uncensored', values: ['uncensored'] },
+  { group: 'generation', label: 'ComfyUI', values: ['comfyui'] },
+  { group: 'generation', label: 'LoRA', values: ['lora'] },
+  { group: 'generation', label: 'Quantization', values: ['quantization'] },
+  { group: 'generation', label: 'ControlNet', values: ['controlnet'] },
+]
 
 function parseRepoStack(value: string | null): RepoNavigation[] {
   if (!value) return []
@@ -45,6 +89,7 @@ export function ModelsPage() {
   const view: ModelView = requestedView === 'huggingface' ? 'huggingface' : 'local'
   const localQuery = params.get('local_q') ?? ''
   const hfQuery = params.get('hf_q') ?? ''
+  const hfGroup: HfModelFilter = params.get('hf_group') ?? 'all'
   const repoId = params.get('repo') ?? ''
   const revision = params.get('revision') ?? undefined
   const repoTab: RepoTab = params.get('repo_tab') === 'quantizations' ? 'quantizations' : 'description'
@@ -59,15 +104,16 @@ export function ModelsPage() {
   const [downloadsClosed, setDownloadsClosed] = useState(false)
   const [favoriteModels, setFavoriteModels] = useState<string[]>(() => {
     try {
-      const saved = window.localStorage.getItem('llm-studio.favorite-models')
+      const saved = window.localStorage.getItem('neural-deck.favorite-models')
       const parsed = saved ? JSON.parse(saved) : []
       return Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === 'string') : []
     } catch {
       return []
     }
   })
-  const localModels = useQuery({ queryKey: queryKeys.localModels, queryFn: api.getLocalModels, enabled: view === 'local' })
+  const localModels = useQuery({ queryKey: queryKeys.localModels, queryFn: api.getLocalModels, enabled: view === 'local', refetchInterval: (query) => query.state.data?.scanning ? 1_500 : false })
   const hfSearch = useQuery({ queryKey: queryKeys.hfSearch(hfQuery), queryFn: () => api.searchHf(hfQuery), enabled: view === 'huggingface' && hfQuery.trim().length > 1 })
+  const hfTrending = useQuery({ queryKey: queryKeys.hfTrending('all'), queryFn: () => api.getHfTrending('all', 50), enabled: view === 'huggingface' && !hfQuery.trim() && !repoId })
   const repoParts = repoId.split('/')
   const hfRepo = useQuery({ queryKey: queryKeys.hfRepo(repoId, revision), queryFn: () => api.getHfRepo(repoParts[0], repoParts[1], revision), enabled: view === 'huggingface' && repoParts.length === 2 && Boolean(repoId) })
   const scan = useMutation({ mutationFn: api.scanLocalModels, onSuccess: (data) => queryClient.setQueryData(queryKeys.localModels, data) })
@@ -75,15 +121,27 @@ export function ModelsPage() {
   const deleteModelGroup = useMutation({ mutationFn: ({ modelId, groupId }: { modelId: string; groupId: string }) => api.deleteLocalModelGroup(modelId, groupId), onSuccess: (data) => queryClient.setQueryData(queryKeys.localModels, data) })
   const downloads = useQuery({ queryKey: queryKeys.downloads, queryFn: api.getDownloads, refetchInterval: 1_500 })
   const previousDownloadIds = useRef<string[]>([])
-  const downloadOperations = downloads.data?.items ?? []
+  const [downloadHistory, setDownloadHistory] = useState<Operation[]>([])
+  const downloadOperations = downloadHistory
   const download = useMutation({ mutationFn: api.downloadModels, onSuccess: () => { const shouldCollapse = downloadsClosed || downloadOperations.length === 0; setDownloadsClosed(false); if (shouldCollapse) setDownloadsCollapsed(true); void queryClient.invalidateQueries({ queryKey: queryKeys.downloads }); void queryClient.invalidateQueries({ queryKey: queryKeys.localModels }) } })
   const cancelDownload = useMutation({ mutationFn: api.cancelOperation, onSuccess: () => { void queryClient.invalidateQueries({ queryKey: queryKeys.downloads }); void queryClient.invalidateQueries({ queryKey: queryKeys.localModels }) } })
-  useEffect(() => { window.localStorage.setItem('llm-studio.favorite-models', JSON.stringify(favoriteModels)) }, [favoriteModels])
+  useEffect(() => { window.localStorage.setItem('neural-deck.favorite-models', JSON.stringify(favoriteModels)) }, [favoriteModels])
   useEffect(() => { setSearchInput(hfQuery) }, [hfQuery])
   useEffect(() => {
     if (!downloads.data) return
+    setDownloadHistory((current) => {
+      const merged = new Map(current.map((item) => [item.id, item]))
+      for (const item of downloads.data.items) merged.set(item.id, item)
+      return [...merged.values()]
+    })
     const ids = downloads.data.items.map((item) => item.id)
-    if (previousDownloadIds.current.some((id) => !ids.includes(id))) {
+    const disappearedIds = previousDownloadIds.current.filter((id) => !ids.includes(id))
+    if (disappearedIds.length > 0) {
+      for (const id of disappearedIds) {
+        void api.getOperation(id).then((operation) => {
+          setDownloadHistory((current) => current.map((item) => item.id === id ? operation : item))
+        }).catch(() => undefined)
+      }
       void queryClient.invalidateQueries({ queryKey: queryKeys.models })
       void queryClient.invalidateQueries({ queryKey: queryKeys.localModels })
     }
@@ -92,7 +150,7 @@ export function ModelsPage() {
   const localItems = useMemo(() => (localModels.data?.items ?? []).filter((model) => `${model.path} ${model.format} ${model.compatibility}`.toLowerCase().includes(localQuery.toLowerCase())).sort((left, right) => Number(!favoriteModels.includes(left.id)) - Number(!favoriteModels.includes(right.id))), [favoriteModels, localModels.data?.items, localQuery])
 
   function setView(next: ModelView) { setParams((current) => { current.set('view', next); current.delete('q'); current.delete('parent_repo'); current.delete('parent_revision'); current.delete('parent_tab'); current.delete('repo_stack'); current.delete('repo_tab'); if (next !== 'huggingface') { current.delete('repo'); current.delete('revision') } return current }, { replace: true }) }
-  function submitSearch(event: FormEvent<HTMLFormElement>) { event.preventDefault(); setParams((current) => { const value = searchInput.trim(); if (value) current.set('hf_q', value); else current.delete('hf_q'); current.set('view', 'huggingface'); current.delete('repo'); current.delete('revision'); current.delete('parent_repo'); current.delete('parent_revision'); current.delete('parent_tab'); current.delete('repo_stack'); current.delete('repo_tab'); current.delete('q'); return current }, { replace: true }) }
+  function submitSearch(event: FormEvent<HTMLFormElement>) { event.preventDefault(); setParams((current) => { const value = searchInput.trim(); if (value) current.set('hf_q', value); else current.delete('hf_q'); current.set('hf_group', 'all'); current.set('view', 'huggingface'); current.delete('repo'); current.delete('revision'); current.delete('parent_repo'); current.delete('parent_revision'); current.delete('parent_tab'); current.delete('repo_stack'); current.delete('repo_tab'); current.delete('q'); return current }, { replace: true }) }
   function openRepo(id: string) { setParams((current) => { current.set('view', 'huggingface'); current.set('repo', id); current.delete('parent_repo'); current.delete('parent_revision'); current.delete('parent_tab'); current.delete('repo_stack'); current.delete('repo_tab'); return current }, { replace: true }); setSelectedFiles([]) }
   function openLocalHfRepo(id: string, repoRevision?: string | null) { setParams((current) => { current.set('view', 'huggingface'); current.set('repo', id); if (repoRevision) current.set('revision', repoRevision); else current.delete('revision'); current.delete('parent_repo'); current.delete('parent_revision'); current.delete('parent_tab'); current.delete('repo_stack'); current.delete('repo_tab'); return current }, { replace: true }); setSelectedFiles([]) }
   function openQuantization(id: string, parent: HfRepoData) {
@@ -138,15 +196,15 @@ export function ModelsPage() {
   }
   function toggleFile(path: string) { setSelectedFiles((current) => current.includes(path) ? current.filter((item) => item !== path) : [...current, path]) }
   function startDownload(files: string[] | null, repo: HfRepoData, label?: string) { void download.mutate({ repo_id: repo.repo_id, revision: repo.revision, files, label: label ?? repo.repo_id }) }
-  function closeDownloads() { setDownloadsClosed(true); setDownloadsCollapsed(false) }
+  function closeDownloads() { setDownloadHistory([]); setDownloadsClosed(true); setDownloadsCollapsed(false) }
 
   return <div><PageHeader title="Модели" />
-    {downloadOperations.length > 0 && <DownloadCenter operations={downloadOperations} closed={downloadsClosed} collapsed={downloadsCollapsed} onToggle={() => setDownloadsCollapsed((value) => !value)} onCollapse={() => setDownloadsCollapsed(true)} onClose={closeDownloads} onStop={(id) => void cancelDownload.mutate(id)} stoppingId={cancelDownload.isPending ? cancelDownload.variables : null} />}
+    {downloadOperations.length > 0 && <DownloadCenter operations={downloadOperations} closed={downloadsClosed} collapsed={downloadsCollapsed} onToggle={() => setDownloadsCollapsed((value) => !value)} onClose={closeDownloads} onStop={(id) => void cancelDownload.mutate(id)} stoppingId={cancelDownload.isPending ? cancelDownload.variables : null} />}
     <div className="mb-5 flex flex-wrap gap-1 border-b border-border"><Tab active={view === 'local'} onClick={() => setView('local')}>Локальные</Tab><Tab active={view === 'huggingface'} onClick={() => setView('huggingface')}>Hugging Face</Tab></div>
     {deleteModel.isError && <div className="mb-4"><QueryError error={deleteModel.error} label="Папку модели не удалось удалить" /></div>}
     {deleteModelGroup.isError && <div className="mb-4"><QueryError error={deleteModelGroup.error} label="Компонент модели не удалось удалить" /></div>}
-    {view === 'local' && <LocalModels query={localQuery} items={localItems} state={localModels} scanError={scan.error} onSearch={(value) => setParams((current) => { if (value) current.set('local_q', value); else current.delete('local_q'); return current }, { replace: true })} onScan={() => void scan.mutate()} scanning={scan.isPending} favorites={favoriteModels} onToggleFavorite={(id) => setFavoriteModels((current) => current.includes(id) ? current.filter((value) => value !== id) : [...current, id])} onOpenHf={openLocalHfRepo} onDelete={(model) => { if (window.confirm(`Удалить папку модели «${model.path}»? Все файлы внутри будут удалены.`)) void deleteModel.mutate(model.id) }} onDeleteGroup={(model, group) => { const kind = group.kind === 'variant' ? 'вариант' : 'вспомогательный блок'; if (window.confirm(`Удалить ${kind} «${group.label}»?`)) void deleteModelGroup.mutate({ modelId: model.id, groupId: group.id }) }} deletingId={deleteModel.isPending ? deleteModel.variables : null} deletingGroupId={deleteModelGroup.isPending ? deleteModelGroup.variables?.groupId : null} />}
-    {view === 'huggingface' && <section className="space-y-4">{!repoId && <form className="flex w-full gap-2" onSubmit={submitSearch}><div className="min-w-0 flex-1"><SearchField label="Поиск Hugging Face" value={searchInput} onChange={setSearchInput} onClear={() => { setSearchInput(''); setParams((current) => { current.delete('hf_q'); current.delete('repo'); current.delete('revision'); current.delete('parent_repo'); current.delete('parent_revision'); current.delete('parent_tab'); current.delete('repo_stack'); current.delete('repo_tab'); return current }, { replace: true }) }} placeholder="Qwen, llama, mistral…" /></div><Button type="submit" variant="primary"><Search className="size-3.5" />Искать</Button></form>}{repoId ? <RepoView repo={hfRepo.data} query={hfRepo} initialTab={repoTab} backLabel={backRepoId ? `К квантам ${backRepoId}` : 'Назад'} selectedFiles={selectedFiles} toggleFile={toggleFile} onBack={goBackFromRepo} onOpenQuantization={openQuantization} onDownload={startDownload} downloadOperations={downloadOperations} /> : <HfResults query={hfQuery} data={hfSearch.data} state={hfSearch} openRepo={openRepo} />}</section>}
+    {view === 'local' && <LocalModels query={localQuery} items={localItems} state={localModels} scanError={scan.error ?? (localModels.data?.scan_error ? new Error(localModels.data.scan_error) : null)} onSearch={(value) => setParams((current) => { if (value) current.set('local_q', value); else current.delete('local_q'); return current }, { replace: true })} onScan={() => void scan.mutate()} scanning={scan.isPending || Boolean(localModels.data?.scanning)} favorites={favoriteModels} onToggleFavorite={(id) => setFavoriteModels((current) => current.includes(id) ? current.filter((value) => value !== id) : [...current, id])} onOpenHf={openLocalHfRepo} onDelete={(model) => { if (window.confirm(`Удалить папку модели «${model.path}»? Все файлы внутри будут удалены.`)) void deleteModel.mutate(model.id) }} onDeleteGroup={(model, group) => { const kind = group.kind === 'variant' ? 'вариант' : 'вспомогательный блок'; if (window.confirm(`Удалить ${kind} «${group.label}»?`)) void deleteModelGroup.mutate({ modelId: model.id, groupId: group.id }) }} deletingId={deleteModel.isPending ? deleteModel.variables : null} deletingGroupId={deleteModelGroup.isPending ? deleteModelGroup.variables?.groupId : null} />}
+    {view === 'huggingface' && <section className="space-y-4">{!repoId && <form className="flex w-full gap-2" onSubmit={submitSearch}><div className="min-w-0 flex-1"><SearchField label="Поиск Hugging Face" value={searchInput} onChange={setSearchInput} onClear={() => { setSearchInput(''); setParams((current) => { current.delete('hf_q'); current.set('hf_group', 'all'); current.delete('repo'); current.delete('revision'); current.delete('parent_repo'); current.delete('parent_revision'); current.delete('parent_tab'); current.delete('repo_stack'); current.delete('repo_tab'); return current }, { replace: true }) }} placeholder="Qwen, llama, mistral…" /></div><Button type="submit" variant="primary"><Search className="size-3.5" />Искать</Button></form>}{repoId ? <RepoView repo={hfRepo.data} query={hfRepo} initialTab={repoTab} backLabel={backRepoId ? `К квантам ${backRepoId}` : 'Назад'} selectedFiles={selectedFiles} toggleFile={toggleFile} onBack={goBackFromRepo} onOpenQuantization={openQuantization} onDownload={startDownload} downloadOperations={downloadOperations} /> : hfQuery ? <HfResults query={hfQuery} filter={hfGroup} data={hfSearch.data} state={hfSearch} openRepo={openRepo} onFilterChange={(filter) => setParams((current) => { current.set('view', 'huggingface'); current.set('hf_group', filter); return current }, { replace: true })} /> : <HfTrending filter={hfGroup} data={hfTrending.data} state={hfTrending} openRepo={openRepo} onFilterChange={(filter) => setParams((current) => { current.set('view', 'huggingface'); current.set('hf_group', filter); current.delete('hf_q'); return current }, { replace: true })} />}</section>}
   </div>
 }
 
@@ -157,7 +215,7 @@ function SearchField({ id, label, value, placeholder, onChange, onClear }: { id?
 }
 
 function LocalModels({ query, items, state, scanError, onSearch, onScan, scanning, favorites, onToggleFavorite, onOpenHf, onDelete, onDeleteGroup, deletingId, deletingGroupId }: { query: string; items: LocalModelArtifact[]; state: ReturnType<typeof useQuery<Awaited<ReturnType<typeof api.getLocalModels>>, Error>>; scanError: unknown; onSearch: (value: string) => void; onScan: () => void; scanning: boolean; favorites: string[]; onToggleFavorite: (id: string) => void; onOpenHf: (repoId: string, revision?: string | null) => void; onDelete: (model: LocalModelArtifact) => void; onDeleteGroup: (model: LocalModelArtifact, group: LocalGroup) => void; deletingId: string | null | undefined; deletingGroupId: string | null | undefined }) {
-  return <section>{Boolean(scanError) && <div className="mb-4"><QueryError error={scanError} label="Сканирование моделей не выполнено" /></div>}<div className="mb-4 flex items-center gap-2"><div className="min-w-0 flex-1"><SearchField id="model-search" label="Поиск локальной модели" value={query} onChange={onSearch} onClear={() => onSearch('')} placeholder="Путь, формат или имя" /></div><Button variant="secondary" onClick={onScan} disabled={scanning}><RefreshCw className={`size-3.5 ${scanning ? 'animate-spin' : ''}`} />{scanning ? 'Сканируем…' : 'Сканировать'}</Button></div>{state.isLoading ? <QueryLoading label="Сканируем локальные модели" /> : state.isError ? <QueryError error={state.error} retry={() => void state.refetch()} label="Каталог локальных моделей недоступен" /> : items.length === 0 ? <QueryEmpty title={query ? 'Совпадений нет' : 'Локальные модели не найдены'} description="Добавьте каталог модели в настроенную папку моделей и повторите сканирование." /> : <div className="grid gap-3">{items.map((model) => <ModelFolder key={model.id} model={model} favorite={favorites.includes(model.id)} onToggleFavorite={() => onToggleFavorite(model.id)} onOpenHf={onOpenHf} onDelete={onDelete} onDeleteGroup={onDeleteGroup} deleting={deletingId === model.id} deletingGroupId={deletingGroupId} />)}</div>}</section>
+  return <section>{Boolean(scanError) && <div className="mb-4"><QueryError error={scanError} label="Сканирование моделей не выполнено" /></div>}<div className="mb-4 flex items-center gap-2"><div className="min-w-0 flex-1"><SearchField id="model-search" label="Поиск локальной модели" value={query} onChange={onSearch} onClear={() => onSearch('')} placeholder="Путь, формат или имя" /></div><Button variant="secondary" onClick={onScan} disabled={scanning}><RefreshCw className={`size-3.5 ${scanning ? 'animate-spin' : ''}`} />{scanning ? 'Сканируем…' : 'Сканировать'}</Button></div>{(state.isLoading || (scanning && items.length === 0 && !query && !scanError)) ? <QueryLoading label="Сканируем локальные модели" /> : state.isError ? <QueryError error={state.error} retry={() => void state.refetch()} label="Каталог локальных моделей недоступен" /> : items.length === 0 ? <QueryEmpty title={query ? 'Совпадений нет' : 'Локальные модели не найдены'} description="Добавьте каталог модели в настроенную папку моделей и повторите сканирование." /> : <div className="grid gap-3">{items.map((model) => <ModelFolder key={model.id} model={model} favorite={favorites.includes(model.id)} onToggleFavorite={() => onToggleFavorite(model.id)} onOpenHf={onOpenHf} onDelete={onDelete} onDeleteGroup={onDeleteGroup} deleting={deletingId === model.id} deletingGroupId={deletingGroupId} />)}</div>}</section>
 }
 
 type LocalGroup = NonNullable<LocalModelArtifact['groups']>[number]
@@ -170,7 +228,7 @@ function ModelFolder({ model, favorite, onToggleFavorite, onOpenHf, onDelete, on
   const pathParts = model.path.split('/').filter(Boolean)
   const vendor = toCamelCase(model.vendor || pathParts.at(-2) || pathParts.at(-1) || 'Неизвестный вендор')
   const modelName = toCamelCase(model.model_name || pathParts.at(-1) || 'Модель')
-  return <Card><CardContent><div className="flex flex-wrap items-start justify-between gap-4"><div className="min-w-0"><div className="flex items-center gap-2"><h2 className="text-base font-medium tracking-tight">{vendor} / {modelName}</h2>{model.model_kind === 'image' && <span className="rounded-sm border border-copper/60 px-2 py-1 text-[10px] uppercase tracking-[0.12em] text-copper">Image</span>}<Button size="icon" variant="ghost" aria-label={favorite ? 'Убрать из избранного' : 'Добавить в избранное'} title={favorite ? 'Убрать из избранного' : 'Добавить в избранное'} onClick={onToggleFavorite}><Star className={`size-4 ${favorite ? 'fill-copper text-copper' : 'text-muted-foreground'}`} /></Button>{model.hf_match.repo_id && <a href={`https://huggingface.co/${model.hf_match.repo_id}`} target="_blank" rel="noreferrer" aria-label="Открыть модель на Hugging Face" title="Открыть модель на Hugging Face" className="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"><ExternalLink className="size-4" /></a>}</div><div className="mt-1 flex items-center gap-2 text-[11px] text-muted-foreground"><FolderOpen className="size-3.5 shrink-0 text-copper" /><p className="break-all font-mono">{model.path}</p></div><p className="mt-2 text-[11px] text-muted-foreground">{model.format || 'формат неизвестен'} · {formatBytes(model.size_bytes)} · {variantGroups.length} вариантов · {auxiliaryGroups.length} вспомогательных блоков</p>{model.hf_match.repo_id && <button type="button" className="mt-1 inline-block text-[11px] text-copper underline-offset-2 hover:underline" onClick={() => onOpenHf(model.hf_match.repo_id!, model.hf_match.revision)}>{model.hf_match.repo_id}</button>}</div><div className="flex self-stretch flex-col items-end justify-between gap-2"><Button size="sm" variant="danger" disabled={deleting} onClick={() => onDelete(model)}><Trash2 className="size-3.5" />{deleting ? 'Удаляем…' : 'Удалить'}</Button><ModelSourceStatus match={model.hf_match} /></div></div>{variantGroups.length > 0 && <LocalGroupList title="Варианты модели" groups={variantGroups} model={model} onDelete={onDeleteGroup} deletingGroupId={deletingGroupId} />}{auxiliaryGroups.length > 0 && <LocalGroupList title="Вспомогательные блоки" groups={auxiliaryGroups} model={model} onDelete={onDeleteGroup} deletingGroupId={deletingGroupId} />}{variantGroups.length === 0 && auxiliaryGroups.length === 0 && <p className="mt-3 text-[11px] text-muted-foreground">Файлы модели пока не распознаны автоматически · служебных файлов: {model.supporting_files ?? 0}</p>}</CardContent></Card>
+  return <Card><CardContent><div className="flex flex-wrap items-start justify-between gap-4"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><button type="button" className="text-left text-base font-medium tracking-tight hover:text-copper" onClick={() => model.hf_match.repo_id && onOpenHf(model.hf_match.repo_id, model.hf_match.revision)} disabled={!model.hf_match.repo_id}>{vendor} / {modelName}</button>{model.model_kind === 'image' && <span className="rounded-sm border border-copper/60 px-2 py-1 text-[10px] uppercase tracking-[0.12em] text-copper">Image</span>}<Button size="icon" variant="ghost" aria-label={favorite ? 'Убрать из избранного' : 'Добавить в избранное'} title={favorite ? 'Убрать из избранного' : 'Добавить в избранное'} onClick={onToggleFavorite}><Star className={`size-4 ${favorite ? 'fill-copper text-copper' : 'text-muted-foreground'}`} /></Button>{model.hf_match.repo_id && <a href={`https://huggingface.co/${model.hf_match.repo_id}`} target="_blank" rel="noreferrer" aria-label="Открыть модель на Hugging Face" title="Открыть модель на Hugging Face" className="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"><ExternalLink className="size-4" /></a>}<HfUpdateBadge match={model.hf_match} /></div><div className="mt-1 flex items-center gap-2 text-[11px] text-muted-foreground"><FolderOpen className="size-3.5 shrink-0 text-copper" /><p className="break-all font-mono">{model.path}</p></div><p className="mt-2 text-[11px] text-muted-foreground">{model.format || 'формат неизвестен'} · {formatBytes(model.size_bytes)} · {variantGroups.length} вариантов · {auxiliaryGroups.length} вспомогательных блоков</p></div><div className="flex self-stretch flex-col items-end justify-between gap-2"><Button size="sm" variant="danger" disabled={deleting} onClick={() => onDelete(model)}><Trash2 className="size-3.5" />{deleting ? 'Удаляем…' : 'Удалить'}</Button><ModelSourceStatus match={model.hf_match} /></div></div>{variantGroups.length > 0 && <LocalGroupList title="Варианты модели" groups={variantGroups} model={model} onDelete={onDeleteGroup} deletingGroupId={deletingGroupId} />}{auxiliaryGroups.length > 0 && <LocalGroupList title="Вспомогательные блоки" groups={auxiliaryGroups} model={model} onDelete={onDeleteGroup} deletingGroupId={deletingGroupId} />}</CardContent></Card>
 }
 
 function toCamelCase(value: string): string {
@@ -194,19 +252,149 @@ function ModelSourceStatus({ match }: { match: LocalModelArtifact['hf_match'] })
     : match.status === 'downloaded'
       ? 'Для каждого файла совпали наличие и размер с manifest Hugging Face.'
       : match.status === 'incomplete'
-        ? 'Часть файлов из сохранённого набора отсутствует, имеет другой размер или не прошла проверку хеша.'
+      ? 'Часть файлов из сохранённого набора отсутствует, имеет другой размер или не прошла локальную проверку.'
         : 'Модель найдена локально, но её источник или полнота не подтверждены.'
-  return <div className="flex max-w-full flex-col items-end gap-1 text-right text-[10px] leading-4 text-muted-foreground"><span title={hint} className="inline-flex rounded-sm border border-border px-2 py-1">{text}</span>{match.status === 'downloaded' && match.scope === 'selection' && <p className="max-w-xl">Проверен выбранный набор; остальные файлы репозитория не входят в эту загрузку.</p>}{missing.length > 0 && <details className="max-w-xl"><summary className="cursor-pointer">Не хватает или отличаются: {missing.length}</summary><ul className="mt-1 max-h-32 space-y-0.5 overflow-auto text-left">{missing.slice(0, 8).map((file) => <li key={file} className="break-all font-mono">{file}</li>)}{missing.length > 8 && <li>и ещё {missing.length - 8}</li>}</ul></details>}{unverified.length > 0 && <details className="max-w-xl"><summary className="cursor-pointer">Размер совпал, хеш не проверен: {unverified.length}</summary><ul className="mt-1 max-h-32 space-y-0.5 overflow-auto text-left">{unverified.slice(0, 8).map((file) => <li key={file} className="break-all font-mono">{file}</li>)}{unverified.length > 8 && <li>и ещё {unverified.length - 8}</li>}</ul></details>}</div>
+  const localDivergenceBadge = match.local_integrity?.baseline_status === 'diverged_from_downloaded'
+    ? <span className="inline-flex rounded-sm border border-[#8b7652] px-2 py-1 text-[#d4b878]">Локальный файл изменён</span>
+    : null
+  return (
+    <div className="flex max-w-full flex-col items-end gap-1 text-right text-[10px] leading-4 text-muted-foreground">
+      <span title={hint} className="inline-flex rounded-sm border border-border px-2 py-1">{text}</span>
+      {localDivergenceBadge}
+      {missing.length > 0 && (
+        <details className="max-w-xl">
+          <summary className="cursor-pointer">Не хватает или отличаются: {missing.length}</summary>
+          <ul className="mt-1 max-h-32 space-y-0.5 overflow-auto text-left">
+            {missing.slice(0, 8).map((file) => <li key={file} className="break-all font-mono">{file}</li>)}
+            {missing.length > 8 && <li>и ещё {missing.length - 8}</li>}
+          </ul>
+        </details>
+      )}
+      {unverified.length > 0 && (
+        <details className="max-w-xl">
+          <summary className="cursor-pointer">Размер совпал, локальная проверка не завершена: {unverified.length}</summary>
+          <ul className="mt-1 max-h-32 space-y-0.5 overflow-auto text-left">
+            {unverified.slice(0, 8).map((file) => <li key={file} className="break-all font-mono">{file}</li>)}
+            {unverified.length > 8 && <li>и ещё {unverified.length - 8}</li>}
+          </ul>
+        </details>
+      )}
+    </div>
+  )
+}
+
+function HfUpdateBadge({ match }: { match: LocalModelArtifact['hf_match'] }) {
+  const avatar = match.repo_id
+    ? <HfAuthorAvatar author={match.repo_id.split('/')[0]} avatarUrl={`https://huggingface.co/api/avatars/${encodeURIComponent(match.repo_id.split('/')[0])}`} className="order-first size-8" />
+    : null
+  const update = match.remote_update
+  const badge = match.remote_check?.availability === 'success' && update?.status === 'update_available' && update.changed_files > 0
+    ? <span className="inline-flex rounded-sm border border-[#81554c] px-2 py-1 text-[10px] text-[#d09b87]">Доступно обновление · {update.changed_files} файлов</span>
+    : null
+  if (!avatar && !badge) return null
+  return <>{avatar}{badge}</>
+}
+
+function formatHfDate(value: string): string {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return new Intl.DateTimeFormat('ru-RU', { dateStyle: 'medium', timeStyle: 'short' }).format(date)
+}
+
+function formatHfCardDate(value: string): string {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'short', year: 'numeric' }).format(date)
 }
 
 function LocalGroupList({ title, groups, model, onDelete, deletingGroupId }: { title: string; groups: LocalGroup[]; model: LocalModelArtifact; onDelete: (model: LocalModelArtifact, group: LocalGroup) => void; deletingGroupId: string | null | undefined }) {
   return <details className="mt-3 border-t border-border pt-3"><summary className="cursor-pointer text-[11px] text-muted-foreground">{title} · {groups.length}</summary><div className="mt-2 grid gap-2">{groups.map((group) => <div key={group.id} className="flex items-center justify-between gap-3 rounded-md border border-border bg-secondary px-3 py-1.5"><div className="flex min-w-0 items-center gap-2">{group.status !== 'complete' && <span title={group.status === 'incomplete' ? 'Группа загружена не полностью' : 'Полнота группы не подтверждена'}><AlertTriangle className="size-3.5 shrink-0 text-[#b99a5b]" /></span>}<span className="min-w-0 truncate font-mono text-[10px]" title={group.label}>{group.label}</span><span className="shrink-0 text-[10px] text-muted-foreground">{group.file_count} файлов · {formatBytes(group.size_bytes)}</span></div>{group.deletable && <IconButton variant="ghost" className="shrink-0 text-copper hover:text-copper" disabled={deletingGroupId === group.id} onClick={() => onDelete(model, group)} label={`Удалить ${group.label}`}><Trash2 className="h-3.5 w-3.5 shrink-0" strokeWidth={2} /></IconButton>}</div>)}</div></details>
 }
 
-function HfResults({ query, data, state, openRepo }: { query: string; data: { items: HfModelItem[] } | undefined; state: ReturnType<typeof useQuery<Awaited<ReturnType<typeof api.searchHf>>, Error>>; openRepo: (id: string) => void }) { if (!query) return <QueryEmpty title="Введите запрос" description="Поиск обращается к публичному Hugging Face API после отправки формы." />; if (state.isLoading) return <QueryLoading label="Ищем публичные модели" />; if (state.isError) return <QueryError error={state.error} retry={() => void state.refetch()} label="Поиск Hugging Face не выполнен" />; if (!data?.items.length) return <QueryEmpty title="Ничего не найдено" description="Попробуйте имя модели или namespace/repository." />; return <div className="grid gap-3">{data.items.map((item) => <HfModelCard key={item.repo_id} item={item} onOpen={() => openRepo(item.repo_id)} />)}</div> }
+function HfResults({ query, filter, data, state, openRepo, onFilterChange }: { query: string; filter: HfModelFilter; data: { items: HfModelItem[] } | undefined; state: ReturnType<typeof useQuery<Awaited<ReturnType<typeof api.searchHf>>, Error>>; openRepo: (id: string) => void; onFilterChange: (filter: HfModelFilter) => void }) {
+  if (!query) return <QueryEmpty title="Введите запрос" description="Поиск обращается к публичному Hugging Face API после отправки формы." />
+  if (state.isLoading) return <QueryLoading label="Ищем публичные модели" />
+  if (state.isError) return <QueryError error={state.error} retry={() => void state.refetch()} label="Поиск Hugging Face не выполнен" />
+  if (!data?.items.length) return <QueryEmpty title="Ничего не найдено" description="Попробуйте имя модели или namespace/repository." />
+  return <HfModelList items={data.items} filter={filter} openRepo={openRepo} onFilterChange={onFilterChange} emptyTitle="В найденных моделях нет такого типа" emptyDescription="Выберите другой фильтр или сбросьте его." />
+}
+
+function HfTrending({ filter, data, state, openRepo, onFilterChange }: { filter: HfModelFilter; data: { items: HfModelItem[] } | undefined; state: ReturnType<typeof useQuery<Awaited<ReturnType<typeof api.getHfTrending>>, Error>>; openRepo: (id: string) => void; onFilterChange: (filter: HfModelFilter) => void }) {
+  if (state.isLoading) return <QueryLoading label="Загружаем трендинг Hugging Face" />
+  if (state.isError) return <QueryError error={state.error} retry={() => void state.refetch()} label="Трендинг Hugging Face не загружен" />
+  return <HfModelList items={data?.items ?? []} filter={filter} openRepo={openRepo} onFilterChange={onFilterChange} emptyTitle="Трендовые модели не найдены" emptyDescription="Hugging Face не вернул модели для этой группы." />
+}
+
+function HfModelList({ items, filter, openRepo, onFilterChange, emptyTitle, emptyDescription }: { items: HfModelItem[]; filter: HfModelFilter; openRepo: (id: string) => void; onFilterChange: (filter: HfModelFilter) => void; emptyTitle: string; emptyDescription: string }) {
+  const availableFilters = HF_BADGE_DEFINITIONS.map((definition, index) => ({ definition, index, count: items.filter((item) => matchesHfBadge(item, definition)).length }))
+    .filter(({ count }) => count > 0)
+    .sort((left, right) => right.count - left.count || left.index - right.index)
+    .map(({ definition, count }) => ({ definition, count }))
+  const filteredItems = filter === 'all' ? items : items.filter((item) => matchesHfFilter(item, filter))
+  return <div className="space-y-3"><div className="flex flex-wrap gap-2"><FilterChip active={filter === 'all'} onClick={() => onFilterChange('all')}>Все ({items.length})</FilterChip>{availableFilters.map(({ definition, count }) => <FilterChip key={definition.values[0]} active={matchesSelectedFilter(filter, definition)} onClick={() => onFilterChange(definition.values[0])}>{definition.label} ({count})</FilterChip>)}</div>{!filteredItems.length ? <QueryEmpty title={emptyTitle} description={emptyDescription} /> : <div className="grid gap-3">{filteredItems.map((item) => <HfModelCard key={item.repo_id} item={item} onOpen={() => openRepo(item.repo_id)} />)}</div>}</div>
+}
+
+function FilterChip({ active, onClick, children }: { active: boolean; onClick: () => void; children: ReactNode }) {
+  return <button type="button" className={`rounded-full border px-3 py-1.5 text-xs transition-colors ${active ? 'border-copper bg-copper/10 text-foreground' : 'border-border text-muted-foreground hover:border-[#6c625a] hover:text-foreground'}`} onClick={onClick}>{children}</button>
+}
+
+function hfItemValues(item: HfModelItem): Set<string> {
+  return new Set([item.pipeline_tag, item.library_name, ...item.tags].filter(Boolean).map((value) => value!.toLowerCase()))
+}
+
+function matchesHfBadge(item: HfModelItem, definition: HfBadgeDefinition): boolean {
+  const values = hfItemValues(item)
+  return definition.values.some((value) => values.has(value))
+}
+
+function matchesHfFilter(item: HfModelItem, filter: HfModelFilter): boolean {
+  const definition = HF_BADGE_DEFINITIONS.find((candidate) => candidate.values[0] === filter)
+  if (definition) return matchesHfBadge(item, definition)
+  const values = hfItemValues(item)
+  if (filter === 'text') return [...values].some((value) => value.startsWith('text-') || value === 'text-generation' || value === 'text-classification')
+  if (filter === 'gguf') return [...values].some((value) => value.includes('gguf'))
+  if (filter === 'vllm') return values.has('vllm')
+  if (filter === 'diffusers') return values.has('diffusers')
+  if (filter === 'embeddings') return [...values].some((value) => value.includes('embedding') || value === 'feature-extraction' || value === 'sentence-similarity')
+  return false
+}
+
+function matchesSelectedFilter(filter: HfModelFilter, definition: HfBadgeDefinition): boolean {
+  return filter === definition.values[0] || (filter === 'embeddings' && definition.label === 'Embeddings')
+}
 
 function HfModelCard({ item, onOpen }: { item: HfModelItem; onOpen: () => void }) {
-  return <button type="button" className="text-left" onClick={onOpen}><Card className="transition-colors hover:border-[#6c625a]"><CardContent><div className="flex items-start justify-between gap-3"><div><p className="font-mono text-xs text-foreground">{item.repo_id}</p>{item.description && <p className="mt-1 text-xs text-muted-foreground">{item.description}</p>}</div><span className="text-[11px] text-copper">Открыть</span></div>{item.tags.length > 0 && <p className="mt-3 text-[11px] text-muted-foreground">{item.tags.slice(0, 8).join(' · ')}</p>}</CardContent></Card></button>
+  const author = item.author ?? item.repo_id.split('/')[0]
+  const badges = Array.from(new Set([item.pipeline_tag, item.library_name, item.used_storage != null ? formatBytes(item.used_storage) : null, ...item.tags.slice(0, 3)].filter((value): value is string => Boolean(value))))
+  return <Card className="transition-colors hover:border-[#6c625a]"><CardContent><div className="flex items-start justify-between gap-4"><div className="flex min-w-0 items-center gap-3"><HfAuthorAvatar author={author} avatarUrl={item.avatar_url} className="size-10" /><div className="min-w-0"><div className="flex items-center gap-2"><button type="button" className="min-w-0 truncate text-left font-mono text-sm text-foreground hover:text-copper" onClick={onOpen}>{item.repo_id}</button><a href={`https://huggingface.co/${item.repo_id}`} target="_blank" rel="noreferrer" aria-label={`Открыть ${item.repo_id} на Hugging Face`} title="Открыть на Hugging Face" className="inline-flex size-6 shrink-0 items-center justify-center rounded-md border border-border text-muted-foreground hover:border-[#6c625a] hover:text-foreground"><ExternalLink className="size-3.5" /></a></div>{formatWeightSummary(item) && <p className="mt-2 line-clamp-2 text-[11px] text-muted-foreground">{formatWeightSummary(item)}</p>}{item.description && <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{item.description}</p>}</div></div><div className="flex shrink-0 flex-col items-end gap-1 text-[11px] text-muted-foreground">{item.trending_score != null && <span className="flex items-center gap-1 text-copper"><TrendingUp className="size-3.5" />{formatCompactNumber(item.trending_score)}</span>}{item.downloads != null && <span className="flex items-center gap-1"><Download className="size-3.5" />{formatCompactNumber(item.downloads)}</span>}{item.likes != null && <span className="flex items-center gap-1"><Heart className="size-3.5" />{formatCompactNumber(item.likes)}</span>}</div></div><div className="mt-3 flex flex-wrap gap-1.5">{badges.map((badge) => <Badge key={badge} className="bg-transparent px-2 py-1">{badge}</Badge>)}</div><div className="mt-4 flex flex-wrap items-center gap-3 border-t border-border pt-3 text-[11px] text-muted-foreground"><span>автор · {author}</span>{item.created_at && <span>создана {formatHfCardDate(item.created_at)}</span>}{item.last_modified && <span>обновлена {formatHfCardDate(item.last_modified)}</span>}<button type="button" className="ml-auto shrink-0 text-copper hover:underline" onClick={onOpen}>Открыть</button></div></CardContent></Card>
+}
+
+function formatCompactNumber(value: number): string {
+  return new Intl.NumberFormat('ru-RU', { notation: 'compact', maximumFractionDigits: 1 }).format(value)
+}
+
+function formatWeightSummary(item: HfModelItem): string {
+  const parts: string[] = []
+  if (item.safetensors) {
+    const parameterEntries = Object.entries(item.safetensors.parameters ?? {})
+    const parameters = parameterEntries.length > 0 ? `${formatCompactNumber(parameterEntries.reduce((sum, [, value]) => sum + value, 0))} параметров` : null
+    parts.push(['SafeTensors', parameters].filter(Boolean).join(' · '))
+  } else if (item.gguf) {
+    parts.push(['GGUF', item.gguf.architecture, item.gguf.total ? formatBytes(item.gguf.total) : null, item.gguf.totalFileSize ? `файлы ${formatBytes(item.gguf.totalFileSize)}` : null].filter(Boolean).join(' · '))
+  }
+  const evaluations = (item.eval_results ?? []).filter((result) => result.dataset_name || result.metric_name).slice(0, 2).map((result) => {
+    const label = result.dataset_name ?? result.metric_name ?? 'benchmark'
+    const metric = result.metric_name && result.metric_name !== label ? ` ${result.metric_name}` : ''
+    return `${label}${metric}${result.metric_value != null ? `: ${result.metric_value}` : ''}`
+  })
+  if (evaluations.length > 0) parts.push(`Eval · ${evaluations.join(' · ')}`)
+  return parts.join(' · ')
+}
+
+function HfAuthorAvatar({ author, avatarUrl, className = 'size-8' }: { author: string; avatarUrl?: string | null; className?: string }) {
+  const [failed, setFailed] = useState(!avatarUrl)
+  const initials = author.slice(0, 2).toUpperCase()
+  return <div className={`flex ${className} shrink-0 items-center justify-center overflow-hidden rounded-md border border-border bg-secondary text-[10px] text-muted-foreground`}>{failed ? <span>{initials}</span> : <img src={avatarUrl ?? ''} alt="" loading="lazy" className="size-full object-cover" onError={() => setFailed(true)} />}</div>
 }
 
 function RepoView({ repo, query, initialTab, backLabel, selectedFiles, toggleFile, onBack, onOpenQuantization, onDownload, downloadOperations }: { repo: HfRepoData | undefined; query: ReturnType<typeof useQuery<Awaited<ReturnType<typeof api.getHfRepo>>, Error>>; initialTab: RepoTab; backLabel: string; selectedFiles: string[]; toggleFile: (path: string) => void; onBack: () => void; onOpenQuantization: (id: string, parent: HfRepoData) => void; onDownload: (files: string[] | null, repo: HfRepoData, label?: string) => void; downloadOperations: Operation[] }) {
@@ -221,7 +409,7 @@ function RepoView({ repo, query, initialTab, backLabel, selectedFiles, toggleFil
   if (query.isLoading) return <QueryLoading label="Получаем данные репозитория" />
   if (query.isError) return <QueryError error={query.error} retry={() => void query.refetch()} label="Репозиторий недоступен" />
   if (!repo) return null
-  return <div className="space-y-4"><Button variant="ghost" size="sm" onClick={onBack}><ArrowLeft className="size-3.5" />{backLabel}</Button><Card><div className="border-b border-border px-4 py-3"><div className="flex items-center gap-2"><CardTitle className="font-mono">{repo.repo_id}</CardTitle><a href={`https://huggingface.co/${repo.repo_id}`} target="_blank" rel="noreferrer" aria-label="Открыть модель на Hugging Face" title="Открыть на Hugging Face" className="inline-flex size-7 items-center justify-center rounded-md border border-border text-muted-foreground hover:border-[#6c625a] hover:text-foreground"><ExternalLink className="size-3.5" /></a></div></div><div className="flex gap-1 border-b border-border px-4"><button type="button" className={`min-h-10 border-b-2 px-3 text-xs ${tab === 'description' ? 'border-copper text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}`} onClick={() => setTab('description')}>Описание</button><button type="button" className={`min-h-10 border-b-2 px-3 text-xs ${tab === 'files' ? 'border-copper text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}`} onClick={() => setTab('files')}>Файлы</button><button type="button" className={`min-h-10 border-b-2 px-3 text-xs ${tab === 'quantizations' ? 'border-copper text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}`} onClick={() => setTab('quantizations')}>Кванты</button></div>{tab === 'description' ? <CardContent>{repo.readme || repo.description ? <MarkdownContent source={repo.readme ?? repo.description ?? ''} repoId={repo.repo_id} revision={repo.revision} /> : <QueryEmpty title="Описание недоступно" description="В репозитории нет README или описания модели." />}</CardContent> : tab === 'files' ? <CardContent><div className="mb-4 flex flex-wrap items-center justify-between gap-3 border-b border-border pb-3"><p className="text-xs text-muted-foreground">Ревизия <code>{repo.revision}</code> · {repo.files.length} файлов</p><div className="flex flex-wrap gap-2"><Button size="sm" variant="secondary" disabled={selectedFiles.length === 0} onClick={() => onDownload(selectedFiles, repo, `${repo.repo_id} — выбранные файлы`)}><Download className="size-3.5" />Выбранные ({selectedFiles.length})</Button><Button size="sm" variant="primary" onClick={() => onDownload(null, repo, `${repo.repo_id} — весь snapshot`)}><Download className="size-3.5" />Весь snapshot</Button></div></div><DownloadBundles repo={repo} onDownload={onDownload} downloadOperations={downloadOperations} /><Table><TableHeader><TableRow><TableHead className="w-10">Выбор</TableHead><TableHead>Путь</TableHead><TableHead className="text-right">Размер</TableHead><TableHead>Проверка</TableHead></TableRow></TableHeader><TableBody>{repo.files.map((file) => <FileRow key={file.path} file={file} selected={selectedFiles.includes(file.path)} onToggle={() => toggleFile(file.path)} />)}</TableBody></Table></CardContent> : <QuantizationsContent query={quantizationsQuery} onOpen={(id) => onOpenQuantization(id, repo)} />}</Card></div>
+  return <div className="space-y-4"><Button variant="ghost" size="sm" onClick={onBack}><ArrowLeft className="size-3.5" />{backLabel}</Button><Card><div className="border-b border-border px-4 py-3"><div className="flex items-center gap-3"><HfAuthorAvatar author={repo.author ?? repo.repo_id.split('/')[0]} avatarUrl={repo.avatar_url} /><div className="flex min-w-0 items-center gap-2"><CardTitle className="truncate font-mono">{repo.repo_id}</CardTitle><a href={`https://huggingface.co/${repo.repo_id}`} target="_blank" rel="noreferrer" aria-label="Открыть модель на Hugging Face" title="Открыть на Hugging Face" className="inline-flex size-7 shrink-0 items-center justify-center rounded-md border border-border text-muted-foreground hover:border-[#6c625a] hover:text-foreground"><ExternalLink className="size-3.5" /></a></div></div></div><div className="flex gap-1 border-b border-border px-4"><button type="button" className={`min-h-10 border-b-2 px-3 text-xs ${tab === 'description' ? 'border-copper text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}`} onClick={() => setTab('description')}>Описание</button><button type="button" className={`min-h-10 border-b-2 px-3 text-xs ${tab === 'files' ? 'border-copper text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}`} onClick={() => setTab('files')}>Файлы</button><button type="button" className={`min-h-10 border-b-2 px-3 text-xs ${tab === 'quantizations' ? 'border-copper text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}`} onClick={() => setTab('quantizations')}>Кванты</button></div>{tab === 'description' ? <CardContent>{repo.readme || repo.description ? <MarkdownContent source={repo.readme ?? repo.description ?? ''} repoId={repo.repo_id} revision={repo.revision} /> : <QueryEmpty title="Описание недоступно" description="В репозитории нет README или описания модели." />}</CardContent> : tab === 'files' ? <CardContent><div className="mb-4 flex flex-wrap items-center justify-between gap-3 border-b border-border pb-3"><p className="text-xs text-muted-foreground">Ревизия <code>{repo.revision}</code> · {repo.files.length} файлов{repo.revision_date ? ` · последний commit репозитория ${formatHfDate(repo.revision_date)}` : ''}</p><div className="flex flex-wrap gap-2"><Button size="sm" variant="secondary" disabled={selectedFiles.length === 0} onClick={() => onDownload(selectedFiles, repo, `${repo.repo_id} — выбранные файлы`)}><Download className="size-3.5" />Выбранные ({selectedFiles.length})</Button><Button size="sm" variant="primary" onClick={() => onDownload(null, repo, `${repo.repo_id} — весь snapshot`)}><Download className="size-3.5" />Весь snapshot</Button></div></div><DownloadBundles repo={repo} onDownload={onDownload} downloadOperations={downloadOperations} /><Table><TableHeader><TableRow><TableHead className="w-10">Выбор</TableHead><TableHead>Путь</TableHead><TableHead className="text-right">Размер</TableHead><TableHead>Дата файла на HF</TableHead></TableRow></TableHeader><TableBody>{repo.files.map((file) => <FileRow key={file.path} file={file} selected={selectedFiles.includes(file.path)} onToggle={() => toggleFile(file.path)} />)}</TableBody></Table></CardContent> : <QuantizationsContent query={quantizationsQuery} onOpen={(id) => onOpenQuantization(id, repo)} />}</Card></div>
 }
 
 function QuantizationsContent({ query, onOpen }: { query: ReturnType<typeof useQuery<Awaited<ReturnType<typeof api.getHfQuantizations>>, Error>>; onOpen: (id: string) => void }) {
@@ -397,13 +585,12 @@ function htmlLayoutClass(element: HTMLElement): string {
   return classes.join(' ')
 }
 
-function FileRow({ file, selected, onToggle }: { file: HfFile; selected: boolean; onToggle: () => void }) { return <TableRow><TableCell><input type="checkbox" aria-label={`Выбрать ${file.path}`} checked={selected} onChange={onToggle} className="size-4 accent-[#c58055]" /></TableCell><TableCell className="break-all font-mono text-[11px]">{file.path}</TableCell><TableCell className="whitespace-nowrap text-right font-mono text-[11px]">{formatBytes(file.size)}</TableCell><TableCell className="text-[11px] text-muted-foreground">{file.sha256 ? 'sha256' : file.etag ? 'etag' : 'без hash'}</TableCell></TableRow> }
+function FileRow({ file, selected, onToggle }: { file: HfFile; selected: boolean; onToggle: () => void }) { return <TableRow><TableCell><input type="checkbox" aria-label={`Выбрать ${file.path}`} checked={selected} onChange={onToggle} className="size-4 accent-[#c58055]" /></TableCell><TableCell className="break-all font-mono text-[11px]">{file.path}</TableCell><TableCell className="whitespace-nowrap text-right font-mono text-[11px]">{formatBytes(file.size)}</TableCell><TableCell className="whitespace-nowrap text-[11px] text-muted-foreground">{file.file_date ? formatHfDate(file.file_date) : '—'}</TableCell></TableRow> }
 
-function DownloadCenter({ operations, closed, collapsed, onToggle, onCollapse, onClose, onStop, stoppingId }: { operations: Operation[]; closed: boolean; collapsed: boolean; onToggle: () => void; onCollapse: () => void; onClose: () => void; onStop: (id: string) => void; stoppingId: string | null | undefined }) {
-  const hasActive = operations.some((operation) => ['queued', 'running'].includes(operation.state))
+function DownloadCenter({ operations, closed, collapsed, onToggle, onClose, onStop, stoppingId }: { operations: Operation[]; closed: boolean; collapsed: boolean; onToggle: () => void; onClose: () => void; onStop: (id: string) => void; stoppingId: string | null | undefined }) {
   const sorted = [...operations].sort((left, right) => new Date(right.created_at).getTime() - new Date(left.created_at).getTime())
   if (closed) return null
-  return <div className="mb-4 rounded-md border border-border bg-secondary px-4 py-3"><div className="flex items-center gap-2"><button type="button" className="flex min-w-0 items-center gap-2 text-left text-xs font-medium" onClick={onToggle} aria-expanded={!collapsed}><span>Загрузки</span><span className="text-[11px] text-muted-foreground">Активных: {operations.length}</span>{collapsed ? <ChevronDown className="size-3.5 text-muted-foreground" /> : <ChevronUp className="size-3.5 text-muted-foreground" />}</button><Button size="icon" variant="ghost" className="ml-auto -mr-2 -mt-2 shrink-0" aria-label={hasActive ? 'Свернуть загрузки' : 'Закрыть блок загрузок'} title={hasActive ? 'Свернуть' : 'Закрыть'} onClick={hasActive ? onCollapse : onClose}><X className="size-4" /></Button></div>{!collapsed && <div className="mt-3 space-y-2">{sorted.map((operation) => <DownloadTask key={operation.id} operation={operation} stopping={stoppingId === operation.id} onStop={() => onStop(operation.id)} />)}</div>}</div>
+  return <div className="mb-4 rounded-md border border-border bg-secondary px-4 py-3"><div className="flex items-center gap-2"><button type="button" className="flex min-w-0 items-center gap-2 text-left text-xs font-medium" onClick={onToggle} aria-expanded={!collapsed}><span>Загрузки</span><span className="text-[11px] text-muted-foreground">Задач: {operations.length}</span>{collapsed ? <ChevronDown className="size-3.5 text-muted-foreground" /> : <ChevronUp className="size-3.5 text-muted-foreground" />}</button><Button size="icon" variant="ghost" className="ml-auto -mr-2 -mt-2 shrink-0" aria-label="Закрыть блок загрузок" title="Закрыть" onClick={onClose}><X className="size-4" /></Button></div>{!collapsed && <div className="mt-3 space-y-2">{sorted.map((operation) => <DownloadTask key={operation.id} operation={operation} stopping={stoppingId === operation.id} onStop={() => onStop(operation.id)} />)}</div>}</div>
 }
 
 function DownloadTask({ operation, stopping, onStop }: { operation: Operation; stopping: boolean; onStop: () => void }) {

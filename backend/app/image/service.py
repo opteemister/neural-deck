@@ -119,7 +119,7 @@ class ImageGenerationService:
                 asset_id = uuid4().hex
                 content, media_type = await self._download(instance, image)
                 suffix = ".png" if media_type == "image/png" else ".bin"
-                asset_path = base_directory / "output" / "llm-studio" / f"{asset_id}{suffix}"
+                asset_path = base_directory / "output" / "neural-deck" / f"{asset_id}{suffix}"
                 asset_path.parent.mkdir(parents=True, exist_ok=True)
                 asset_path.write_bytes(content)
                 self._assets[asset_id] = (asset_path, media_type)
@@ -136,7 +136,7 @@ class ImageGenerationService:
 
     async def _upload_input_image(self, instance: Instance, value: str) -> str:
         content = decode_image_bytes(value)
-        filename = f"llm-studio-{uuid4().hex}.png"
+        filename = f"neural-deck-{uuid4().hex}.png"
         response = await self._request(
             instance, "POST", "/upload/image",
             files={"image": (filename, content, "image/png")},

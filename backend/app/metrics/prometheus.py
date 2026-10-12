@@ -1,4 +1,4 @@
-"""Optional query source and Studio's pull exposition."""
+"""Optional query source and Neural Deck's pull exposition."""
 
 from __future__ import annotations
 
@@ -15,9 +15,9 @@ from .performance import FIELDS, UNITS
 
 
 class PrometheusReader:
-    def __init__(self, url: str, token: str, studio_id: str) -> None:
+    def __init__(self, url: str, token: str, neural_deck_id: str) -> None:
         self.url = url.rstrip("/")
-        self.studio_id = studio_id
+        self.neural_deck_id = neural_deck_id
         self.client = httpx.AsyncClient(
             timeout=2, headers={"Authorization": f"Bearer {token}"} if token else {}
         )
@@ -54,13 +54,13 @@ class PrometheusReader:
         self.missing_retry = {
             key: until for key, until in self.missing_retry.items() if until > time.monotonic()
         }
-        labels = {"studio_id": self.studio_id}
+        labels = {"neural_deck_id": self.neural_deck_id}
         if profile_name is not None:
             labels["profile_name"] = profile_name
         if pid is not None:
             labels["pid"] = str(pid)
         selector = (
-            '{__name__=~"studio_model_.*",'
+            '{__name__=~"neural_deck_model_.*",'
             + ",".join(f"{key}={json.dumps(value)}" for key, value in labels.items())
             + "}"
         )
@@ -83,7 +83,7 @@ class PrometheusReader:
             grouped: dict[tuple[str | None, int, str, float], dict[str, Any]] = {}
             for row in rows:
                 label = row["metric"]
-                if label.get("studio_id") != self.studio_id:
+                if label.get("neural_deck_id") != self.neural_deck_id:
                     continue
                 profile = label.get("profile_name") or None
                 row_pid = int(label["pid"])
@@ -92,7 +92,7 @@ class PrometheusReader:
                 ):
                     continue
                 engine = label["engine_id"]
-                name = label["__name__"].removeprefix("studio_model_")
+                name = label["__name__"].removeprefix("neural_deck_model_")
                 for at, raw in row.get("values", [row.get("value")]):
                     value = float(raw)
                     if not math.isfinite(value) or value < 0:
@@ -153,12 +153,12 @@ class PrometheusReader:
 
 
 def exposition(
-    samples: list[tuple[Any, MetricList]], studio_id: str, baselines: dict[str, Any]
+    samples: list[tuple[Any, MetricList]], neural_deck_id: str, baselines: dict[str, Any]
 ) -> str:
     lines = []
     for instance, data in samples:
         labels = {
-            "studio_id": studio_id,
+            "neural_deck_id": neural_deck_id,
             "profile_name": instance.profile_name or "",
             "pid": str(instance.pid),
             "engine_id": instance.engine_id,
@@ -181,19 +181,19 @@ def exposition(
                 or not math.isfinite(item.value)
             ):
                 continue
-            lines.append(f"studio_model_{item.name}{render()} {item.value}")
+            lines.append(f"neural_deck_model_{item.name}{render()} {item.value}")
             for kind in ("count", "denominator"):
                 weight = item.metadata.get(kind)
                 if isinstance(weight, (int, float)) and math.isfinite(weight) and weight >= 0:
                     weight_labels = render({"field": item.name, "kind": kind})
-                    lines.append(f"studio_model_weight{weight_labels} {weight}")
+                    lines.append(f"neural_deck_model_weight{weight_labels} {weight}")
             lines.append(
-                f"studio_model_observed_timestamp_seconds{render({'field': item.name})} "
+                f"neural_deck_model_observed_timestamp_seconds{render({'field': item.name})} "
                 f"{item.observed_at.timestamp()}"
             )
         baseline = baselines.get(instance.id)
         if baseline:
             for name in ("cache_hits", "cache_queries", "draft_accepted", "draft_proposed"):
                 if name in baseline[1]:
-                    lines.append(f"studio_raw_{name}{render()} {baseline[1][name]}")
+                    lines.append(f"neural_deck_raw_{name}{render()} {baseline[1][name]}")
     return "\n".join(lines) + "\n"

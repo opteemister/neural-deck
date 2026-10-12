@@ -20,8 +20,12 @@ import type {
   Operation,
   ProfileData,
   ProfileListData,
+  ProfileSummaryData,
+  ProxyRoute,
+  ProxyRoutesData,
   SettingsData,
   StatusData,
+  StatisticsData,
   SystemData,
   TokenStatsData,
 } from '@/types/api'
@@ -42,7 +46,7 @@ export async function getOpenAiEndpoint(): Promise<string> {
   return modelApiBasePromise
 }
 
-export class StudioApiError extends Error {
+export class NeuralDeckApiError extends Error {
   readonly status: number
   readonly code: string
   readonly retryable: boolean
@@ -51,7 +55,7 @@ export class StudioApiError extends Error {
 
   constructor(message: string, options: { status: number; code?: string; retryable?: boolean; requestId?: string | null; details?: Record<string, unknown> }) {
     super(message)
-    this.name = 'StudioApiError'
+    this.name = 'NeuralDeckApiError'
     this.status = options.status
     this.code = options.code ?? 'request_failed'
     this.retryable = options.retryable ?? false
@@ -60,7 +64,7 @@ export class StudioApiError extends Error {
   }
 }
 
-async function readError(response: Response): Promise<StudioApiError> {
+async function readError(response: Response): Promise<NeuralDeckApiError> {
   try {
     const body = (await response.json()) as Partial<ApiErrorResponse>
     if (body.error) {
@@ -74,7 +78,7 @@ async function readError(response: Response): Promise<StudioApiError> {
           return [`${field || 'Профиль'}: ${item.msg}`]
         })
         : []
-      return new StudioApiError(reasons.length ? `${body.error.message}: ${reasons.join('; ')}` : body.error.message, {
+      return new NeuralDeckApiError(reasons.length ? `${body.error.message}: ${reasons.join('; ')}` : body.error.message, {
         status: response.status,
         code: body.error.code,
         retryable: body.error.retryable,
@@ -85,7 +89,7 @@ async function readError(response: Response): Promise<StudioApiError> {
   } catch {
     // The response can be empty or non-JSON; the HTTP status remains useful.
   }
-  return new StudioApiError(`Запрос не выполнен (${response.status})`, { status: response.status })
+  return new NeuralDeckApiError(`Запрос не выполнен (${response.status})`, { status: response.status })
 }
 
 export async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -96,7 +100,7 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   const body = (await response.json()) as ApiSuccess<T>
   if (!body || typeof body !== 'object' || !('data' in body)) {
-    throw new StudioApiError('Ответ API имеет неверный формат', { status: response.status, code: 'invalid_response' })
+    throw new NeuralDeckApiError('Ответ API имеет неверный формат', { status: response.status, code: 'invalid_response' })
   }
   return body.data
 }
@@ -110,7 +114,7 @@ async function openAiRequest<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 function assertOpenAiError(response: Response): void {
-  throw new StudioApiError(`Запрос не выполнен (${response.status})`, { status: response.status })
+  throw new NeuralDeckApiError(`Запрос не выполнен (${response.status})`, { status: response.status })
 }
 
 export type ChatStreamChunk = { content: string; done: boolean; reasoning?: string; usage?: import('@/types/api').ChatUsage; timings?: import('@/types/api').ChatTimings; finishReason?: string | null }
@@ -126,9 +130,9 @@ export async function streamChat(
   if (!response.ok) {
     try {
       const payload = (await response.json()) as ApiErrorResponse
-      if (payload.error) throw new StudioApiError(payload.error.message, { status: response.status, code: payload.error.code, retryable: payload.error.retryable, requestId: payload.error.request_id })
+      if (payload.error) throw new NeuralDeckApiError(payload.error.message, { status: response.status, code: payload.error.code, retryable: payload.error.retryable, requestId: payload.error.request_id })
     } catch (error) {
-      if (error instanceof StudioApiError) throw error
+      if (error instanceof NeuralDeckApiError) throw error
     }
     assertOpenAiError(response)
   }
@@ -221,12 +225,18 @@ export const api = {
   deleteLocalModel: (id: string) => request<LocalModelsData>(`/api/v1/models/local/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   deleteLocalModelGroup: (modelId: string, groupId: string) => request<LocalModelsData>(`/api/v1/models/local/${encodeURIComponent(modelId)}/groups/${encodeURIComponent(groupId)}`, { method: 'DELETE' }),
   searchHf: (query: string) => request<HfSearchData>(`/api/v1/models/hf/search?q=${encodeURIComponent(query)}`),
+  getHfTrending: (group = 'all', limit = 50) => request<HfSearchData>(`/api/v1/models/hf/trending?group=${encodeURIComponent(group)}&limit=${limit}`),
   getHfRepo: (namespace: string, name: string, revision?: string) => request<HfRepoData>(`/api/v1/models/hf/repos/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}${revision ? `?revision=${encodeURIComponent(revision)}` : ''}`),
   getHfQuantizations: (namespace: string, name: string) => request<import('@/types/api').HfSearchData>(`/api/v1/models/hf/repos/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/quantizations`),
   getHfFiles: (namespace: string, name: string, revision?: string) => request<HfRepoData>(`/api/v1/models/hf/repos/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/files${revision ? `?revision=${encodeURIComponent(revision)}` : ''}`),
   downloadModels: (body: DownloadRequest) => request<Operation>('/api/v1/models/downloads', json(body)),
   getProfiles: () => request<ProfileListData>('/api/v1/profiles'),
+  getProfileSummary: () => request<ProfileSummaryData>('/api/v1/profiles/summary'),
   getProfile: (name: string) => request<ProfileData>(`/api/v1/profiles/${encodeURIComponent(name)}`),
+  getProxyRoutes: () => request<ProxyRoutesData>('/api/v1/proxy/routes'),
+  createProxyAlias: (body: { name: string; profile_ids: string[] }) => request<ProxyRoute>('/api/v1/proxy/routes/aliases', json(body)),
+  updateProxyRoute: (name: string, profile_ids: string[]) => request<ProxyRoute>(`/api/v1/proxy/routes/${encodeURIComponent(name)}`, { method: 'PUT', body: JSON.stringify({ profile_ids }) }),
+  deleteProxyAlias: (name: string) => request<{ name: string }>(`/api/v1/proxy/routes/aliases/${encodeURIComponent(name)}`, { method: 'DELETE' }),
   previewProfile: (body: ProfileData) => request<{ command: string }>('/api/v1/profiles/preview', json(body)),
   createProfile: (body: ProfileData) => request<ProfileData>('/api/v1/profiles', { method: 'POST', body: JSON.stringify(body) }),
   updateProfile: (name: string, body: ProfileData) => request<ProfileData>(`/api/v1/profiles/${encodeURIComponent(name)}`, { method: 'PUT', body: JSON.stringify(body) }),
@@ -283,6 +293,12 @@ export const api = {
     const suffix = query.toString() ? `?${query.toString()}` : ''
     return request<TokenStatsData>(`/api/v1/token-stats${suffix}`)
   },
+  getStatistics: (filters: { period?: 'week' | 'month' | 'quarter' | 'half_year' | 'year'; model_name?: string; profile_name?: string } = {}) => {
+    const query = new URLSearchParams({ period: filters.period ?? 'month' })
+    if (filters.model_name) query.set('model_name', filters.model_name)
+    if (filters.profile_name) query.set('profile_name', filters.profile_name)
+    return request<StatisticsData>(`/api/v1/statistics?${query}`)
+  },
   getOpenAiModels: async (): Promise<OpenAiModelsData> => {
     const response = await openAiRequest<{ data: OpenAiModel[] }>('/models')
     return { items: response.data.filter((item) => item.capabilities?.image_generation !== true) }
@@ -301,14 +317,18 @@ export const queryKeys = {
   models: ['models'] as const,
   localModels: ['local-models'] as const,
   profiles: ['profiles'] as const,
+  profileSummary: ['profile-summary'] as const,
+  proxyRoutes: ['proxy-routes'] as const,
   instances: ['instances'] as const,
   tokens: ['token-stats'] as const,
+  statistics: (filters: { period?: 'week' | 'month' | 'quarter' | 'half_year' | 'year'; model_name?: string; profile_name?: string } = {}) => ['statistics', filters] as const,
   openAiModels: ['openai-models'] as const,
   logs: ['logs'] as const,
   log: (id: string) => ['log', id] as const,
   operation: (id: string) => ['operation', id] as const,
   downloads: ['operations', 'download'] as const,
   hfSearch: (query: string) => ['hf-search', query] as const,
+  hfTrending: (group: string, limit = 50) => ['hf-trending', group, limit] as const,
   hfRepo: (repoId: string, revision?: string) => ['hf-repo', repoId, revision ?? ''] as const,
   hfQuantizations: (repoId: string) => ['hf-quantizations', repoId] as const,
 }

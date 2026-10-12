@@ -22,6 +22,7 @@ import psutil
 
 from ..errors import AppError
 from ..profiles.formatting import substitute_placeholders
+from ..profiles.ports import resolve_effective_port
 from ..schemas.instances import (
     Instance,
     InstanceList,
@@ -70,7 +71,7 @@ def _safe_profile_dir(value: str) -> str:
 
 
 class ProcessManager:
-    """Own Studio launches and combine them with point-in-time discovery."""
+    """Own Neural Deck launches and combine them with point-in-time discovery."""
 
     def __init__(
         self,
@@ -210,25 +211,9 @@ class ProcessManager:
                     status_code=409,
                     details={"profile_name": profile.name},
                 )
-            registry_model = self.registry.get(profile.model_name) if profile.engine.id != "image" else None
-            if any(item.instance.model_name == profile.model_name for item in active) or any(
-                item.model_name == profile.model_name for item in active_external
-            ):
-                raise AppError(
-                    "model_name_conflict",
-                    "Имя модели уже используется активным экземпляром",
-                    status_code=409,
-                    details={"model_name": profile.model_name},
-                )
-            if registry_model is not None and registry_model.instance_id not in {
-                item.instance.id for item in active
-            }:
-                raise AppError(
-                    "model_name_conflict",
-                    "Имя модели уже зарегистрировано активным экземпляром",
-                    status_code=409,
-                    details={"model_name": profile.model_name},
-                )
+            # Several managed profiles may intentionally publish the same
+            # public model name.  TASK-004 groups them into one ordered route;
+            # port conflicts remain a separate safety check below.
             command = substitute_placeholders(
                 profile.command,
                 engine=engine_path,
@@ -237,7 +222,7 @@ class ProcessManager:
                 model_draft=str(profile.model.draft_path) if profile.model.draft_path else None,
                 port=profile.port or (8188 if profile.engine.id == "image" else None),
             )
-            port = _extract_port(command)
+            port = resolve_effective_port(profile.engine.id, command).port
             if port is not None and (
                 any(item.instance.port == port for item in active)
                 or any(item.port == port for item in active_external)
@@ -259,7 +244,7 @@ class ProcessManager:
             unit_name = None
             pending_path = None
             if self.launcher is not None:
-                unit_name = f"llm-studio-model-{uuid4().hex}.service"
+                unit_name = f"neural-deck-model-{uuid4().hex}.service"
                 pending_path = self.launcher.pending(
                     unit_name,
                     {
@@ -654,7 +639,7 @@ class ProcessManager:
             pgid = os.getpgid(expected.pid)
             group_leader = psutil.Process(pgid)
             group_user = group_leader.username()
-            studio_pgid = os.getpgrp()
+            neural_deck_pgid = os.getpgrp()
         except (OSError, psutil.Error) as exc:
             raise AppError(
                 "instance_identity_changed",
@@ -662,7 +647,7 @@ class ProcessManager:
                 status_code=409,
                 details={"pid": expected.pid},
             ) from exc
-        if pgid <= 0 or pgid == studio_pgid or group_user != self.username:
+        if pgid <= 0 or pgid == neural_deck_pgid or group_user != self.username:
             raise AppError(
                 "instance_identity_changed",
                 "Группа процесса не принадлежит подтверждённому экземпляру",
@@ -766,16 +751,6 @@ async def _terminate_process_group_and_wait(process: Any, *, pgid: int | None = 
     if getattr(process, "returncode", None) is None:
         with contextlib.suppress(asyncio.TimeoutError, OSError, ProcessLookupError):
             await asyncio.wait_for(process.wait(), timeout=1.0)
-
-
-def _extract_port(command: str) -> int | None:
-    import re
-
-    match = re.search(r"(?:--port(?:=|\s+)|(?:^|\s)-p\s+)(\d{1,5})(?:\s|$)", command)
-    if not match:
-        return None
-    value = int(match.group(1))
-    return value if 1 <= value <= 65535 else None
 
 
 __all__ = ["ProcessManager"]

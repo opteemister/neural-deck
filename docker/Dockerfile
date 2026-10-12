@@ -88,9 +88,9 @@ COPY backend/alembic.ini /workspace/backend/alembic.ini
 COPY frontend /workspace/frontend
 RUN pnpm --dir /workspace/frontend run build
 
-COPY docker/entrypoint.sh /usr/local/bin/llm-studio-dev
-RUN chmod 0755 /usr/local/bin/llm-studio-dev \
-    && mkdir -p /var/lib/llm-studio /var/log/llm-studio
+COPY docker/entrypoint.sh /usr/local/bin/neural-deck-dev
+RUN chmod 0755 /usr/local/bin/neural-deck-dev \
+    && mkdir -p /var/lib/neural-deck /var/log/neural-deck
 
 EXPOSE 3000 8080
-ENTRYPOINT ["/usr/local/bin/llm-studio-dev"]
+ENTRYPOINT ["/usr/local/bin/neural-deck-dev"]

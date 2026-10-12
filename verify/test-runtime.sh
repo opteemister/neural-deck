@@ -3,7 +3,7 @@ set -euo pipefail
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 root=$(cd "$script_dir/.." && pwd)
-sandbox=$(mktemp -d "${TMPDIR:-/tmp}/llm-studio-runtime-test.XXXXXX")
+sandbox=$(mktemp -d "${TMPDIR:-/tmp}/neural-deck-runtime-test.XXXXXX")
 trap 'rm -rf -- "$sandbox"' EXIT
 
 test_root="$sandbox/checkout"
@@ -25,7 +25,10 @@ cp "$root/deploy/install.sh" "$root/deploy/run-service.sh" \
 # PATH, which would otherwise invoke real sudo/package managers in this harness.
 sed '/^export PATH=/d' "$test_root/deploy/install.sh" > "$test_root/deploy/install.sandbox.sh"
 mv "$test_root/deploy/install.sandbox.sh" "$test_root/deploy/install.sh"
-cp "$root/deploy/systemd/llm-studio.service.template" "$test_root/deploy/systemd/"
+cp "$root/deploy/systemd/neural-deck.service.template" "$test_root/deploy/systemd/"
+mkdir -p "$test_root/frontend/public" "$test_root/docs/design"
+cp "$root/frontend/public/neural-deck.svg" "$test_root/frontend/public/"
+cp "$root/docs/design/neural-deck-reference.html" "$test_root/docs/design/"
 cp "$root/docker/entrypoint.sh" "$test_root/docker/"
 printf 'tracked\n' > "$test_root/AGENTS.md"
 printf 'tracked with spaces\n' > "$test_root/tracked file.txt"
@@ -45,12 +48,12 @@ printf '{"name":"runtime-harness-frontend","private":true}\n' > "$test_root/fron
 : > "$test_root/frontend/pnpm-lock.yaml"
 runtime_data_root="$sandbox/persistent-data"
 printf '%s\n' \
-    "LLM_STUDIO_DATA_ROOT=$runtime_data_root" \
+    "NEURAL_DECK_DATA_ROOT=$runtime_data_root" \
     'HOST=127.0.0.1' \
     'PORT=3000' \
     'MODELS_ROOT=' \
     'LOG_ROOT=' > "$test_root/.env"
-printf 'DEPLOY_TARGET=\nDEPLOY_PATH=/opt/llm-studio\n' > "$test_root/deploy.env"
+printf 'DEPLOY_TARGET=\nDEPLOY_PATH=/opt/neural-deck\n' > "$test_root/deploy.env"
 printf 'untracked secret\n' > "$test_root/untracked-secret.txt"
 
 write_stub() {
@@ -64,10 +67,13 @@ write_stub "$bin_dir/git" '#!/bin/bash' '
 set -euo pipefail
 case " $* " in
     *" ls-files -c -z -- "*)
-        printf "%s\0" "AGENTS.md" "tracked file.txt" ".env.local" "data/forced.dat"
+        printf "%s\0" "AGENTS.md" "tracked file.txt" ".env.local" "data/forced.dat" "removed-tracked.txt"
         ;;
     *" ls-files -o --exclude-standard -z -- "*)
+        [[ " $* " == *" deploy/systemd/neural-deck.service.template "* ]] || exit 91
+        [[ " $* " == *" docs/design/neural-deck-reference.html "* ]] || exit 92
         printf "%s\0" "frontend/src/new-untracked.ts"
+        printf "%s\0" "frontend/public/neural-deck.svg" "deploy/systemd/neural-deck.service.template" "docs/design/neural-deck-reference.html"
         ;;
     *" rev-parse --show-toplevel "*)
         printf "%s\n" "$PWD"
@@ -212,7 +218,7 @@ export FAKE_SSH_COUNT_FILE="$sandbox/ssh-count"
 export FAKE_SSH_ARCHIVE="$archive"
 export REAL_TAR="$real_tar"
 export FAKE_ROOTFS="$sandbox/fake-rootfs"
-export LLM_STUDIO_SERVICE_USER="$(id -un)"
+export NEURAL_DECK_SERVICE_USER="$(id -un)"
 
 if grep -Eq 'uv[[:space:]]+sync|pnpm([^[:alnum:]]|.*[[:space:]])install|pnpm.*run[[:space:]]+build' \
     "$test_root/docker/entrypoint.sh"; then
@@ -234,9 +240,9 @@ grep -Fq '/usr/local/bin/llama-server' "$root/docker/Dockerfile" \
 # not a mount target, so this exercises the loud failure path without Docker.
 mkdir -p "$runtime_data_root/models" "$runtime_data_root/logs"
 set +e
-LLM_STUDIO_WORKSPACE="$test_root" \
-LLM_STUDIO_PERSISTENT_ROOTS="$runtime_data_root" \
-LLM_STUDIO_DATA_ROOT="$runtime_data_root" \
+NEURAL_DECK_WORKSPACE="$test_root" \
+NEURAL_DECK_PERSISTENT_ROOTS="$runtime_data_root" \
+NEURAL_DECK_DATA_ROOT="$runtime_data_root" \
 MODELS_ROOT="$runtime_data_root/models" \
 LOG_ROOT="$runtime_data_root/logs" \
 HOST=0.0.0.0 \
@@ -267,27 +273,27 @@ grep -q '^pnpm --dir .* run build$' "$event_log" || { printf 'local Y did not bu
 grep -q '^loginctl enable-linger ' "$event_log" || { printf 'user manager linger missing\n' >&2; exit 1; }
 grep -q '^systemctl start user@.*\.service$' "$event_log" || { printf 'user manager was not started\n' >&2; exit 1; }
 grep -q '^systemctl daemon-reload$' "$event_log" || { printf 'local Y did not reload systemd\n' >&2; exit 1; }
-grep -q '^systemctl restart llm-studio.service$' "$event_log" || { printf 'local Y did not restart service\n' >&2; exit 1; }
-grep -q '^KillMode=control-group$' "$FAKE_ROOTFS/etc/systemd/system/llm-studio.service"
-grep -q '^Environment=LLM_STUDIO_MODEL_LAUNCHER=systemd$' "$FAKE_ROOTFS/etc/systemd/system/llm-studio.service"
-grep -q '^After=.*user@[0-9].*\.service' "$FAKE_ROOTFS/etc/systemd/system/llm-studio.service"
-! grep -q '__SERVICE_UID__' "$FAKE_ROOTFS/etc/systemd/system/llm-studio.service"
-! grep -q '^systemctl enable llm-studio-model-' "$event_log"
-[[ -f "$FAKE_ROOTFS/etc/systemd/system/llm-studio.service" ]] \
+grep -q '^systemctl restart neural-deck.service$' "$event_log" || { printf 'local Y did not restart service\n' >&2; exit 1; }
+grep -q '^KillMode=control-group$' "$FAKE_ROOTFS/etc/systemd/system/neural-deck.service"
+grep -q '^Environment=NEURAL_DECK_MODEL_LAUNCHER=systemd$' "$FAKE_ROOTFS/etc/systemd/system/neural-deck.service"
+grep -q '^After=.*user@[0-9].*\.service' "$FAKE_ROOTFS/etc/systemd/system/neural-deck.service"
+! grep -q '__SERVICE_UID__' "$FAKE_ROOTFS/etc/systemd/system/neural-deck.service"
+! grep -q '^systemctl enable neural-deck-model-' "$event_log"
+[[ -f "$FAKE_ROOTFS/etc/systemd/system/neural-deck.service" ]] \
     || { printf 'local Y did not install systemd unit\n' >&2; exit 1; }
 
 set +e
 export FAKE_CURL_OK=0
-(cd "$test_root" && LLM_STUDIO_INSTALL_CONFIRMED=1 bash deploy/install.sh >/dev/null 2>&1)
+(cd "$test_root" && NEURAL_DECK_INSTALL_CONFIRMED=1 bash deploy/install.sh >/dev/null 2>&1)
 health_failure_status=$?
 set -e
 [[ "$health_failure_status" != 0 ]] \
     || { printf 'health failure was swallowed by installer\n' >&2; exit 1; }
-grep -q '^systemctl status llm-studio.service' "$event_log" \
+grep -q '^systemctl status neural-deck.service' "$event_log" \
     || { printf 'health failure did not report service status\n' >&2; exit 1; }
 export FAKE_CURL_OK=1
 
-printf 'DEPLOY_TARGET=fake-host\nDEPLOY_PATH=/opt/llm-studio\n' > "$test_root/deploy.env"
+printf 'DEPLOY_TARGET=fake-host\nDEPLOY_PATH=/opt/neural-deck\n' > "$test_root/deploy.env"
 rm -f "$FAKE_SSH_COUNT_FILE" "$FAKE_SSH_ARCHIVE"
 (cd "$test_root" && /bin/bash scripts/deploy.sh)
 [[ -f "$archive" ]] || { printf 'remote archive was not captured\n' >&2; exit 1; }
@@ -297,19 +303,23 @@ grep -Fxq 'tracked file.txt' <<<"$archive_listing"
 grep -Fxq '.env.local' <<<"$archive_listing"
 grep -Fxq '.env' <<<"$archive_listing"
 grep -Fxq 'frontend/src/new-untracked.ts' <<<"$archive_listing"
+grep -Fxq 'frontend/public/neural-deck.svg' <<<"$archive_listing"
+grep -Fxq 'deploy/systemd/neural-deck.service.template' <<<"$archive_listing"
+grep -Fxq 'docs/design/neural-deck-reference.html' <<<"$archive_listing"
+! grep -Fxq 'removed-tracked.txt' <<<"$archive_listing"
 ! grep -Fxq 'data/forced.dat' <<<"$archive_listing"
 ! grep -Fxq 'untracked-secret.txt' <<<"$archive_listing"
 grep -q 'ssh\[1\].*mkdir -p' "$event_log"
 grep -q 'ssh\[2\].*deploy/install.sh' "$event_log"
 
-printf 'DEPLOY_TARGET=\nDEPLOY_PATH=/opt/llm-studio\n' > "$test_root/deploy.env"
+printf 'DEPLOY_TARGET=\nDEPLOY_PATH=/opt/neural-deck\n' > "$test_root/deploy.env"
 rm -f "$FAKE_SSH_COUNT_FILE"
 export FAKE_SYSTEMCTL_ACTIVE=1 FAKE_CURL_OK=1
 (cd "$test_root" && /bin/bash scripts/status.sh --local)
 grep -q '^systemctl is-active' "$event_log"
 grep -q '^curl ' "$event_log"
 
-printf 'DEPLOY_TARGET=fake-host\nDEPLOY_PATH=/opt/llm-studio\n' > "$test_root/deploy.env"
+printf 'DEPLOY_TARGET=fake-host\nDEPLOY_PATH=/opt/neural-deck\n' > "$test_root/deploy.env"
 rm -f "$FAKE_SSH_COUNT_FILE"
 (cd "$test_root" && /bin/bash scripts/status.sh)
 grep -q 'ssh\[1\].*scripts/status.sh --local' "$event_log"

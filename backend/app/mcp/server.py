@@ -110,7 +110,7 @@ def create_mcp_server(
     )
 
     server = FastMCP(
-        "LLM Studio",
+        "Neural Deck",
         stateless_http=True,
         json_response=True,
         streamable_http_path=streamable_http_path,

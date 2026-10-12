@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { AlertTriangle, LoaderCircle, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { EmptyState } from '@/components/ui/empty-state'
-import { StudioApiError } from '@/lib/api'
+import { NeuralDeckApiError } from '@/lib/api'
 
 export function QueryLoading({ label = 'Загрузка данных' }: { label?: string }) {
   return <div className="flex min-h-28 items-center justify-center gap-2 text-xs text-muted-foreground"><LoaderCircle className="size-4 animate-spin text-copper" />{label}</div>
@@ -10,7 +10,7 @@ export function QueryLoading({ label = 'Загрузка данных' }: { labe
 
 export function QueryError({ error, retry, label = 'Не удалось получить данные' }: { error: unknown; retry?: () => void; label?: string }) {
   const [visible, setVisible] = useState(true)
-  const message = error instanceof StudioApiError ? error.message : error instanceof Error ? error.message : 'Проверьте соединение с backend.'
+  const message = error instanceof NeuralDeckApiError ? error.message : error instanceof Error ? error.message : 'Проверьте соединение с backend.'
   useEffect(() => {
     setVisible(true)
     const timeout = window.setTimeout(() => setVisible(false), 10_000)

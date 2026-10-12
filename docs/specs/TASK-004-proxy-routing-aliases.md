@@ -3,9 +3,10 @@
 Статус: **Черновик, не согласовано**
 Дата: 2026-10-04
 
-Документ описывает требования для обсуждения. Ни один default order, timeout,
-retry, статус доступности, формат хранения, timezone, цена, cache billing или
-определение busy/concurrency не является утверждённым решением.
+Документ описывает требования для обсуждения. Решения, явно зафиксированные в
+разделе «Обсуждение с пользователем», являются рабочими defaults; остальные
+order, timeout, timezone, цена, cache billing и busy/concurrency остаются
+неутверждёнными.
 
 ## Review 2026-10-04 — решено review
 
@@ -33,13 +34,40 @@ Public route name рекомендуется возвращать в JSON и SSE
 без spurious fallback. После upstream headers переключение запрещено даже при
 нулевых client bytes; после client content нет stitched stream. Cancellation
 закрывает upstream и не failover. Один logical request получает общий deadline,
-attempt ограничен остатком budget. Availability-вариант остаётся opt-in с
-duplicate-work risk и без exact-once гарантии.
+attempt ограничен остатком budget. Availability-oriented retry с
+duplicate-work risk в эту версию не входит.
 
-Оставшиеся product choices: alias grammar/collisions и error 404/503, правило
-скрытия auto route при нуле running candidates, exact availability retry
-allowlist, capability compatibility, alias на external profile, ручное
-редактирование route config и формат direct stream error.
+Оставшийся архитектурный стык: контракт атрибуции alias с TASK-003/005.
+
+## Обсуждение с пользователем 2026-10-04
+
+Подтверждено: auto-route и alias не возвращаются в `/v1/models`, если нет ни
+одного доступного кандидата. Основной экран прокси показывает автоматические
+маршруты только при наличии запущенного профиля, а ручные алиасы всегда
+оставляет видимыми для просмотра и удаления. Backend management response
+сохраняет диагностику недоступных routes. Создание алиаса
+открывается из шапки страницы в центрированном popup. Технические детали ниже
+выбраны как defaults и не требуют
+отдельного продуктового решения:
+
+- TTL model metadata — 10 минут по существующему контракту; процесс и его
+  доступность перепроверяются при каждом обновлении списка;
+- alias name — ASCII model id `[A-Za-z0-9][A-Za-z0-9._-]{0,127}`;
+- коллизии с profile model name, auto-route или alias блокируют сохранение и
+  показываются inline при добавлении/редактировании, с backend revalidation;
+- alias включает только managed profiles; unmanaged external models остаются
+  в каталоге, но не участвуют в сохранённой маршрутизации;
+- неизвестное имя получает `404 model_not_found`, известный недоступный route —
+  `503 route_unavailable`;
+- failover идёт по порядку при техническом отказе до upstream headers. Ошибки
+  клиентского запроса, полученные headers и начавшийся stream не переключаются;
+  stitched streams запрещены, deadline общий для logical request;
+- строгая capability-матрица не вводится: managed profiles разных моделей
+  разрешены, известные различия показываются предупреждением, а окончательная
+  совместимость определяется upstream;
+- route config хранится в отдельном YAML под `data_root/config` с версией схемы,
+  atomic write и поддержкой ручной правки; последняя сохранённая запись
+  полностью заменяет предыдущую (last-write-wins).
 
 ## 1. Цель и границы
 
@@ -132,10 +160,12 @@ diagnostic state.
 изменений. Request journal сохраняет requested public name отдельно от
 upstream model.
 
-**R-6.** Alias скрывается из списка, если ни один его кандидат не доступен.
-Применять ли такое же правило к auto route — оставшийся product choice;
-после выбора общего правила кэш списка не должен публиковать остановленный
-route после согласованного TTL/refresh policy.
+**R-6.** Auto route скрывается из основного списка, если ни один кандидат не
+доступен; ручной alias остаётся в основном списке всегда и может быть удалён.
+Состояние процесса проверяется при каждом обновлении списка; TTL 10 минут
+относится к свежей непустой model metadata engine и не отменяет проверку
+текущего запуска. Backend management response продолжает показывать routes и
+диагностику.
 
 **R-7.** Доступность и список не обещают успешность будущего POST: process может
 остановиться между probe и запросом. Это состояние должно быть видимо в
@@ -145,8 +175,8 @@ management response, но внешний model list остаётся компа�
 
 **R-8.** Пользователь может переставлять кандидаты auto route и alias drag-and-
 drop; backend принимает полный упорядоченный список, проверяет уникальность и
-атомарно сохраняет результат. Одновременная правка не должна терять более
-новую версию без ошибки conflict/version.
+атомарно сохраняет результат. При одновременных сохранениях применяется простое
+last-write-wins; optimistic conflict/version check не вводится.
 
 Ссылки используют stable `profile_id`/revision. Rename сохраняет membership;
 delete оставляет dangling reference с `profile_missing` diagnostic до явной
@@ -159,11 +189,11 @@ capacity/latency нельзя использовать неявно. Новый 
 
 **R-10.** Alias name валидируется как non-empty bounded public model id и
 проверяется на коллизии с auto route, profile public name и другим alias.
-Разрешение пробелов, слешей, Unicode и совпадающих имен должно быть утверждено
-до API-контракта.
-Alias references рекомендуется ограничить managed profiles; unmanaged external
-models сохраняются в listing, но не подключаются к alias без отдельного
-явного правила.
+Используется ASCII-грамматика `[A-Za-z0-9][A-Za-z0-9._-]{0,127}`; пробелы,
+слеши, Unicode и управляющие символы запрещены. Коллизия показывается inline
+при добавлении/изменении и повторно проверяется backend. Один профиль не может
+входить в alias дважды. Alias references ограничены managed profiles;
+unmanaged external models сохраняются в listing, но не подключаются к alias.
 
 ### 3.4 Forward/failover
 
@@ -171,22 +201,20 @@ models сохраняются в listing, но не подключаются к 
 сохранённом порядке, исключая недоступные runtime states. При успехе выбирается
 первый ответивший candidate; запрос не ставится в очередь.
 
-**R-12.** Предлагаемая безопасная граница retry: переход возможен при
-доказанном отказе до принятия POST upstream. Connect refusal можно рассмотреть;
-timeout, write timeout, remote protocol error после отправки, неизвестный
-разрыв и любые ответы после headers по умолчанию не повторяются и получают
-`routing_outcome=unknown`. Лимит attempts — не более одного прохода по списку.
-Это conservative recommendation и фактически соответствует текущей policy:
-сервис завершается ошибкой, чтобы не обещать отсутствие duplicate work.
-Availability-вариант (не более одного следующего кандидата только без headers
-и client body) допустим лишь как opt-in; outcome остаётся `unknown`, exact-once
-не гарантируется. Один logical request получает общий timeout budget, attempt
-ограничен его остатком. Allowlist и idempotency support остаются открытыми.
+**R-12.** Переход к следующему кандидату возможен при техническом отказе до
+upstream headers: например, при отказе соединения или невозможности получить
+ответ до границы принятия upstream. Timeout/write timeout после возможной
+отправки тела, remote protocol error после отправки, неизвестный разрыв и любые
+ответы после headers не повторяются и получают `routing_outcome=unknown`.
+Лимит attempts — не более одного прохода по списку. Один logical request
+получает общий timeout budget, attempt ограничен его остатком. Отдельный
+availability-oriented retry с риском duplicate work в эту версию не входит.
 
-**R-13.** HTTP 4xx validation/auth/model/capability не переключает candidate.
-HTTP 408/429/5xx и network failures переключаются только после отдельного
-решения о side effect/idempotency; `retryable=true` внутренней ошибки не
-означает автоматический retry.
+**R-13.** Ошибки входного запроса, auth, validation и capability не переключают
+candidate: другой профиль не исправляет тело или ключ клиента. Технический
+отказ до upstream headers передаёт попытку следующему кандидату по порядку;
+после headers retry запрещён. `retryable=true` внутренней ошибки не означает
+автоматический retry за пределами этой политики.
 
 **R-14.** Для streaming после upstream headers (даже если client ещё не получил
 byte), первого byte или первого SSE content
@@ -197,9 +225,10 @@ headers действует R-12. Cancellation закрывает upstream connec
 делает failover. OpenAI-compatible SSE не расширяется внутренними chunks только
 для сообщения о failover; stitched streams запрещены.
 
-**R-15.** При отсутствии кандидатов запрос к route, скрытому из list, получает
-стабильный OpenAI error. Выбор между `404 model_not_found` и `503
-route_unavailable`, а также текст и `retryable` — открытый вопрос.
+**R-15.** Неизвестное имя получает `404 model_not_found`. Известный auto-route
+или alias, скрытый из list из-за отсутствия доступных кандидатов, получает
+`503 route_unavailable`. Ответ остаётся стабильным OpenAI-style JSON; внешний
+model list при этом не содержит недоступный route.
 
 ### 3.5 Журнал и статистика
 
@@ -211,17 +240,20 @@ route_unavailable`, а также текст и `retryable` — открытый
 
 **R-17.** Если были attempts, сохраняются их ordinal, candidate identity,
 phase и outcome (`success`, `http_error`, `unavailable`, `unknown`, `partial`).
-Не складывать токены нескольких неизвестных/повторных попыток как один успех.
-При отсутствии точного usage оставить значения `NULL` и счётчик unknown.
-Рекомендуемый storage — нормализованные `request_attempts` child rows с
-logical-request id и dedup key; opaque JSON не должен быть единственным
-источником для TASK-003.
+Они являются диагностикой маршрутизации, а не отдельными статистическими
+запросами. Для базовой версии достаточно итогового `routing_outcome` и
+фактически вызванного profile/instance; отдельная агрегируемая таблица попыток
+не обязательна. Не складывать токены нескольких попыток как один успех. При
+отсутствии точного usage оставить значения `NULL` с признаком unknown.
 
 **R-18.** TASK-003 агрегирует токены и latency по фактическому served profile;
-alias name используется как requested route filter отдельно. Для benchmark
-TASK-005 запоминаются served profile и route/interval либо применяется заранее
-согласованное правило исключения из обычного traffic. Цены, часовой пояс,
-cache billing и busy/concurrency не определяются этой спецификацией.
+то есть по профилю, который proxy выбрал, подставил в upstream payload и
+вызвал. `requested_model`/alias сохраняется только как дополнительное поле
+журнала и фильтра диагностики, но не становится отдельной моделью для
+агрегации. Для benchmark TASK-005 сохраняется тот же served profile; benchmark
+traffic помечается отдельно и не смешивается с обычной статистикой. Цены,
+часовой пояс, cache billing и busy/concurrency не определяются этой
+спецификацией.
 
 ## 4. Предлагаемый контракт управления (для обсуждения)
 
@@ -244,24 +276,22 @@ cache billing и busy/concurrency не определяются этой спе�
       "available": true,
       "reason": null
     }],
-    "available": true,
-    "version": 3
+    "available": true
   }]
 }
 ```
 
 Возможные операции: create/update/delete alias, reorder candidates, получить
-auto groups и их diagnostics. Update принимает `version` и полный order; alias
-name — идентификатор ресурса и не меняется reorder-операцией. Точный формат
-envelope следует общим management contracts; внешний `/v1` не раскрывает
+auto groups и их diagnostics. Update принимает полный order; alias name —
+идентификатор ресурса и не меняется reorder-операцией. Точный формат envelope
+следует общим management contracts; внешний `/v1` не раскрывает
 `candidate_profile_names`, PID или причины внутренних отказов.
 
-Хранение: предложение — отдельный versioned YAML под `data_root/config` с
-atomic write по образцу `ProfileRepository`; SQLite остаётся журналом/историей,
+Хранение: предложение — отдельный YAML под `data_root/config` с `schema_version`
+и atomic write по образцу `ProfileRepository`; SQLite остаётся журналом/историей,
 если это подтвердит решение по конфигурации. Нельзя тихо добавлять маршрут в
 profile YAML или считать volatile registry источником сохранённого порядка.
-Конкретная схема должна иметь `schema_version`, stable references и optimistic
-version; ручная правка не должна silently overwrite более новую UI-версию.
+Ручная правка и UI используют last-write-wins.
 
 ## 5. Предлагаемые UI-требования
 
@@ -313,9 +343,9 @@ Combobox и Tooltip с темой из design-system; названия, сост
    available по verified identity/port/metadata, stable profile references и
    deterministic initial order; принять product choices по alias validation,
    collisions, direct-call error и capability policy.
-2. Зафиксировать route config schema, management API, optimistic versioning и
-   atomic persistence; отдельно согласовать миграцию текущего duplicate-name
-   guard и volatile registry.
+2. Зафиксировать route config schema, management API и atomic persistence с
+   политикой last-write-wins; отдельно согласовать миграцию текущего
+   duplicate-name guard и volatile registry.
 3. Утвердить retry matrix и journal attempt/logical-request contract с TASK-003;
    решить benchmark attribution с TASK-005.
 4. Реализовать backend registry/route resolver/listing/forwarding и meaningful
@@ -326,18 +356,10 @@ Combobox и Tooltip с темой из design-system; названия, сост
 6. Провести локальную проверку в Docker после утверждения; deployment/runtime
    проверка относится к отдельному согласованному этапу.
 
-## 8. Вопросы перед утверждением
+## 8. Архитектурный стык перед утверждением
 
-- Распространяется ли правило скрытия при нуле running candidates также на auto
-  route, и какой TTL/refresh выбрать?
-- Какая alias name grammar/precedence и какой direct-call error (`404` или
-  `503`) нужен для скрытого/недоступного route?
-- Разрешён ли availability retry после 408/429/5xx, timeout/write и remote
-  disconnect; какой idempotency contract и duplicate-work disclosure нужны?
-- Какие capability mismatches (tools, reasoning, context length) блокируют alias,
-  а какие только показываются; разрешать ли alias на unmanaged external model?
-- По результатам проверки рекомендуется versioned YAML маршрутов в
-  `data_root/config`, атомарная запись и контроль версии. На обсуждение остаются
-  доступность управления через API и правила ручного редактирования.
-- С TASK-003/005 подтвердить фильтр alias, unknown/partial tokens и benchmark
-  interval/event attribution; technical storage recommendation уже дана выше.
+- С TASK-003/005 зафиксировать контракт атрибуции: proxy выбирает профиль,
+  подставляет его upstream model и вызывает его; токены, latency и фактическая
+  нагрузка относятся к этому profile/instance. Alias сохраняется только как
+  requested route для журнала и диагностики, а `unknown` и `partial` не
+  становятся успешным traffic для агрегатов и benchmark.

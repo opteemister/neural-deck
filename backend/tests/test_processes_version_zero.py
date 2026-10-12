@@ -42,7 +42,9 @@ async def test_managed_process_uses_bash_group_and_profile_log(
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_spawn)
     monkeypatch.setattr("app.process.manager._identity_start_ns", lambda pid: 123)
     monkeypatch.setattr("app.process.manager.ProcessManager.refresh", _empty_refresh)
-    manager = ProcessManager(log_root=tmp_path, username="studio", http_client=FakeHTTPClient())
+    manager = ProcessManager(
+        log_root=tmp_path, username="neural-deck", http_client=FakeHTTPClient()
+    )
     value = ProfileData.model_validate(
         {
             "version": 1,

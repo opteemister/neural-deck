@@ -51,7 +51,7 @@ def test_catalogue_groups_model_directories_and_evaluates_hf_manifest(tmp_path: 
     weights = model / "model.safetensors"
     weights.write_bytes(b"model")
     (model / "config.json").write_text("{}", encoding="utf-8")
-    (model / ".llm-studio-hf.yaml").write_text(
+    (model / ".neural-deck-hf.yaml").write_text(
         "schema_version: 1\n"
         "repo_id: Qwen/Qwen\n"
         "revision: 0123456789abcdef0123456789abcdef01234567\n"

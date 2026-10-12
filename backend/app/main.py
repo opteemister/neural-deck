@@ -28,6 +28,7 @@ from .api.management import router as management_router
 from .api.metrics import export_router as metrics_export_router
 from .api.metrics import router as metrics_router
 from .api.profiles import router as profiles_router
+from .api.proxy_routes import router as proxy_routes_router
 from .config import Settings, load_settings
 from .container import AppContainer
 from .db import check_database, create_engine, create_session_factory, migrate_database
@@ -58,9 +59,11 @@ from .profiles.service import ProfileService
 from .proxy.listener import ApplicationCORSMiddleware, model_api_listener
 from .proxy.router import internal_router as internal_proxy_router
 from .proxy.router import router as proxy_router
+from .proxy.routes import RouteManager
 from .proxy.service import ProxyService
 from .schemas.common import SuccessEnvelope
 from .schemas.system import HealthData
+from .statistics import StatisticsService
 from .system import collect_status, collect_system_data, health_from_status
 from .token_stats import RequestJournalService
 
@@ -96,12 +99,12 @@ def _configure_application_logging(log_path: Path) -> None:
         access_logger.removeHandler(handler)
         handler.close()
     if not any(
-        getattr(handler, "_llm_studio_console_handler", False) for handler in logger.handlers
+        getattr(handler, "_neural_deck_console_handler", False) for handler in logger.handlers
     ):
         console_handler = logging.StreamHandler()
         console_handler.setLevel(logging.INFO)
         console_handler.setFormatter(formatter)
-        console_handler._llm_studio_console_handler = True  # type: ignore[attr-defined]
+        console_handler._neural_deck_console_handler = True  # type: ignore[attr-defined]
         logger.addHandler(console_handler)
     loggers = (logger, logging.getLogger("uvicorn.error"))
     for target in loggers:
@@ -109,7 +112,7 @@ def _configure_application_logging(log_path: Path) -> None:
         matching = [
             handler
             for handler in target.handlers
-            if getattr(handler, "_llm_studio_file_handler", False)
+            if getattr(handler, "_neural_deck_file_handler", False)
         ]
         for handler in matching:
             if Path(getattr(handler, "baseFilename", "")) != log_path:
@@ -121,7 +124,7 @@ def _configure_application_logging(log_path: Path) -> None:
         if any(
             Path(getattr(handler, "baseFilename", "")) == log_path
             for handler in target.handlers
-            if getattr(handler, "_llm_studio_file_handler", False)
+            if getattr(handler, "_neural_deck_file_handler", False)
         ):
             continue
 
@@ -133,7 +136,7 @@ def _configure_application_logging(log_path: Path) -> None:
         )
         handler.setFormatter(formatter)
         handler.setLevel(logging.INFO)
-        handler._llm_studio_file_handler = True  # type: ignore[attr-defined]
+        handler._neural_deck_file_handler = True  # type: ignore[attr-defined]
         target.addHandler(handler)
 
 
@@ -216,7 +219,7 @@ def _publish_runtime(app: FastAPI, runtime: AppContainer) -> None:
 
 
 async def _scan_startup(runtime: AppContainer) -> None:
-    """Run all best-effort discovery steps before the app accepts requests."""
+    """Run best-effort discovery in the background, preserving dependency order."""
 
     logger.info("Startup: обнаружение установленных движков")
     try:
@@ -224,13 +227,6 @@ async def _scan_startup(runtime: AppContainer) -> None:
     except Exception as exc:  # noqa: BLE001 - scanner boundary is non-fatal
         runtime.engine_service.mark_scan_failed(exc)
         runtime.add_diagnostic("engine_discovery", "scan_failed", str(exc))
-
-    logger.info("Startup: сканирование локальных моделей без проверки хешей")
-    try:
-        await asyncio.to_thread(runtime.model_catalogue.scan)
-    except Exception as exc:  # noqa: BLE001 - scanner boundary is non-fatal
-        runtime.model_catalogue.mark_scan_failed(exc)
-        runtime.add_diagnostic("model_catalogue", "scan_failed", str(exc))
 
     logger.info("Startup: обнаружение процессов")
     try:
@@ -255,6 +251,13 @@ async def _scan_startup(runtime: AppContainer) -> None:
             f"{issue.get('profile', 'unknown')}: {issue.get('message', '')}".strip(),
         )
 
+    logger.info("Фоновое сканирование моделей: повторное использование сохранённых хешей")
+    try:
+        await asyncio.to_thread(runtime.model_catalogue.scan)
+    except Exception as exc:  # noqa: BLE001 - scanner boundary is non-fatal
+        runtime.model_catalogue.mark_scan_failed(exc)
+        runtime.add_diagnostic("model_catalogue", "scan_failed", str(exc))
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -265,24 +268,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # in database migration must prevent a partially usable service from
     # starting; optional scanners below are deliberately isolated.
     prepare_data_dirs(paths)
-    _configure_application_logging(paths.studio_log_dir / "app.log")
+    _configure_application_logging(paths.neural_deck_log_dir / "app.log")
     service_url = _service_url(settings.host, settings.port)
-    logger.info("LLM Studio backend: запуск %s", service_url)
+    logger.info("Neural Deck backend: запуск %s", service_url)
     logger.info(
-        "LLM Studio backend: data_root=%s models_root=%s", paths.data_root, paths.models_root
+        "Neural Deck backend: data_root=%s models_root=%s", paths.data_root, paths.models_root
     )
     db_engine = create_engine(paths.sqlite_path)
     runtime: AppContainer | None = None
     try:
-        logger.info("LLM Studio backend: подготовка каталогов и базы данных")
+        logger.info("Neural Deck backend: подготовка каталогов и базы данных")
         await migrate_database(settings, paths)
         await check_database(db_engine)
         operation_manager = OperationManager(paths.operations_log_dir)
         model_registry = ModelRegistry()
         external_discovery = discover_external
-        launch_mode = os.environ.get("LLM_STUDIO_MODEL_LAUNCHER", "process")
+        launch_mode = os.environ.get("NEURAL_DECK_MODEL_LAUNCHER", "process")
         if launch_mode not in {"process", "systemd"}:
-            raise ValueError("LLM_STUDIO_MODEL_LAUNCHER must be process or systemd")
+            raise ValueError("NEURAL_DECK_MODEL_LAUNCHER must be process or systemd")
         process_manager = ProcessManager(
             log_root=paths.profiles_log_dir,
             runtime_root=paths.runtime_dir,
@@ -307,13 +310,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
         session_factory = create_session_factory(db_engine)
         journal_service = RequestJournalService(session_factory=session_factory)
-        proxy_service = ProxyService(process_manager, journal=journal_service)
+        route_manager = RouteManager(paths.config_dir, profile_repository)
+        proxy_service = ProxyService(
+            process_manager,
+            journal=journal_service,
+            route_manager=route_manager,
+        )
         image_service = ImageGenerationService(process_manager, profile_repository)
         import secrets
 
         from .metrics.storage import MetricsStorage
 
-        identity_path = paths.data_root / "studio-id"
+        identity_path = paths.data_root / "neural-deck-id"
         if not identity_path.exists():
             identity_path.write_text(secrets.token_hex(16), encoding="utf-8")
         await journal_service.interrupt_pending()
@@ -323,8 +331,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             storage=MetricsStorage(session_factory),
             prometheus_url=settings.prometheus_url,
             prometheus_token=settings.prometheus_token,
-            studio_id=identity_path.read_text().strip(),
+            neural_deck_id=identity_path.read_text().strip(),
         )
+        statistics_service = StatisticsService(journal_service, profile_service, metrics_service.storage)
         runtime = AppContainer(
             settings=settings,
             paths=paths,
@@ -341,15 +350,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             proxy_service=proxy_service,
             image_service=image_service,
             metrics_service=metrics_service,
+            statistics_service=statistics_service,
             external_discovery=external_discovery,
             mcp_server=getattr(app.state, "mcp_server", None),
         )
         _publish_runtime(app, runtime)
-        await _scan_startup(runtime)
+        model_catalogue.prepare_background_scan()
+        await model_catalogue.start_update_scheduler()
         await metrics_service.start()
-        logger.info("LLM Studio backend: готов принимать запросы %s", service_url)
+        logger.info("Neural Deck backend: готов принимать запросы %s", service_url)
     except BaseException:
-        logger.exception("LLM Studio backend: запуск не выполнен")
+        logger.exception("Neural Deck backend: запуск не выполнен")
         if runtime is None:
             await db_engine.dispose()
         else:
@@ -366,10 +377,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 logger.info("OpenAI API: %s/v1", _service_url(settings.host, settings.openai_port))
             if runtime.mcp_server is not None:
                 await stack.enter_async_context(mcp_lifespan(runtime.mcp_server))
+            runtime.startup_task = asyncio.create_task(
+                _scan_startup(runtime), name="neural-deck-startup-discovery"
+            )
             yield
     finally:
         await runtime.close()
-        logger.info("LLM Studio backend: остановлен")
+        logger.info("Neural Deck backend: остановлен")
 
 
 def _mcp_dependencies(app: FastAPI) -> MCPDependencies:
@@ -454,7 +468,7 @@ def create_app(
     serve_model_api: bool = False,
 ) -> FastAPI:
     app = FastAPI(
-        title="LLM Studio",
+        title="Neural Deck",
         version="0.1.0",
         lifespan=lifespan,
     )
@@ -470,6 +484,7 @@ def create_app(
     # Keep each management router registered once.  Future proxy/MCP routers
     # must be included before the frontend fallback route as well.
     app.include_router(management_router)
+    app.include_router(proxy_routes_router)
     app.include_router(internal_proxy_router)
     app.include_router(internal_image_router)
     app.include_router(profiles_router)
@@ -530,7 +545,7 @@ def create_app(
 
 
 def create_proxy_app(runtime: AppContainer) -> FastAPI:
-    app = FastAPI(title="LLM Studio OpenAI API", version="0.1.0")
+    app = FastAPI(title="Neural Deck OpenAI API", version="0.1.0")
     app.state.runtime = runtime
     app.add_middleware(RequestIdMiddleware)
     app.add_middleware(ApplicationCORSMiddleware, application_port=runtime.settings.port)

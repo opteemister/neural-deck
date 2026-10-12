@@ -342,7 +342,7 @@ class EngineService:
         status: str = "ready",
         diagnostic: str | None = None,
     ) -> None:
-        path = root / ".llm-studio-engine.yaml"
+        path = root / ".neural-deck-engine.yaml"
         payload = {
             "schema_version": 1,
             "engine_id": engine_id,

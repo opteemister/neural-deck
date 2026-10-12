@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from ..image.service import ImageGenerationService
     from ..metrics.service import MetricsService
     from ..proxy.service import ProxyService
+    from ..statistics import StatisticsService
     from ..token_stats import RequestJournalService
 
 
@@ -83,3 +84,7 @@ def get_metrics_service(request: Request) -> MetricsService:
 
 def get_image_service(request: Request) -> ImageGenerationService:
     return get_runtime(request).image_service
+
+
+def get_statistics_service(request: Request) -> StatisticsService:
+    return get_runtime(request).statistics_service

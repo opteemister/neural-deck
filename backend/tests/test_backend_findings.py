@@ -62,7 +62,7 @@ def test_missing_hf_size_stays_unknown(tmp_path: Path) -> None:
     model = tmp_path / "models" / "repo"
     model.mkdir(parents=True)
     (model / "model.gguf").write_bytes(b"weights")
-    (model / ".llm-studio-hf.yaml").write_text(
+    (model / ".neural-deck-hf.yaml").write_text(
         "schema_version: 1\n"
         "repo_id: org/repo\n"
         "revision: abc123\n"
@@ -127,7 +127,7 @@ def test_failed_install_marker_remains_broken_candidate(tmp_path: Path) -> None:
     paths.venvs_dir.mkdir(parents=True)
     failed = paths.venvs_dir / "failed"
     failed.mkdir()
-    (failed / ".llm-studio-engine.yaml").write_text(
+    (failed / ".neural-deck-engine.yaml").write_text(
         "engine_id: vllm\nstatus: broken\n", encoding="utf-8"
     )
 
@@ -148,7 +148,7 @@ def test_broken_manifest_overrides_passing_executable(tmp_path: Path, monkeypatc
     executable = venv / "bin" / "vllm"
     executable.write_text("#!/bin/sh\n", encoding="utf-8")
     executable.chmod(0o755)
-    (venv / ".llm-studio-engine.yaml").write_text(
+    (venv / ".neural-deck-engine.yaml").write_text(
         "engine_id: vllm\nstatus: broken\nversion: null\ndiagnostic: update failed\n",
         encoding="utf-8",
     )
@@ -188,7 +188,7 @@ async def test_cancelled_install_writes_broken_marker_and_rescans(
     await entered.wait()
     await service.operations.cancel(operation["id"])
 
-    marker = paths.venvs_dir / "cancelled" / ".llm-studio-engine.yaml"
+    marker = paths.venvs_dir / "cancelled" / ".neural-deck-engine.yaml"
     assert marker.is_file()
     assert "status: broken" in marker.read_text(encoding="utf-8")
     assert (
@@ -227,7 +227,7 @@ async def test_cancelled_update_marks_existing_environment_broken(
     await entered.wait()
     await service.operations.cancel(operation["id"])
 
-    marker = venv / ".llm-studio-engine.yaml"
+    marker = venv / ".neural-deck-engine.yaml"
     assert "status: broken" in marker.read_text(encoding="utf-8")
     assert service.get_installation(installation.id).status == "broken"
     await service.close()

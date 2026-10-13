@@ -29,7 +29,9 @@ describe('Engines workflow', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Изменить' }))
     const editDialog = screen.getByRole('dialog', { name: 'Изменить шаблон vLLM' })
-    expect(within(editDialog).getByLabelText('Название')).toHaveValue('vLLM')
+    expect(within(editDialog).getByLabelText(/Название/)).toHaveValue('vLLM')
+    expect(within(editDialog).getByLabelText(/Рабочий каталог/)).not.toBeRequired()
+    expect(within(editDialog).getAllByText('· необязательно').length).toBeGreaterThan(0)
     fireEvent.click(within(editDialog).getByRole('button', { name: 'Закрыть' }))
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
 

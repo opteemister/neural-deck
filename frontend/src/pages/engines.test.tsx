@@ -18,6 +18,29 @@ function renderPage() {
 afterEach(() => vi.unstubAllGlobals())
 
 describe('Engines workflow', () => {
+  it('groups engines by their primary type and shows ready installations first', async () => {
+    const readyInstallation = { id: 'inst_llama', engine_id: 'llama.cpp', kind: 'binary', root_path: '/opt/llama', executable_path: '/opt/llama/llama-server', version: '1.0', status: 'ready', verified: true, diagnostic: null, registered: false }
+    const items = [
+      { ...engine, id: 'comfyui', display_name: 'ComfyUI', types: ['image', 'video'], installations: [] },
+      { ...engine, id: 'vllm', display_name: 'vLLM', types: ['text'], installations: [] },
+      { ...engine, id: 'llama.cpp', display_name: 'llama.cpp', types: ['text'], installations: [readyInstallation] },
+    ]
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/engines/definitions')) return Promise.resolve(new Response(envelope({ items: [], issues: [] }), { status: 200 }))
+      return Promise.resolve(new Response(envelope({ items }), { status: 200 }))
+    }))
+
+    renderPage()
+
+    const textHeading = await screen.findByRole('heading', { name: 'Текст' })
+    const imageHeading = screen.getByRole('heading', { name: 'Изображения' })
+    expect(textHeading.compareDocumentPosition(imageHeading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    const textContent = textHeading.closest('section')?.textContent ?? ''
+    expect(textContent.indexOf('llama.cpp')).toBeLessThan(textContent.indexOf('vLLM'))
+    expect(imageHeading.closest('section')).toHaveTextContent('ComfyUI')
+  })
+
   it('scans the engine catalogue and reports a created operation', async () => {
     const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)

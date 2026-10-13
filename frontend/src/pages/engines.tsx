@@ -79,7 +79,8 @@ export function EnginesPage() {
   if (engines.isError) return <><PageHeader eyebrow="Neural Deck / каталог" title="Движки" /><QueryError error={engines.error} retry={() => void engines.refetch()} label="Список движков недоступен" /></>
   const data = engines.data
   if (!data) return <QueryLoading label="Ожидаем список движков" />
-  const orderedEngines = [...data.items].sort((left, right) => left.display_name.localeCompare(right.display_name))
+  const engineGroups = groupEngines(data.items)
+  const renderEngineCard = (engine: EngineData) => <EngineCard key={engine.id} engine={engine} definition={definitions.data?.items.find((item) => item.id === engine.id)} expanded={expanded === engine.id} installing={installingEngine === engine.id} onToggle={() => toggleEngine(engine.id)} onInstall={() => openInstaller(engine.id)} onCloseInstall={closeInstaller} targetPath={targetPath} setTargetPath={setTargetPath} executablePath={executablePath} setExecutablePath={setExecutablePath} installCommand={installCommand} setInstallCommand={setInstallCommand} runInstall={runInstall} setRunInstall={setRunInstall} onSubmitInstall={submitCreate} creating={create.isPending} createError={create.error} onUpdate={(id) => void update.mutate(id)} updating={update.isPending} maintenanceFor={maintenanceFor} setMaintenanceFor={setMaintenanceFor} maintenanceCommand={maintenanceCommand} setMaintenanceCommand={setMaintenanceCommand} onMaintenance={(id, command) => void maintenance.mutate({ id, command })} maintenancePending={maintenance.isPending} />
   return <div>
     <PageHeader eyebrow="Neural Deck / каталог" title="Движки" description={view === 'engines' ? 'Установленные движки и доступные способы запуска.' : 'Шаблоны установки и запуска движков.'} action={view === 'engines' ? <div className="flex gap-2"><Button variant="secondary" size="sm" onClick={() => openLogs(undefined, 'operations')}><TerminalSquare className="size-3.5" />Логи</Button><Button variant="secondary" size="sm" onClick={() => void scan.mutate()} disabled={scan.isPending}><RefreshCw className={`size-3.5 ${scan.isPending ? 'animate-spin' : ''}`} />{scan.isPending ? 'Сканируем…' : 'Повторить поиск'}</Button></div> : undefined} />
     <div className="mb-5 flex flex-wrap gap-1 border-b border-border"><Tab active={view === 'engines'} onClick={() => setView('engines')}>Движки</Tab><Tab active={view === 'templates'} onClick={() => setView('templates')}>Шаблоны</Tab></div>
@@ -88,13 +89,37 @@ export function EnginesPage() {
     {view === 'engines' && maintenance.isError && <QueryError error={maintenance.error} label="Команда обслуживания не запущена" />}
     {operationId && operation.isError && <QueryError error={operation.error} retry={() => void operation.refetch()} label="Состояние операции недоступно" />}
     {operationNotification && <NotificationToast key={operationNotification.id} tone={operationNotification.tone} title={operationNotification.title} message={operationNotification.message} />}
-    {view === 'engines' ? orderedEngines.length === 0 ? <QueryEmpty title="Движки не найдены" description="Добавьте шаблон движка или повторите поиск установок." /> : <div className="grid gap-3">{orderedEngines.map((engine) => <EngineCard key={engine.id} engine={engine} definition={definitions.data?.items.find((item) => item.id === engine.id)} expanded={expanded === engine.id} installing={installingEngine === engine.id} onToggle={() => toggleEngine(engine.id)} onInstall={() => openInstaller(engine.id)} onCloseInstall={closeInstaller} targetPath={targetPath} setTargetPath={setTargetPath} executablePath={executablePath} setExecutablePath={setExecutablePath} installCommand={installCommand} setInstallCommand={setInstallCommand} runInstall={runInstall} setRunInstall={setRunInstall} onSubmitInstall={submitCreate} creating={create.isPending} createError={create.error} onUpdate={(id) => void update.mutate(id)} updating={update.isPending} maintenanceFor={maintenanceFor} setMaintenanceFor={setMaintenanceFor} maintenanceCommand={maintenanceCommand} setMaintenanceCommand={setMaintenanceCommand} onMaintenance={(id, command) => void maintenance.mutate({ id, command })} maintenancePending={maintenance.isPending} />)}</div> : <TemplatesView definitions={definitions.data?.items ?? []} loading={definitions.isLoading} loadError={definitions.error} reload={() => void definitions.refetch()} issues={definitions.data?.issues ?? []} editingDefinition={editingDefinition} onNew={() => setEditingDefinition(emptyEngineDefinition())} onEdit={setEditingDefinition} onCancel={() => { setEditingDefinition(null); saveDefinition.reset() }} onSave={(definition) => saveDefinition.mutate({ definition, existingId: definitions.data?.items.some((item) => item.id === editingDefinition?.id) ? editingDefinition!.id : undefined })} saving={saveDefinition.isPending} saveError={saveDefinition.error} deleting={deleteDefinition.isPending} deleteError={deleteDefinition.error} onDelete={requestDeleteDefinition} />}
+    {view === 'engines' ? engineGroups.length === 0 ? <QueryEmpty title="Движки не найдены" description="Добавьте шаблон движка или повторите поиск установок." /> : <div className="space-y-7">{engineGroups.map((group) => <section key={group.type} aria-labelledby={`engine-group-${group.type}`}><div className="mb-3 flex items-center gap-2 border-b border-border pb-2"><h2 id={`engine-group-${group.type}`} className="text-sm font-medium">{ENGINE_TYPE_LABELS[group.type]}</h2><span className="rounded-sm border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground">{group.items.length}</span></div><div className="grid gap-3">{group.items.map(renderEngineCard)}</div></section>)}</div> : <TemplatesView definitions={definitions.data?.items ?? []} loading={definitions.isLoading} loadError={definitions.error} reload={() => void definitions.refetch()} issues={definitions.data?.issues ?? []} editingDefinition={editingDefinition} onNew={() => setEditingDefinition(emptyEngineDefinition())} onEdit={setEditingDefinition} onCancel={() => { setEditingDefinition(null); saveDefinition.reset() }} onSave={(definition) => saveDefinition.mutate({ definition, existingId: definitions.data?.items.some((item) => item.id === editingDefinition?.id) ? editingDefinition!.id : undefined })} saving={saveDefinition.isPending} saveError={saveDefinition.error} deleting={deleteDefinition.isPending} deleteError={deleteDefinition.error} onDelete={requestDeleteDefinition} />}
   </div>
 }
 
 function Tab({ active, onClick, children }: { active: boolean; onClick: () => void; children: string }) { return <button type="button" className={`min-h-10 border-b-2 px-3 text-xs ${active ? 'border-copper text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}`} onClick={onClick}>{children}</button> }
 
 const ENGINE_TYPE_LABELS: Record<EngineType, string> = { text: 'Текст', tts: 'TTS', asr: 'ASR', video: 'Видео', image: 'Изображения', embeddings: 'Embeddings', decision: 'Решения' }
+const ENGINE_GROUP_ORDER: EngineType[] = ['text', 'embeddings', 'image', 'video', 'tts', 'asr', 'decision']
+
+function groupEngines(engines: EngineData[]): Array<{ type: EngineType; items: EngineData[] }> {
+  const groups = new Map<EngineType, EngineData[]>()
+  for (const engine of engines) {
+    const primaryType = engine.types[0] ?? 'text'
+    groups.set(primaryType, [...(groups.get(primaryType) ?? []), engine])
+  }
+  return ENGINE_GROUP_ORDER.flatMap((type) => {
+    const items = groups.get(type)
+    if (!items) return []
+    return [{
+      type,
+      items: [...items].sort((left, right) => engineAvailabilityRank(left) - engineAvailabilityRank(right)
+        || left.display_name.localeCompare(right.display_name)),
+    }]
+  })
+}
+
+function engineAvailabilityRank(engine: EngineData): number {
+  if (engine.installations.some((installation) => installation.status === 'ready')) return 0
+  if (engine.installations.length > 0) return 1
+  return 2
+}
 
 function EngineCard({ engine, definition, expanded, installing, onToggle, onInstall, onCloseInstall, targetPath, setTargetPath, executablePath, setExecutablePath, installCommand, setInstallCommand, runInstall, setRunInstall, onSubmitInstall, creating, createError, onUpdate, updating, maintenanceFor, setMaintenanceFor, maintenanceCommand, setMaintenanceCommand, onMaintenance, maintenancePending }: { engine: EngineData; definition?: EngineDefinition; expanded: boolean; installing: boolean; onToggle: () => void; onInstall: () => void; onCloseInstall: () => void; targetPath: string; setTargetPath: (value: string) => void; executablePath: string; setExecutablePath: (value: string) => void; installCommand: string; setInstallCommand: (value: string) => void; runInstall: boolean; setRunInstall: (value: boolean) => void; onSubmitInstall: (event: FormEvent<HTMLFormElement>) => void; creating: boolean; createError: unknown; onUpdate: (id: string) => void; updating: boolean; maintenanceFor: string | null; setMaintenanceFor: (id: string | null) => void; maintenanceCommand: string; setMaintenanceCommand: (value: string) => void; onMaintenance: (id: string, command: string) => void; maintenancePending: boolean }) {
   const readyCount = engine.installations.filter((item) => item.status === 'ready').length

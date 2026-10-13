@@ -64,6 +64,18 @@ code, pre { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Consola
   body { font-size: 12px; }
 }
 
+/* Yield horizontal space to page content before its container layouts reflow. */
+.app-shell-desktop-navigation,
+.app-shell-desktop-navigation-toggle { display: none !important; }
+.app-shell-mobile-navigation-toggle { display: inline-flex !important; }
+
+@media (min-width: 1500px) {
+  .app-shell-desktop-navigation { display: flex !important; }
+  .app-shell-desktop-navigation-toggle { display: inline-flex !important; }
+  .app-shell-mobile-navigation,
+  .app-shell-mobile-navigation-toggle { display: none !important; }
+}
+
 @keyframes logs-drawer-enter {
   from { transform: translateX(100%); }
   to { transform: translateX(0); }

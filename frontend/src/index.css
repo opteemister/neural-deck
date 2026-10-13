@@ -69,7 +69,7 @@ code, pre { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Consola
 .app-shell-desktop-navigation-toggle { display: none !important; }
 .app-shell-mobile-navigation-toggle { display: inline-flex !important; }
 
-@media (min-width: 1500px) {
+@media (min-width: 1300px) {
   .app-shell-desktop-navigation { display: flex !important; }
   .app-shell-desktop-navigation-toggle { display: inline-flex !important; }
   .app-shell-mobile-navigation,
@@ -126,9 +126,11 @@ code, pre { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Consola
   .profile-card-summary-grid { grid-template-columns: minmax(260px, 1fr) minmax(400px, 1.35fr) auto; align-items: center; }
 }
 
-@container (min-width: 1180px) {
-  .profile-card-summary-grid { grid-template-columns: minmax(400px, 3fr) minmax(0, 5fr) auto; }
-  .profile-card-metrics { grid-template-columns: minmax(0, 1.4fr) minmax(0, 0.8fr) repeat(6, minmax(0, 1fr)); }
+@media (min-width: 1300px) {
+  @container (min-width: 1180px) {
+    .profile-card-summary-grid { grid-template-columns: minmax(400px, 3fr) minmax(0, 5fr) auto; }
+    .profile-card-metrics { grid-template-columns: minmax(0, 1.4fr) minmax(0, 0.8fr) repeat(6, minmax(0, 1fr)); }
+  }
 }
 
 /* GPU visuals shrink within their columns, then yield space to the values. */

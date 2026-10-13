@@ -90,6 +90,11 @@ class ProfileService:
             model_draft=str(profile.model.draft_path) if profile.model and profile.model.draft_path else None,
             port=profile.port or (8188 if protocol == "comfyui" else None),
             target=(str(resolved.installation.root_path) if resolved is not None else None),
+            models_root=(
+                str(self.process_manager.models_root)
+                if self.process_manager.models_root is not None
+                else None
+            ),
             extra_model_paths_config=str(self.process_manager.extra_model_paths_config),
         )}
 

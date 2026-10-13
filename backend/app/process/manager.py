@@ -83,6 +83,7 @@ class ProcessManager:
         *,
         log_root: Path | None = None,
         runtime_root: Path | None = None,
+        models_root: Path | None = None,
         username: str | None = None,
         http_client: Any | None = None,
         registry: ModelRegistry | None = None,
@@ -96,6 +97,7 @@ class ProcessManager:
         self.log_root.mkdir(parents=True, exist_ok=True)
         self.runtime_root = runtime_root or self.log_root.parent / "runtime"
         self.runtime_root.mkdir(parents=True, exist_ok=True)
+        self.models_root = models_root
         self.username = username or getpass.getuser()
         self.http_client = http_client
         self.external_discovery = external_discovery or discover_external
@@ -261,6 +263,7 @@ class ProcessManager:
                 model_draft=str(profile.model.draft_path) if profile.model and profile.model.draft_path else None,
                 port=profile.port or (8188 if protocol == "comfyui" else None),
                 target=str(resolved.installation.root_path) if resolved else None,
+                models_root=str(self.models_root) if self.models_root is not None else None,
                 extra_model_paths_config=str(self.extra_model_paths_config),
             )
             port = resolve_effective_port("image" if protocol == "comfyui" else profile.engine.id, command).port

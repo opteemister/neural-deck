@@ -290,6 +290,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         process_manager = ProcessManager(
             log_root=paths.profiles_log_dir,
             runtime_root=paths.runtime_dir,
+            models_root=paths.models_root,
             run_store=RunStore(db_engine),
             launcher=(SystemdLauncher(paths.runtime_dir) if launch_mode == "systemd" else None),
             registry=model_registry,

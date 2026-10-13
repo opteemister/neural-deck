@@ -15,6 +15,7 @@ PLACEHOLDERS = (
     "{{base_directory}}",
     "{{port}}",
     "{{target}}",
+    "{{models_root}}",
     "{{extra_model_paths_config}}",
 )
 _SEPARATORS = frozenset(" \t\r\n|;&<>\n()")
@@ -211,6 +212,7 @@ def substitute_placeholders(
     base_directory: str | None = None,
     port: int | None = None,
     target: str | None = None,
+    models_root: str | None = None,
     extra_model_paths_config: str | None = None,
 ) -> str:
     """Substitute validated words with shell-quoted profile values."""
@@ -238,6 +240,12 @@ def substitute_placeholders(
             "Для {{target}} не определена папка установки",
             status_code=422,
         )
+    if "{{models_root}}" in command and not models_root:
+        raise AppError(
+            "models_root_missing",
+            "Для {{models_root}} не задан общий каталог моделей",
+            status_code=422,
+        )
     if "{{extra_model_paths_config}}" in command and not extra_model_paths_config:
         raise AppError(
             "extra_model_paths_config_missing",
@@ -257,11 +265,13 @@ def substitute_placeholders(
         values["{{model_name}}"] = shlex.quote(model_name)
     if target is not None:
         values["{{target}}"] = shlex.quote(target)
+    if models_root is not None:
+        values["{{models_root}}"] = shlex.quote(models_root)
     if extra_model_paths_config is not None:
         values["{{extra_model_paths_config}}"] = shlex.quote(extra_model_paths_config)
     # Replace only the original placeholders, never placeholder-like text in values.
     return re.sub(
-        r"\{\{(?:engine|model|model_draft|model_name|base_directory|port|target|extra_model_paths_config)\}\}",
+        r"\{\{(?:engine|model|model_draft|model_name|base_directory|port|target|models_root|extra_model_paths_config)\}\}",
         lambda match: values[match.group()],
         command,
     )

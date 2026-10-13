@@ -455,9 +455,11 @@ class EngineService:
         template = script.replace("{{source}}", shlex.quote(str(source)))
         template = template.replace("{{target_dir}}", shlex.quote(str(target.parent)))
         template = template.replace("{{python}}", shlex.quote(str(target / "bin" / "python")))
+        template = template.replace("{{models_root}}", shlex.quote(str(self.paths.models_root)))
         return substitute_placeholders(
             template, engine=str(executable), target=str(target), model=None,
-            model_name=None, model_draft=None, port=None, extra_model_paths_config=None,
+            model_name=None, model_draft=None, port=None, models_root=None,
+            extra_model_paths_config=None,
         )
 
     async def _create_generic_installation(

@@ -100,6 +100,25 @@ code, pre { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Consola
   .system-resources-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 }
 
+/* Profile summaries respond to the card width, including space taken by drawers. */
+.profile-card { container-type: inline-size; }
+.profile-card-summary-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px 12px; }
+.profile-card-identity, .profile-card-metrics, .profile-card-actions { min-width: 0; }
+.profile-card-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 12px; }
+
+@container (min-width: 560px) {
+  .profile-card-metrics { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+
+@container (min-width: 900px) {
+  .profile-card-summary-grid { grid-template-columns: minmax(260px, 1fr) minmax(400px, 1.35fr) auto; align-items: center; }
+}
+
+@container (min-width: 1180px) {
+  .profile-card-summary-grid { grid-template-columns: minmax(400px, 3fr) minmax(0, 5fr) auto; }
+  .profile-card-metrics { grid-template-columns: minmax(0, 1.4fr) minmax(0, 0.8fr) repeat(6, minmax(0, 1fr)); }
+}
+
 /* GPU visuals shrink within their columns, then yield space to the values. */
 .gpu-table-container { container-type: inline-size; }
 .gpu-table-container > div { overflow-x: visible; }

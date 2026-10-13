@@ -31,6 +31,7 @@ describe('Profiles workflow', () => {
     })
     vi.stubGlobal('fetch', fetchMock)
     render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><MemoryRouter><LogsDrawerProvider><ProfilesPage /></LogsDrawerProvider></MemoryRouter></QueryClientProvider>)
+    expect((await screen.findByTestId('profile-summary-metrics')).children).toHaveLength(8)
     fireEvent.click(await screen.findByRole('button', { name: 'Изменить' }))
     expect(await screen.findByRole('checkbox', { name: 'Включить метрики' })).toBeChecked()
     await waitFor(() => expect(screen.getByLabelText('Команда запуска')).toHaveValue(command))

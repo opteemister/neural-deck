@@ -37,8 +37,10 @@ describe('Engines workflow', () => {
     fireEvent.change(screen.getByLabelText('Имя папки или абсолютный путь'), { target: { value: 'vllm-test' } })
     fireEvent.click(screen.getAllByRole('button', { name: 'Установить' }).at(-1)!)
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/v1/engines/vllm/installations', expect.objectContaining({ method: 'POST' })))
-    expect(await screen.findByText('Установка движка')).toBeInTheDocument()
-    expect(await screen.findByText('Завершено')).toBeInTheDocument()
+    const notification = await screen.findByRole('status')
+    expect(notification).toHaveTextContent('Установка движка')
+    expect(notification).toHaveTextContent('Операция успешно завершена.')
+    expect(screen.queryByText('Завершено')).not.toBeInTheDocument()
     const installationRequest = fetchMock.mock.calls.find(([input, init]) => String(input).endsWith('/api/v1/engines/vllm/installations') && init?.method === 'POST')!
     expect(JSON.parse(String(installationRequest[1].body))).toEqual({ target_path: '/opt/engines/vllm/vllm-test', run_install: true, command: 'python -m venv {{target}}' })
   })

@@ -1,6 +1,6 @@
 // spec: version-zero
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { LogsDrawerProvider } from '@/components/logs-drawer'
@@ -10,14 +10,33 @@ const engine = { id: 'vllm', display_name: 'vLLM', command_template: '{{engine}}
 const definition = { version: 1, id: 'vllm', name: 'vLLM', types: ['text'], install_script: 'python -m venv {{target}}', update_script: null, executable: '{{target}}/bin/vllm', working_directory: null, environment: {}, command: '{{engine}} serve', healthcheck: null, api: null, ui_url: null, version_command: ['--version'] }
 const envelope = (data: unknown) => JSON.stringify({ data, request_id: 'req_test' })
 
-function renderPage() {
+function renderPage(initialEntry = '/engines') {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(<QueryClientProvider client={client}><MemoryRouter initialEntries={['/engines']}><LogsDrawerProvider><EnginesPage /></LogsDrawerProvider></MemoryRouter></QueryClientProvider>)
+  return render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[initialEntry]}><LogsDrawerProvider><EnginesPage /></LogsDrawerProvider></MemoryRouter></QueryClientProvider>)
 }
 
 afterEach(() => vi.unstubAllGlobals())
 
 describe('Engines workflow', () => {
+  it('opens template creation and editing in a reusable dialog', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/engines/definitions')) return Promise.resolve(new Response(envelope({ items: [definition], issues: [] }), { status: 200 }))
+      return Promise.resolve(new Response(envelope({ items: [engine] }), { status: 200 }))
+    }))
+
+    renderPage('/engines?view=templates')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Изменить' }))
+    const editDialog = screen.getByRole('dialog', { name: 'Изменить шаблон vLLM' })
+    expect(within(editDialog).getByLabelText('Название')).toHaveValue('vLLM')
+    fireEvent.click(within(editDialog).getByRole('button', { name: 'Закрыть' }))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Новый шаблон' }))
+    expect(screen.getByRole('dialog', { name: 'Новый шаблон движка' })).toBeInTheDocument()
+  })
+
   it('groups engines by their primary type and shows ready installations first', async () => {
     const readyInstallation = { id: 'inst_llama', engine_id: 'llama.cpp', kind: 'binary', root_path: '/opt/llama', executable_path: '/opt/llama/llama-server', version: '1.0', status: 'ready', verified: true, diagnostic: null, registered: false }
     const items = [

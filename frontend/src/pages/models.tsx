@@ -4,10 +4,13 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, ArrowLeft, ChevronDown, ChevronUp, Download, ExternalLink, FolderOpen, Heart, RefreshCw, Search, Star, Trash2, TrendingUp, X } from 'lucide-react'
 import { useSearchParams } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
+import { ModelComponentList } from '@/components/model-component-list'
+import { groupModelComponents, componentDownloadFiles, componentFileSize, hasImageVideoStructure, componentPrecisions, selectComponentPrecision } from '@/lib/model-components'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardTitle } from '@/components/ui/card'
 import { IconButton } from '@/components/ui/icon-button'
 import { Input } from '@/components/ui/input'
+import { Select } from '@/components/ui/select'
 import { Progress } from '@/components/ui/progress'
 import { PageHeader } from '@/components/page-header'
 import { QueryEmpty, QueryError, QueryLoading } from '@/components/query-state'
@@ -225,10 +228,11 @@ function ModelFolder({ model, favorite, onToggleFavorite, onOpenHf, onDelete, on
   const auxiliary = model.auxiliary_files ?? []
   const variantGroups: LocalGroup[] = model.groups?.length ? model.groups : variants.map((file) => ({ id: `legacy-${file.path}`, label: file.path, kind: 'variant' as const, path: null, files: [file], file_count: 1, size_bytes: file.size_bytes, status: 'unknown' as const, deletable: false }))
   const auxiliaryGroups: LocalGroup[] = model.auxiliary_blocks?.length ? model.auxiliary_blocks : auxiliary.map((file) => ({ id: `legacy-${file.path}`, label: file.path, kind: 'auxiliary_block' as const, path: null, files: [file], file_count: 1, size_bytes: file.size_bytes, status: 'unknown' as const, deletable: false }))
+  const components = groupModelComponents([...variants, ...auxiliary].map((file) => ({ path: file.path, size: file.size_bytes })))
   const pathParts = model.path.split('/').filter(Boolean)
   const vendor = toCamelCase(model.vendor || pathParts.at(-2) || pathParts.at(-1) || 'Неизвестный вендор')
   const modelName = toCamelCase(model.model_name || pathParts.at(-1) || 'Модель')
-  return <Card><CardContent><div className="flex flex-wrap items-start justify-between gap-4"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><button type="button" className="text-left text-base font-medium tracking-tight hover:text-copper" onClick={() => model.hf_match.repo_id && onOpenHf(model.hf_match.repo_id, model.hf_match.revision)} disabled={!model.hf_match.repo_id}>{vendor} / {modelName}</button>{model.model_kind === 'image' && <span className="rounded-sm border border-copper/60 px-2 py-1 text-[10px] uppercase tracking-[0.12em] text-copper">Image</span>}<Button size="icon" variant="ghost" aria-label={favorite ? 'Убрать из избранного' : 'Добавить в избранное'} title={favorite ? 'Убрать из избранного' : 'Добавить в избранное'} onClick={onToggleFavorite}><Star className={`size-4 ${favorite ? 'fill-copper text-copper' : 'text-muted-foreground'}`} /></Button>{model.hf_match.repo_id && <a href={`https://huggingface.co/${model.hf_match.repo_id}`} target="_blank" rel="noreferrer" aria-label="Открыть модель на Hugging Face" title="Открыть модель на Hugging Face" className="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"><ExternalLink className="size-4" /></a>}<HfUpdateBadge match={model.hf_match} /></div><div className="mt-1 flex items-center gap-2 text-[11px] text-muted-foreground"><FolderOpen className="size-3.5 shrink-0 text-copper" /><p className="break-all font-mono">{model.path}</p></div><p className="mt-2 text-[11px] text-muted-foreground">{model.format || 'формат неизвестен'} · {formatBytes(model.size_bytes)} · {variantGroups.length} вариантов · {auxiliaryGroups.length} вспомогательных блоков</p></div><div className="flex self-stretch flex-col items-end justify-between gap-2"><Button size="sm" variant="danger" disabled={deleting} onClick={() => onDelete(model)}><Trash2 className="size-3.5" />{deleting ? 'Удаляем…' : 'Удалить'}</Button><ModelSourceStatus match={model.hf_match} /></div></div>{variantGroups.length > 0 && <LocalGroupList title="Варианты модели" groups={variantGroups} model={model} onDelete={onDeleteGroup} deletingGroupId={deletingGroupId} />}{auxiliaryGroups.length > 0 && <LocalGroupList title="Вспомогательные блоки" groups={auxiliaryGroups} model={model} onDelete={onDeleteGroup} deletingGroupId={deletingGroupId} />}</CardContent></Card>
+  return <Card><CardContent><div className="flex flex-wrap items-start justify-between gap-4"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><button type="button" className="text-left text-base font-medium tracking-tight hover:text-copper" onClick={() => model.hf_match.repo_id && onOpenHf(model.hf_match.repo_id, model.hf_match.revision)} disabled={!model.hf_match.repo_id}>{vendor} / {modelName}</button>{model.model_kind === 'image' && <span className="rounded-sm border border-copper/60 px-2 py-1 text-[10px] uppercase tracking-[0.12em] text-copper">Image</span>}<Button size="icon" variant="ghost" aria-label={favorite ? 'Убрать из избранного' : 'Добавить в избранное'} title={favorite ? 'Убрать из избранного' : 'Добавить в избранное'} onClick={onToggleFavorite}><Star className={`size-4 ${favorite ? 'fill-copper text-copper' : 'text-muted-foreground'}`} /></Button>{model.hf_match.repo_id && <a href={`https://huggingface.co/${model.hf_match.repo_id}`} target="_blank" rel="noreferrer" aria-label="Открыть модель на Hugging Face" title="Открыть модель на Hugging Face" className="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"><ExternalLink className="size-4" /></a>}<HfUpdateBadge match={model.hf_match} /></div><div className="mt-1 flex items-center gap-2 text-[11px] text-muted-foreground"><FolderOpen className="size-3.5 shrink-0 text-copper" /><p className="break-all font-mono">{model.path}</p></div><p className="mt-2 text-[11px] text-muted-foreground">{model.format || 'формат неизвестен'} · {formatBytes(model.size_bytes)} · {components.length} компонентов · {components.reduce((sum, component) => sum + component.variants.length, 0)} вариантов</p></div><div className="flex self-stretch flex-col items-end justify-between gap-2"><Button size="sm" variant="danger" disabled={deleting} onClick={() => onDelete(model)}><Trash2 className="size-3.5" />{deleting ? 'Удаляем…' : 'Удалить'}</Button><ModelSourceStatus match={model.hf_match} /></div></div><LocalModelComponents model={model} /><details className="mt-3 border-t border-border pt-3"><summary className="cursor-pointer text-[11px] text-muted-foreground">Управление каталогами</summary>{variantGroups.length > 0 && <LocalGroupList title="Управление файлами модели" groups={variantGroups} model={model} onDelete={onDeleteGroup} deletingGroupId={deletingGroupId} />}{auxiliaryGroups.length > 0 && <LocalGroupList title="Вспомогательные блоки" groups={auxiliaryGroups} model={model} onDelete={onDeleteGroup} deletingGroupId={deletingGroupId} />}</details></CardContent></Card>
 }
 
 function toCamelCase(value: string): string {
@@ -421,50 +425,34 @@ function QuantizationsContent({ query, onOpen }: { query: ReturnType<typeof useQ
 }
 
 function DownloadBundles({ repo, onDownload, downloadOperations }: { repo: HfRepoData; onDownload: (files: string[] | null, repo: HfRepoData, label?: string) => void; downloadOperations: Operation[] }) {
-  const [extras, setExtras] = useState<string[]>([])
-  useEffect(() => { setExtras([]) }, [repo.repo_id, repo.revision])
-  const weights = /\.(gguf|ggml|mmproj|safetensors|bin|pt|pth|ckpt|onnx|nemo|tflite)$/i
-  const auxiliary = (path: string) => /(^|[\\/_.-])(?:mtp|mmproj|projector|projection|vision(?:[-_]?(?:encoder|tower))?|audio(?:[-_]?(?:encoder|tower))?|adapter|d[\s_-]?spark)(?=$|[\\/_.-])/i.test(path)
-  const groups = new Map<string, HfFile[]>()
-  const extraGroups = new Map<string, HfFile[]>()
-  for (const file of repo.files) {
-    if (!weights.test(file.path)) continue
-    const parts = file.path.split('/')
-    const name = parts[parts.length - 1]
-    if (auxiliary(file.path)) {
-      const key = parts.length > 1 ? parts.slice(0, -1).join('/') : name.replace(/-\d{5}-of-\d{5}(?=\.)/i, '')
-      extraGroups.set(key, [...(extraGroups.get(key) ?? []), file])
-      continue
-    }
-    const key = parts.length > 1 ? parts.slice(0, -1).join('/') : /\.gguf$/i.test(name) ? name.replace(/-\d{5}-of-\d{5}(?=\.gguf$)/i, '').replace(/\.gguf$/i, '') : 'Модель'
-    groups.set(key, [...(groups.get(key) ?? []), file])
-  }
-  const supporting = repo.files.filter((file) => !file.path.includes('/') && /(^README\.md$|^LICENSE(?:\..*)?$|config.*\.json$|^tokenizer.*\.json$|^special_tokens_map\.json$|^.*\.index\.json$|^vocab\.(json|txt)$|^merges\.txt$|^.*\.jinja$|^tokenizer\.model$)/i.test(file.path))
-  if (!groups.size) return null
-  const imageCategories = ['diffusion_models', 'text_encoders', 'vae']
-  const imageFiles = repo.files.filter((file) => imageCategories.some((category) => file.path.startsWith(`${category}/`)) && weights.test(file.path))
-  const hasImageBundle = imageCategories.every((category) => imageFiles.some((file) => file.path.startsWith(`${category}/`)))
-  const imageBundle = [...new Map([...imageFiles, ...supporting].map((file) => [file.path, file])).values()]
-  const imageLabel = `${repo.repo_id} — ComfyUI Image`
-  const imageActive = downloadOperations.some((operation) => operation.label === imageLabel && ['queued', 'running'].includes(operation.state))
-  function bundleFiles(key: string, files: HfFile[]): HfFile[] {
-    const directoryFiles = key !== 'Модель' && files.some((file) => file.path.startsWith(`${key}/`))
-      ? repo.files.filter((file) => file.path.startsWith(`${key}/`) && !auxiliary(file.path)) : files
-    return [...new Map([...directoryFiles, ...supporting, ...extras.flatMap((extra) => extraGroups.get(extra) ?? [])].map((file) => [file.path, file])).values()]
-  }
+  const [selected, setSelected] = useState<Record<string, string>>({})
+  const [commonPrecision, setCommonPrecision] = useState('')
+  const [checked, setChecked] = useState<string[]>([])
+  useEffect(() => { setSelected({}); setChecked([]); setCommonPrecision('') }, [repo.repo_id, repo.revision])
+  const files = repo.files.map((file) => ({ path: file.path, size: file.size }))
+  const components = groupModelComponents(files)
+  const precisions = hasImageVideoStructure(files) ? componentPrecisions(components) : []
+  if (!components.length) return null
+  const selection = components.filter((component) => checked.includes(component.id)).map((component) => component.variants.find((variant) => variant.id === selected[component.id]) ?? component.variants[0])
+  const selectedFiles = [...new Map(selection.flatMap((variant) => componentDownloadFiles(variant, files)).map((file) => [file.path, file])).values()]
+  const label = repo.repo_id + " — выбранные компоненты"
+  const active = downloadOperations.some((operation) => operation.label === label && ["queued", "running"].includes(operation.state))
   return <div className="mb-5 space-y-3 border-b border-border pb-4">
-    <p className="text-sm font-medium">Скачать вариант целиком</p>
-    {hasImageBundle && <div className="flex items-center justify-between gap-3 rounded-md border border-copper/60 bg-secondary px-3 py-2"><div className="min-w-0"><p className="break-all font-mono text-xs">ComfyUI Image</p><p className="mt-1 text-xs text-muted-foreground">{imageBundle.length} файлов · diffusion_models + text_encoders + vae</p></div><Button size="sm" variant="primary" disabled={imageActive} aria-busy={imageActive} onClick={() => onDownload(imageBundle.map((file) => file.path), repo, imageLabel)}><Download className={`size-3.5 ${imageActive ? 'animate-pulse' : ''}`} />{imageActive ? 'Скачивается…' : 'Скачать блок'}</Button></div>}
-    {extraGroups.size > 0 && <div className="flex flex-wrap gap-3">{[...extraGroups].map(([key, files]) => <label key={key} className="flex items-center gap-2 text-xs"><input type="checkbox" className="size-4 accent-[#c58055]" checked={extras.includes(key)} onChange={() => setExtras((current) => current.includes(key) ? current.filter((value) => value !== key) : [...current, key])} /><span>{key} · {formatBytes(files.every((file) => file.size !== null) ? files.reduce((sum, file) => sum + (file.size ?? 0), 0) : null)}</span></label>)}</div>}
-    <div className="grid gap-2">{[...groups].map(([key, files]) => {
-      const bundle = bundleFiles(key, files)
-      const size = bundle.every((file) => file.size !== null) ? bundle.reduce((sum, file) => sum + (file.size ?? 0), 0) : null
-      const label = `${repo.repo_id} — ${key}`
-      const active = downloadOperations.some((operation) => operation.label === label && ['queued', 'running'].includes(operation.state))
-      return <div key={key} className="flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2"><div className="min-w-0"><p className="break-all font-mono text-xs">{key}</p><p className="mt-1 text-xs text-muted-foreground">{bundle.length} файлов · {formatBytes(size)}</p></div><Button size="sm" variant="secondary" disabled={active} aria-busy={active} onClick={() => onDownload(bundle.map((file) => file.path), repo, label)}><Download className={`size-3.5 ${active ? 'animate-pulse' : ''}`} />{active ? 'Скачивается…' : 'Скачать'}</Button></div>
-    })}</div>
-    <p className="text-xs text-muted-foreground">Все части выбранного варианта и общие конфиги включены. Дополнительные компоненты отмечаются отдельно.</p>
+    <div className="flex flex-wrap items-center justify-between gap-3"><p className="text-sm font-medium">Компоненты модели</p><div className="flex flex-wrap items-center gap-2">{precisions.length > 1 && <Select className="w-44" variant="inline" aria-label="Квант для всех компонентов" title="Применяется к компонентам, у которых доступен выбранный вариант" value={commonPrecision} onChange={(event) => { const precision = event.target.value; setCommonPrecision(precision); if (precision) setSelected((current) => selectComponentPrecision(components, current, precision)) }}><option value="">—</option>{precisions.map((precision) => <option key={precision} value={precision}>{precision}</option>)}</Select>}<Button size="sm" variant="primary" disabled={!selection.length || selection.some((variant) => !variant.complete) || active} aria-busy={active} onClick={() => onDownload(selectedFiles.map((file) => file.path), repo, label)}><Download className="size-3.5" />{active ? "Скачивается…" : "Скачать выбранное"}{selectedFiles.length > 0 && " · " + formatBytes(componentFileSize(selectedFiles))}</Button></div></div>
+    <ModelComponentList components={components} selected={selected} onSelect={(id, variant) => { setCommonPrecision(''); setSelected((current) => ({ ...current, [id]: variant })) }} checked={checked} onCheck={(id) => setChecked((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id])} action={(component, variant) => {
+      const label = repo.repo_id + " — " + component.id + " — " + variant.precision
+      const active = downloadOperations.some((operation) => operation.label === label && ["queued", "running"].includes(operation.state))
+      return <Button size="sm" variant="secondary" disabled={active || !variant.complete} aria-busy={active} onClick={() => onDownload(componentDownloadFiles(variant, files).map((file) => file.path), repo, label)}><Download className="size-3.5" />{active ? "Скачивается…" : "Скачать"}</Button>
+    }} />
   </div>
+}
+
+function LocalModelComponents({ model }: { model: LocalModelArtifact }) {
+  const [selected, setSelected] = useState<Record<string, string>>({})
+  const files = [...(model.variants ?? []), ...(model.auxiliary_files ?? [])].map((file) => ({ path: file.path, size: file.size_bytes }))
+  const components = groupModelComponents(files)
+  if (!components.length) return null
+  return <details className="mt-3 border-t border-border pt-3"><summary className="cursor-pointer text-[11px] text-muted-foreground">Компоненты модели · {components.length}</summary><div className="mt-3"><ModelComponentList components={components} selected={selected} onSelect={(id, variant) => setSelected((current) => ({ ...current, [id]: variant }))} /></div></details>
 }
 
 function MarkdownContent({ source, repoId, revision }: { source: string; repoId: string; revision: string }) {

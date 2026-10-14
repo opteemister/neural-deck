@@ -56,7 +56,7 @@ export function LogsDrawerProvider({ children }: { children: ReactNode }) {
 
   return <LogsDrawerContext.Provider value={open}>
     {children}
-    {selection && <aside ref={panelRef} role="dialog" aria-labelledby="logs-drawer-title" style={{ width: `${widthPercent}vw`, minWidth: 'min(320px, 70vw)', maxWidth: '100vw' }} className="logs-drawer fixed bottom-0 right-0 top-16 z-50 flex flex-col border-l border-border bg-background shadow-2xl">
+    {selection && <aside ref={panelRef} role="dialog" aria-labelledby="logs-drawer-title" style={{ width: `${widthPercent}vw`, minWidth: 'min(320px, 70vw)', maxWidth: '100vw' }} className="logs-drawer fixed bottom-0 right-0 top-16 z-[60] flex flex-col border-l border-border bg-background shadow-2xl">
       <div role="separator" aria-label="Ширина панели логов" aria-orientation="vertical" aria-valuemin={Math.round(Math.min(320 / window.innerWidth * 100, 70))} aria-valuemax={100} aria-valuenow={Math.round(widthPercent)} tabIndex={0} title="Перетащите, чтобы изменить ширину" className="absolute -left-1 bottom-0 top-0 z-10 w-2 cursor-col-resize touch-none select-none hover:bg-copper/30 focus-visible:bg-copper/30 focus-visible:outline-none"
         onPointerDown={(event) => { if (event.button !== 0) return; event.preventDefault(); event.currentTarget.focus(); event.currentTarget.setPointerCapture(event.pointerId) }}
         onPointerMove={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) resizeWidth((window.innerWidth - event.clientX) / window.innerWidth * 100) }}

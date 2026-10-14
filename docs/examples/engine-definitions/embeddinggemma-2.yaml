@@ -1,0 +1,28 @@
+version: 1
+id: embeddinggemma-2-openai
+name: EmbeddingGemma 2 text/image embeddings adapter (experimental)
+types: [embeddings]
+install_script: |
+  set -eu
+  target={{target}}
+  python3 -m venv "$target"
+  "$target/bin/pip" install -r /opt/neural-deck/backend/app/serving/requirements/embeddinggemma-2.txt
+  install -m 0644 /opt/neural-deck/backend/app/serving/embeddings_openai.py "$target/embeddings_openai.py"
+  cat > "$target/bin/embeddinggemma-2-openai" <<'SCRIPT'
+  #!/bin/sh
+  exec "$(dirname "$0")/python" "$(dirname "$0")/../embeddings_openai.py" "$@"
+  SCRIPT
+  chmod 0755 "$target/bin/embeddinggemma-2-openai"
+update_script: null
+executable: "{{target}}/bin/embeddinggemma-2-openai"
+working_directory: null
+environment: {}
+command: "{{engine}} --model {{model}} --model-name {{model_name}} --host 127.0.0.1 --port 18103"
+healthcheck:
+  path: /health
+  timeout_seconds: 3
+api:
+  protocol: openai
+  base_url: http://127.0.0.1:18103/v1
+ui_url: null
+version_command: null

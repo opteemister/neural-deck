@@ -26,6 +26,7 @@ class MCPDependencies:
     list_profiles: AsyncOperation
     start_profile: AsyncOperation
     stop_instance: AsyncOperation
+    generate_image: AsyncOperation | None = None
 
 
 def _value(value: Any) -> Any:
@@ -91,7 +92,7 @@ def create_mcp_server(
     *,
     streamable_http_path: str = "/mcp",
 ) -> Any:
-    """Build a stateless ``FastMCP`` server with exactly five tools."""
+    """Build a stateless ``FastMCP`` server with management and image tools."""
 
     try:
         from mcp.server.fastmcp import FastMCP
@@ -147,6 +148,26 @@ def create_mcp_server(
     @server.tool()
     async def stop_instance(instance_id: str) -> Any:
         return await invoke(dependencies.stop_instance, instance_id)
+
+    if dependencies.generate_image is not None:
+        @server.tool()
+        async def generate_image(
+            prompt: str,
+            model: str | None = None,
+            size: str = "1024x1024",
+            seed: int | None = None,
+            steps: int = 25,
+            transparent: bool = False,
+        ) -> Any:
+            return await invoke(
+                dependencies.generate_image,
+                prompt=prompt,
+                model=model,
+                size=size,
+                seed=seed,
+                steps=steps,
+                transparent=transparent,
+            )
 
     return server
 

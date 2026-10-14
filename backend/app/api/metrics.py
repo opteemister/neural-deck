@@ -127,6 +127,15 @@ async def historical_metrics(
     ))
 
 
+@router.get("/metrics/runs")
+async def daily_metric_runs(
+    request: Request,
+    service: MetricsService = Depends(get_metrics_service),
+) -> JSONResponse:
+    items = await service.storage.daily_runs() if service.storage else []
+    return success(request, {"items": items})
+
+
 @export_router.get("/metrics", include_in_schema=False)
 async def export_metrics(service: MetricsService = Depends(get_metrics_service)) -> Response:
     return Response(service.export(), media_type="text/plain; version=0.0.4; charset=utf-8")

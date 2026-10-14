@@ -64,6 +64,18 @@ code, pre { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Consola
   body { font-size: 12px; }
 }
 
+/* Yield horizontal space to page content before its container layouts reflow. */
+.app-shell-desktop-navigation,
+.app-shell-desktop-navigation-toggle { display: none !important; }
+.app-shell-mobile-navigation-toggle { display: inline-flex !important; }
+
+@media (min-width: 1350px) {
+  .app-shell-desktop-navigation { display: flex !important; }
+  .app-shell-desktop-navigation-toggle { display: inline-flex !important; }
+  .app-shell-mobile-navigation,
+  .app-shell-mobile-navigation-toggle { display: none !important; }
+}
+
 @keyframes logs-drawer-enter {
   from { transform: translateX(100%); }
   to { transform: translateX(0); }
@@ -98,6 +110,27 @@ code, pre { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Consola
 }
 @container (min-width: 1000px) {
   .system-resources-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+
+/* Profile summaries respond to the card width, including space taken by drawers. */
+.profile-card { container-type: inline-size; }
+.profile-card-summary-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px 12px; }
+.profile-card-identity, .profile-card-metrics { min-width: 0; }
+.profile-card-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 12px; }
+
+@container (min-width: 560px) {
+  .profile-card-metrics { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+
+@container (min-width: 900px) {
+  .profile-card-summary-grid { grid-template-columns: minmax(260px, 1fr) minmax(400px, 1.35fr); align-items: center; }
+}
+
+@media (min-width: 1350px) {
+  @container (min-width: 1180px) {
+    .profile-card-summary-grid { grid-template-columns: minmax(400px, 3fr) minmax(0, 5fr); }
+    .profile-card-metrics { grid-template-columns: minmax(0, 1.4fr) minmax(0, 0.8fr) repeat(6, minmax(0, 1fr)); }
+  }
 }
 
 /* GPU visuals shrink within their columns, then yield space to the values. */

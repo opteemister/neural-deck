@@ -490,14 +490,6 @@ class RouteManager:
                 reason="identity_unverified",
                 metadata={},
             )
-        if instance.port is None:
-            return RouteCandidate(
-                **base,
-                upstream_model=None,
-                available=False,
-                reason="port_unconfirmed",
-                metadata={},
-            )
         if instance.state != "ready":
             return RouteCandidate(
                 **base,
@@ -506,18 +498,25 @@ class RouteManager:
                 reason="engine_not_ready",
                 metadata={},
             )
-        if not runtime.metadata:
+        if instance.api_protocol == "none":
             return RouteCandidate(
                 **base,
                 upstream_model=None,
                 available=False,
-                reason="model_metadata_unavailable",
+                reason="api_disabled",
                 metadata={},
             )
         if profile.model_name in runtime.metadata:
             upstream = profile.model_name
         elif len(runtime.metadata) == 1:
             upstream = next(iter(runtime.metadata))
+        elif instance.api_protocol == "jev":
+            upstream = None
+        elif not runtime.metadata and "text" not in instance.types and instance.model_name:
+            # Decision and media-serving APIs need not expose OpenAI's
+            # /models catalogue. The process identity/profile supplies the
+            # public-to-upstream selection in that case.
+            upstream = instance.model_name
         else:
             return RouteCandidate(
                 **base,
@@ -531,7 +530,7 @@ class RouteManager:
             upstream_model=upstream,
             available=True,
             reason=None,
-            metadata=runtime.metadata[upstream],
+            metadata=runtime.metadata.get(upstream, {}) if upstream is not None else {},
         )
 
 

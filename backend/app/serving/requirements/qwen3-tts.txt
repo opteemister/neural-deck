@@ -1,0 +1,6 @@
+qwen-tts==0.1.1
+fastapi==0.143.0
+uvicorn==0.54.0
+soundfile==0.14.0
+# qwen-tts 0.1.1 pins transformers==4.57.3 and accelerate==1.12.0.
+# Select a matching torch/torchaudio build for the target GPU before installation.

@@ -34,6 +34,7 @@
 | FreeToken | `freetoken.sh` | Python 3.12 venv и установка `freetoken[accel]` |
 | llama.cpp | `llama.cpp.sh` | Git checkout, CUDA-сборка сервера для `86;120`, установка бинарника |
 | NInfer | `ninfer.sh` | Git checkout, Ninja/CMake CUDA-сборка для `120a`, symlink на сервер в дереве сборки |
+| ComfyUI | `image.sh` | Python 3.13 venv, checkout ComfyUI и установка его зависимостей |
 
 Для Python-движков также есть отдельные `*.update.sh` для кнопки обновления.
 
@@ -49,6 +50,24 @@ Backend передаёт шаблоны и корень venv вместе с к�
 Frontend локально подставляет пути, экранируя их для Bash.
 `{{target}}` — папка venv либо путь бинарника, `{{python}}` — Python venv,
 `{{source}}` — каталог исходников, `{{target_dir}}` — родитель бинарника.
+В команде запуска ComfyUI `{{engine}}` обозначает wrapper выбранной установки,
+а `{{model}}` — каталог моделей. Адрес и порт задаются вручную в команде.
+Установка и обновление движков сохраняют управляемые uv интерпретаторы в
+`runtime/uv-python` внутри постоянного каталога данных.
+
+## Профили ComfyUI и модели
+
+Для image-профиля в поле модели выбирается каталог, содержащий хотя бы по
+одному файлу в `diffusion_models`, `text_encoders` и
+`vae`. В интерфейсе такой каталог помечается как Image. Загрузка с
+Hugging Face предлагает эти каталоги одним блоком, чтобы workflow получил
+согласованный diffusion model, text encoder и VAE.
+
+Профиль запускает ComfyUI со штатной базовой папкой исходников и
+`--models-directory` выбранного блока моделей. Параметр `--base-directory`
+в шаблон не добавляется; структуру исходников обновляет сама установка. Workflow для первой вертикали использует официальный набор узлов
+Qwen Image 2.1; отдельные workflow-файлы сохраняются в runtime профиля и
+могут быть заменены в следующем этапе.
 
 ## Работа формы
 
@@ -119,6 +138,9 @@ NInfer использует существующий checkout без автом�
 - [vLLM NVIDIA installation](https://docs.vllm.ai/en/latest/getting_started/installation/gpu/).
 - [SGLang installation](https://github.com/sgl-project/sglang/blob/main/docs/docs/get-started/install.mdx).
 - [FreeToken CLI installation](https://github.com/FlashML-org/FreeToken/blob/main/README.md).
+- [ComfyUI CLI arguments](https://github.com/Comfy-Org/ComfyUI/blob/master/comfy/cli_args.py).
+- [ComfyUI API and WebSocket example](https://github.com/comfyanonymous/ComfyUI/blob/master/script_examples/websockets_api_example.py).
+- [Official Qwen Image 2.1 workflow template](https://github.com/Comfy-Org/workflow_templates/blob/main/templates/image_qwen_image_2_1_t2i.json).
 
 Команды собираются и выполняются только по запросу пользователя через UI;
 проверка реальной сборки/GPU выполняется на целевой машине.

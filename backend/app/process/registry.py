@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from ..schemas.instances import Instance
@@ -17,6 +17,10 @@ class RegisteredModel:
     profile_name: str | None
     profile_id: str | None
     observed_at: datetime
+    types: list[str] = field(default_factory=list)
+    api_protocol: str = "none"
+    api_base_url: str | None = None
+    ui_url: str | None = None
 
 
 class ModelRegistry:
@@ -39,6 +43,8 @@ class ModelRegistry:
         self, instance: Instance, *, upstream_models: list[str] | None = None
     ) -> list[RegisteredModel]:
         self.clear_instance(instance.id)
+        if instance.state != "ready" or instance.api_protocol == "none":
+            return []
         models = upstream_models or ([instance.model_name] if instance.model_name else [])
         result: list[RegisteredModel] = []
         for upstream in models:
@@ -55,6 +61,10 @@ class ModelRegistry:
                 profile_name=instance.profile_name,
                 profile_id=instance.profile_id,
                 observed_at=datetime.now(UTC),
+                types=list(instance.types),
+                api_protocol=instance.api_protocol,
+                api_base_url=instance.api_base_url,
+                ui_url=instance.ui_url,
             )
             self._models[public_name] = item
             result.append(item)

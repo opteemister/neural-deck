@@ -16,6 +16,7 @@ InstanceState = Literal[
     "error",
     "unknown",
 ]
+ApiProtocol = Literal["none", "openai", "comfyui", "jev"]
 MetricState = Literal["ok", "unavailable", "stale"]
 
 
@@ -33,6 +34,11 @@ class Instance(BaseModel):
     can_stop: bool = False
     port: int | None = Field(default=None, ge=1, le=65535)
     model_name: str | None = None
+    types: list[str] = Field(default_factory=list)
+    api_protocol: ApiProtocol = "none"
+    api_base_url: str | None = None
+    ui_url: str | None = None
+    model_paths_restart_required: bool = False
     state: InstanceState
     observed_at: datetime
 

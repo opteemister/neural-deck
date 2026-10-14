@@ -42,6 +42,13 @@ def operation_id() -> str:
     return f"op_{uuid4().hex}"
 
 
+def _limit_error(message: str) -> str:
+    """Keep context and the final cause instead of cutting off traceback tails."""
+    if len(message) <= 2000:
+        return message
+    return message[:1000] + "\n… [середина сообщения сокращена] …\n" + message[-1000:]
+
+
 class OperationManager:
     """Track background operations and serialise operations per target."""
 
@@ -187,7 +194,7 @@ class OperationManager:
                 operation["exit_code"] = -1
             except Exception as exc:  # noqa: BLE001 - operation boundary
                 operation["state"] = "failed"
-                operation["error"] = str(exc)[:2000]
+                operation["error"] = _limit_error(str(exc))
                 operation["exit_code"] = operation.get("exit_code") or 1
             finally:
                 operation["finished_at"] = utc_now()
@@ -208,11 +215,11 @@ class OperationManager:
                     except OSError as exc:
                         diagnostic = f"Не удалось сохранить лог операции: {exc}"
                         operation["state"] = "failed"
-                        operation["error"] = (
+                        operation["error"] = _limit_error(
                             f"{operation['error']}; {diagnostic}"
                             if operation.get("error")
                             else diagnostic
-                        )[:2000]
+                        )
                         operation["exit_code"] = operation.get("exit_code") or 1
                 self._streamed.discard(operation['id'])
                 _CURRENT_PROCESSES.reset(process_token)

@@ -9,4 +9,5 @@ LAUNCH_TEMPLATES = {
     "sglang": "{{engine}} serve --model-path {{model}} --served-model-name {{model_name}} --enable-metrics --host 127.0.0.1 --port 8000",
     "ninfer": "{{engine}} {{model}} --model-id {{model_name}} --host 127.0.0.1 --port 8000",
     "freetoken": "{{engine}} serve --model {{model}} --served-model-name {{model_name}} --host 127.0.0.1 --port 8000",
+    "image": "{{engine}} --listen 127.0.0.1 --port 8188 --models-directory {{model}} --disable-auto-launch",
 }

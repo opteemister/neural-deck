@@ -1,0 +1,24 @@
+version: 1
+id: strands-decider-2b-jev
+name: Strands Decider 2B via Jev (experimental)
+types: [decision]
+install_script: |
+  set -eu
+  target={{target}}
+  python3.12 -m venv "$target"
+  "$target/bin/python" -m pip install --upgrade pip
+  "$target/bin/python" -m pip install "strands-decider[cuda] @ git+https://github.com/strands-labs/strands-decider"
+  "$target/bin/python" -m pip install causal-conv1d --no-build-isolation
+update_script: null
+executable: bin/strands-decider
+working_directory: null
+environment: {}
+command: "{{engine}} serve {{model}} --device cuda --port 8000"
+healthcheck:
+  path: /health
+  timeout_seconds: 5
+api:
+  protocol: jev
+  base_url: http://127.0.0.1:8000
+ui_url: null
+version_command: null

@@ -98,6 +98,7 @@ class LocalModel(BaseModel):
     id: str = Field(min_length=1)
     path: Path
     kind: Literal["file", "directory"]
+    model_kind: Literal["llm", "image", "unknown"] = "unknown"
     format: str
     compatibility: str
     vendor: str = ""

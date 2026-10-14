@@ -1,5 +1,7 @@
 set -euo pipefail
-if [ -f {{target}} ]; then
+target_root={{target}}
+if [[ "$target_root" == */llama-server ]]; then executable="$target_root"; else executable="$target_root/bin/llama-server"; fi
+if [ -f "$executable" ]; then
   echo 'Бинарник уже существует; сборка пропущена. Приложение проверит и зарегистрирует его.'
   exit 0
 fi
@@ -79,4 +81,4 @@ cmake -S "$source_dir" -B "$source_dir/build" \
   -DBUILD_SHARED_LIBS=OFF \
   -DLLAMA_BUILD_SERVER=ON
 cmake --build "$source_dir/build" --config Release --target llama-server --parallel "$(nproc)"
-install -D -m 0755 "$source_dir/build/bin/llama-server" {{target}}
+install -D -m 0755 "$source_dir/build/bin/llama-server" "$executable"

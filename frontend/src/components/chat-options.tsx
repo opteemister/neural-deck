@@ -13,8 +13,13 @@ export function ChatOptions({ models, model, reasoning, onModel, onReasoning, di
   const rootRef = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
   const id = useId()
-  const choices = reasoningChoices(models.find((item) => item.id === model))
+  const textModels = models.filter((item) => item.types?.includes('text') ?? true)
+  const choices = reasoningChoices(textModels.find((item) => item.id === model))
   const label = choices.all.find((option) => option.value === reasoning)?.label ?? 'Авто'
+
+  useEffect(() => {
+    if (textModels.length > 0 && !textModels.some((item) => item.id === model)) onModel(textModels[0].id)
+  }, [model, onModel, textModels])
 
   useEffect(() => {
     if (!open) return
@@ -42,12 +47,12 @@ export function ChatOptions({ models, model, reasoning, onModel, onReasoning, di
       <fieldset disabled={disabled}>
         <legend className="mb-2 px-2 text-[11px] font-medium text-muted-foreground">Модель</legend>
         <div className="max-h-48 space-y-1 overflow-y-auto">
-          {models.map((item) => <label key={item.id} className={`relative flex cursor-pointer items-center gap-3 rounded-xl px-3 py-2.5 text-xs transition-colors hover:bg-accent focus-within:ring-1 focus-within:ring-inset focus-within:ring-copper ${item.id === model ? 'bg-accent text-foreground' : 'text-muted-foreground'}`}>
+          {textModels.map((item) => <label key={item.id} className={`relative flex cursor-pointer items-center gap-3 rounded-xl px-3 py-2.5 text-xs transition-colors hover:bg-accent focus-within:ring-1 focus-within:ring-inset focus-within:ring-copper ${item.id === model ? 'bg-accent text-foreground' : 'text-muted-foreground'}`}>
             <input type="radio" name={`${id}-model`} value={item.id} checked={item.id === model} onChange={() => onModel(item.id)} className="sr-only" />
             <span className="min-w-0 flex-1 break-words">{item.id}</span>
             {item.id === model && <Check className="size-3.5 shrink-0 text-copper" />}
           </label>)}
-          {!models.length && <p className="px-2 py-3 text-xs text-muted-foreground">{loading ? 'Загружаем модели…' : error ? 'Не удалось загрузить модели' : 'Нет доступных моделей'}</p>}
+          {!textModels.length && <p className="px-2 py-3 text-xs text-muted-foreground">{loading ? 'Загружаем модели…' : error ? 'Не удалось загрузить модели' : 'Нет доступных текстовых моделей'}</p>}
         </div>
       </fieldset>
       <fieldset disabled={disabled || !model} className="mt-3 border-t border-border pt-3">

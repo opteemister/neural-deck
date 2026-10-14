@@ -24,6 +24,8 @@ from ..process.manager import ProcessManager
 from ..process.registry import ModelRegistry
 from ..schemas.common import SuccessEnvelope
 from ..schemas.engines import (
+    EngineDefinition,
+    EngineDefinitionList,
     EngineList,
     InstallationCreate,
     InstallationList,
@@ -252,6 +254,51 @@ async def scan_engines(
 ) -> JSONResponse:
     result = await asyncio.to_thread(service.scan)
     return success(request, {"items": result.engines})
+
+
+@router.get("/engines/definitions", response_model=SuccessEnvelope[EngineDefinitionList])
+async def engine_definitions(
+    request: Request, service: EngineService = Depends(get_engine_service)
+) -> JSONResponse:
+    return success(request, service.list_definitions())
+
+
+@router.post(
+    "/engines/definitions",
+    response_model=SuccessEnvelope[EngineDefinition],
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_engine_definition(
+    request: Request,
+    payload: EngineDefinition,
+    service: EngineService = Depends(get_engine_service),
+) -> JSONResponse:
+    return success(request, service.create_definition(payload), status_code=status.HTTP_201_CREATED)
+
+
+@router.get("/engines/definitions/{engine_id}", response_model=SuccessEnvelope[EngineDefinition])
+async def engine_definition(
+    request: Request, engine_id: str, service: EngineService = Depends(get_engine_service)
+) -> JSONResponse:
+    return success(request, service.get_definition(engine_id))
+
+
+@router.put("/engines/definitions/{engine_id}", response_model=SuccessEnvelope[EngineDefinition])
+async def update_engine_definition(
+    request: Request,
+    engine_id: str,
+    payload: EngineDefinition,
+    service: EngineService = Depends(get_engine_service),
+) -> JSONResponse:
+    return success(request, service.update_definition(engine_id, payload))
+
+
+@router.delete("/engines/definitions/{engine_id}")
+async def delete_engine_definition(
+    request: Request, engine_id: str, service: EngineService = Depends(get_engine_service)
+) -> JSONResponse:
+    service.delete_definition(engine_id)
+    return success(request, {"id": engine_id})
 
 
 @router.get("/engines/{engine_id}", response_model=SuccessEnvelope[object])

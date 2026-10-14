@@ -11,6 +11,7 @@ from typing import Any
 from uuid import uuid4
 
 from ..errors import AppError
+from ..image.workflow import validate_model_directory
 from ..schemas.profiles import FormatScriptResult, ProfileData, ProfileListData
 from .formatting import enable_command_metrics, format_script, substitute_placeholders
 from .repository import ProfileRepository
@@ -75,12 +76,33 @@ class ProfileService:
     async def preview_configuration(self, profile: ProfileData) -> dict[str, str]:
         """Render the launch command without starting a process or changing YAML."""
         profile, engine_path = await self._prepare_configuration(profile)
+        resolver = getattr(self.process_manager, "profile_resolver", None)
+        resolved = (
+            await asyncio.to_thread(resolver, profile)
+            if resolver is not None else None
+        )
+        protocol = (
+            resolved.api_protocol if resolved is not None
+            else "comfyui" if profile.engine.id in {"image", "comfyui"}
+            else None
+        )
+        model_path = resolved.model_path if resolved is not None else (
+            profile.model.path if profile.model is not None else None
+        )
         return {"command": substitute_placeholders(
-            profile.command,
-            engine=engine_path,
-            model=str(profile.model.path),
-            model_name=profile.model_name,
-            model_draft=str(profile.model.draft_path) if profile.model.draft_path else None,
+            resolved.command if resolved is not None else profile.command,
+            engine=str(resolved.executable_path) if resolved is not None else str(engine_path),
+            model=str(model_path) if model_path is not None else None,
+            model_name=resolved.model_name if resolved is not None else profile.model_name,
+            model_draft=str(profile.model.draft_path) if profile.model and profile.model.draft_path else None,
+            port=profile.port or (8188 if protocol == "comfyui" else None),
+            target=(str(resolved.installation.root_path) if resolved is not None else None),
+            models_root=(
+                str(self.process_manager.models_root)
+                if self.process_manager.models_root is not None
+                else None
+            ),
+            extra_model_paths_config=str(self.process_manager.extra_model_paths_config),
         )}
 
     async def _prepare_configuration(self, profile: ProfileData) -> tuple[ProfileData, str]:
@@ -110,6 +132,8 @@ class ProfileService:
                 status_code=409,
                 details={"installation_id": profile.engine.installation_id},
             )
+        if profile.engine.id in {"image", "comfyui"} and profile.model is not None:
+            validate_model_directory(profile.model.path)
         profile = profile.model_copy(
             update={
                 "command": enable_command_metrics(

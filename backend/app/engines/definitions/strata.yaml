@@ -1,0 +1,19 @@
+version: 1
+id: strata
+name: Strata
+types: [text]
+install_script_file: strata.sh
+update_script_file: strata.update.sh
+executable: "{{target}}/setup.sh"
+working_directory: "{{target}}"
+environment: {}
+command: |
+  models_root={{models_root}}
+  {{engine}} --family qwen --model IQ2_XS --context 32768 --vision no --data-dir "${models_root}/strata" --yes --no-browser --host 127.0.0.1 --port 8190
+healthcheck:
+  path: /health
+  timeout_seconds: 3
+api:
+  protocol: openai
+  base_url: http://127.0.0.1:8190/v1
+ui_url: http://127.0.0.1:8190

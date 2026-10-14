@@ -1,0 +1,8 @@
+# Choose/install the PyTorch wheel that matches this machine before deployment.
+torch
+transformers==5.19.0
+accelerate
+librosa
+fastapi==0.143.0
+uvicorn==0.54.0
+python-multipart==0.0.32

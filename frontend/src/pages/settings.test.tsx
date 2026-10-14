@@ -24,7 +24,7 @@ describe('Settings workflow', () => {
     fireEvent.change(input, { target: { value: '/models/new' } })
     fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }))
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/v1/settings', expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ models_root: '/models/new' }) })))
-    expect(await screen.findByText('Сохранено')).toBeInTheDocument()
+    expect(await screen.findByRole('status')).toHaveTextContent('Настройки сохранены')
     expect(screen.getByTestId('location-state')).toHaveTextContent('?tab=paths')
   })
 

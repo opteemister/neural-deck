@@ -36,9 +36,12 @@ services:
       # The entrypoint rejects runtime paths outside these actual persistent
       # mount targets before it starts any application process.
       NEURAL_DECK_PERSISTENT_ROOTS: /var/lib/neural-deck:/var/log/neural-deck
+      # Keep uv-managed interpreters in the persistent data mount.
+      UV_PYTHON_INSTALL_DIR: /var/lib/neural-deck/runtime/uv-python
     ports:
       - "127.0.0.1:3000:3000"
       - "127.0.0.1:8080:8080"
+      - "127.0.0.1:8188:8188"
     volumes:
       # Only live source folders are overlaid. Dependencies and the initial
       # frontend build are part of the image and never come from macOS.

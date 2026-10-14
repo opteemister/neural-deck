@@ -7,23 +7,15 @@ import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import and_, case, delete, func, or_, select, text
+from sqlalchemy import and_, delete, func, or_, select, text
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ..schemas.instances import Instance, Metric, MetricList
+from .aggregation import WindowSummary, utc
 from .archive import archive_before_cleanup, historical_statistics, load_and_fold
 from .entities import MetricDaily, MetricLaunchExtrema, MetricSample, ProfileStatistics
 from .performance import FIELDS, UNITS
-
-AGGREGATE_FIELDS = (
-    "prefill_tps", "decode_tps", "active_requests", "vram_bytes", "ttft_mean_ms",
-    "prefix_cache_hit_percent", "spec_acceptance_percent", "kv_cache_percent", "queue_requests",
-)
-
-
-def utc(value: datetime) -> datetime:
-    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
 def sample_data(row: MetricSample) -> dict[str, Any]:
@@ -287,7 +279,8 @@ class MetricsStorage:
         active_seconds = 0.0
         load_known = True
         for (day, _, _, _), item in daily.items():
-            if not utc(start).date().isoformat() <= day <= (utc(end) - timedelta(microseconds=1)).date().isoformat():
+            last_day = (utc(end) - timedelta(microseconds=1)).date().isoformat()
+            if not utc(start).date().isoformat() <= day <= last_day:
                 continue
             stats = item["statistics"]
             for field in ("prefill_tps", "decode_tps"):
@@ -303,8 +296,14 @@ class MetricsStorage:
                 # Old rollups have peaks, but no observed concurrency durations.
                 load_known = False
         return {
-            "prefill_tps": combined["prefill_tps"]["sum"] / combined["prefill_tps"]["weight"] if "prefill_tps" in combined else None,
-            "decode_tps": combined["decode_tps"]["sum"] / combined["decode_tps"]["weight"] if "decode_tps" in combined else None,
+            "prefill_tps": (
+                combined["prefill_tps"]["sum"] / combined["prefill_tps"]["weight"]
+                if "prefill_tps" in combined else None
+            ),
+            "decode_tps": (
+                combined["decode_tps"]["sum"] / combined["decode_tps"]["weight"]
+                if "decode_tps" in combined else None
+            ),
             "active_seconds": active_seconds,
             "load_known": load_known,
         }
@@ -313,68 +312,42 @@ class MetricsStorage:
         self, *, start: datetime, end: datetime, profile_name: str | None = None,
         profile_id: str | None = None, pid: int | None = None, all_profiles: bool = False,
     ) -> dict[str, dict[str, float]]:
-        """Aggregate the entire window in SQL, deduplicating retained measurements."""
-        result = {}
+        """Use shared window rules and stream SQLite snapshots."""
+        summary = WindowSummary(start, end, all_profiles)
+        query = select(MetricSample).where(
+            MetricSample.observed_at >= start, MetricSample.observed_at <= end,
+        ).order_by(MetricSample.observed_at, MetricSample.id)
+        if profile_name is not None and profile_id is None:
+            query = query.where(MetricSample.profile_name == profile_name)
+        if profile_id is not None:
+            query = query.where(or_(
+                MetricSample.profile_id == profile_id,
+                and_(MetricSample.profile_id.is_(None), MetricSample.profile_name == profile_name),
+            ))
+        if pid is not None:
+            query = query.where(MetricSample.pid == pid)
         async with self.sessions() as session:
-            for name in AGGREGATE_FIELDS:
-                value = getattr(MetricSample, name)
-                observed = func.coalesce(
-                    func.json_extract(MetricSample.metric_meta, f"$.{name}.observed_at"),
-                    MetricSample.observed_at,
-                )
-                weight_key = "count" if name == "ttft_mean_ms" else "denominator"
-                native_weight = func.json_extract(
-                    MetricSample.metric_meta, f"$.{name}.metadata.{weight_key}"
-                )
-                weight = case((native_weight > 0, native_weight), else_=1.0)
-                query = select(
-                    func.max(value).label("value"), func.max(weight).label("weight"),
-                    observed.label("at"),
-                ).where(
-                    MetricSample.observed_at >= start, MetricSample.observed_at <= end,
-                    func.julianday(observed) >= func.julianday(start),
-                    func.julianday(observed) <= func.julianday(end), value > 0,
-                    func.json_extract(MetricSample.metric_meta, f"$.{name}.state") == "ok",
-                )
-                if profile_name is not None and profile_id is None:
-                    query = query.where(MetricSample.profile_name == profile_name)
-                if profile_id is not None:
-                    query = query.where(or_(
-                        MetricSample.profile_id == profile_id,
-                        and_(MetricSample.profile_id.is_(None), MetricSample.profile_name == profile_name),
-                    ))
-                if pid is not None:
-                    query = query.where(MetricSample.pid == pid)
-                samples = query.group_by(
-                    MetricSample.profile_name, MetricSample.pid, observed
-                ).subquery()
-                if all_profiles:
-                    # Align the five-second snapshots before summing concurrent rates.
-                    combined = (
-                        func.sum(samples.c.value)
-                        if name in {
-                            "prefill_tps", "decode_tps", "active_requests", "queue_requests"
-                        }
-                        else func.max(samples.c.value) if name == "kv_cache_percent"
-                        else func.sum(samples.c.value * samples.c.weight)
-                        / func.sum(samples.c.weight)
-                    )
-                    samples = select(
-                        combined.label("value"), func.sum(samples.c.weight).label("weight")
-                        if name in {
-                            "ttft_mean_ms", "prefix_cache_hit_percent", "spec_acceptance_percent"
-                        }
-                        else func.max(1.0).label("weight"),
-                    ).group_by(
-                        func.floor(func.strftime("%s", samples.c.at) / 5.0)
-                    ).subquery()
-                row = (await session.execute(select(
-                    func.max(samples.c.value),
-                    func.sum(samples.c.value * samples.c.weight) / func.sum(samples.c.weight),
-                ))).one()
-                if row[0] is not None:
-                    result[name] = {"max": float(row[0]), "avg": float(row[1])}
-        return result
+            rows = await session.stream_scalars(query.execution_options(yield_per=256))
+            async for row in rows:
+                summary.add(sample_data(row))
+        return summary.result()
+
+    async def daily_runs(self) -> list[dict[str, str | None]]:
+        """List today's metric owners without loading samples or folding archives."""
+        now = datetime.now(UTC)
+        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        query = select(
+            MetricSample.profile_name, MetricSample.model_name, MetricSample.engine_id,
+        ).where(
+            MetricSample.observed_at >= start,
+            MetricSample.observed_at <= now,
+            MetricSample.profile_name.is_not(None),
+            (MetricSample.decode_tps.is_not(None) | MetricSample.prefill_tps.is_not(None)),
+        ).distinct()
+        async with self.sessions() as session:
+            rows = (await session.execute(query)).all()
+        return [{"profile_name": profile, "model_name": model, "engine_id": engine}
+                for profile, model, engine in rows]
 
     async def cleanup(self, active: set[tuple[str, int]]) -> None:
         cutoff = datetime.now(UTC) - timedelta(hours=24)

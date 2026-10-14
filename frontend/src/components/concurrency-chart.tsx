@@ -17,11 +17,12 @@ export interface ConcurrencyPoint {
   seconds: number
 }
 
-export function ConcurrencyChart({ instance }: { instance?: Instance }) {
+export function ConcurrencyChart({ instance, profileName }: { instance?: Instance; profileName?: string }) {
+  const selectedProfile = profileName ?? instance?.profile_name ?? undefined
   const query = useQuery({
-    queryKey: ['metric-concurrency', instance?.profile_id ?? instance?.profile_name ?? 'all'],
-    queryFn: () => api.getMetricConcurrency(instance?.profile_name ?? undefined, instance?.profile_id ?? undefined),
-    enabled: !instance || Boolean(instance.profile_name),
+    queryKey: ['metric-concurrency', instance?.profile_id ?? selectedProfile ?? 'all'],
+    queryFn: () => api.getMetricConcurrency(selectedProfile, instance?.profile_id ?? undefined),
+    enabled: !instance || Boolean(selectedProfile),
     refetchInterval: 30_000, refetchIntervalInBackground: false, retry: false,
   })
   const groups = new Map<string, ConcurrencyPoint[]>()

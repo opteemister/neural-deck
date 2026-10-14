@@ -18,7 +18,10 @@ type ScalarStat = {
   unit: string
   detail: string
   hint: string
+  live?: boolean
 }
+
+const liveMetricNames = new Set(['prefill_tps', 'decode_tps', 'active_requests', 'queue_requests'])
 
 function pointFrom(items: Metric[], at: number): Point {
   const metrics = new Map(items.map((item) => [item.name, item]))
@@ -36,22 +39,27 @@ function numeric(item: Metric | undefined): number | null {
   return item?.state === 'ok' && typeof item.value === 'number' && Number.isFinite(item.value) ? item.value : null
 }
 
-export function ModelPerformance({ instance, data }: { instance?: Instance; data?: MetricsData }) {
-  const historyKey = instance?.profile_name ?? instance?.id ?? 'all'
+export function ModelPerformance({ instance, profileName, data, live }: { instance?: Instance; profileName?: string; data?: MetricsData; live?: boolean }) {
+  const selectedProfile = profileName ?? instance?.profile_name ?? undefined
+  const historyKey = selectedProfile ?? instance?.id ?? 'all'
   const bootstrap = useQuery({ queryKey: ['metrics-bootstrap', historyKey],
-    queryFn: () => api.getMetricsHistory(instance?.profile_name ? { profile_name: instance.profile_name } : instance ? { pid: instance.pid } : { scope: 'all' }),
+    queryFn: () => api.getMetricsHistory(selectedProfile ? { profile_name: selectedProfile } : instance ? { pid: instance.pid } : { scope: 'all' }),
     staleTime: Infinity, refetchOnWindowFocus: false, retry: false })
   const [histories, setHistories] = useState<Record<string, Point[]>>({})
-  const averages = useDailyMetricAggregates(historyKey, instance?.profile_name ? { profile_name: instance.profile_name } : instance ? { pid: instance.pid } : { scope: 'all' })
+  const averages = useDailyMetricAggregates(historyKey, selectedProfile ? { profile_name: selectedProfile } : instance ? { pid: instance.pid } : { scope: 'all' })
   const [knownMetrics, setKnownMetrics] = useState<Record<string, Map<string, Metric>>>({})
   const history = histories[historyKey] ?? []
   const currentItems = new Map(data?.items.map((item) => [item.name, item]))
+  const hasLiveSnapshot = Boolean((live ?? Boolean(instance)) && data)
   const items = new Map(knownMetrics[historyKey])
   for (const item of currentItems.values()) {
     if (numeric(item) !== null) items.set(item.name, item)
   }
-  const value = (name: string) => numeric(items.get(name))
+  const value = (name: string) => liveMetricNames.has(name) && hasLiveSnapshot
+    ? numeric(currentItems.get(name)) ?? 0
+    : numeric(items.get(name))
   const measurementNote = (name: string) => {
+    if (liveMetricNames.has(name) && hasLiveSnapshot) return ''
     const item = items.get(name)
     if (!item || (name !== 'ttft_mean_ms' && numeric(currentItems.get(name)) !== null)) return ''
     return `${currentItems.get(name)?.state === 'stale' ? 'Данные устарели · ' : ''}Последнее измерение: ${new Date(item.observed_at).toLocaleTimeString([], { timeZone: 'UTC' })} UTC`
@@ -120,19 +128,19 @@ export function ModelPerformance({ instance, data }: { instance?: Instance; data
   // A completed-request histogram cannot tell us the age of currently waiting requests.
   const queueAge = queue === 0 ? 0 : numeric(currentItems.get('queue_wait_max_ms'))
   const stats: ScalarStat[] = [
-    { name: 'Prefill', field: 'prefill_tps', number: value('prefill_tps'), unit: 'tok/s', detail: extrema('prefill'), hint: 'Скорость обработки входных токенов.' },
-    { name: 'Decode / req', field: 'decode_per_request', metricField: 'decode_tps', number: decodePerRequest, unit: 'tok/s', detail: `${format(decode)} total · ${format(requests)} reqs`, hint: 'Скорость генерации выходных токенов в пересчёте на один активный запрос.' },
+    { name: 'Prefill', field: 'prefill_tps', number: value('prefill_tps'), unit: 'tok/s', detail: extrema('prefill'), hint: 'Скорость обработки входных токенов.', live: true },
+    { name: 'Decode / req', field: 'decode_per_request', metricField: 'decode_tps', number: decodePerRequest, unit: 'tok/s', detail: `${format(decode)} total · ${format(requests)} reqs`, hint: 'Скорость генерации выходных токенов в пересчёте на один активный запрос.', live: true },
     { name: 'TTFT', field: 'ttft_mean_ms', number: mean('ttft_mean_ms'), unit: 'ms', detail: extrema('ttft'), hint: 'Avg времени до первого токена за последние 24 часа. Взвешено по числу запросов, если оно доступно.' },
-    { name: 'Requests', field: 'active_requests', number: value('active_requests'), unit: 'live', detail: extrema('requests'), hint: 'Количество запросов, обрабатываемых сейчас.' },
+    { name: 'Requests', field: 'active_requests', number: value('active_requests'), unit: 'live', detail: extrema('requests'), hint: 'Количество запросов, обрабатываемых сейчас.', live: true },
     { name: 'KV Hit', field: 'prefix_cache_hit_percent', number: value('prefix_cache_hit_percent'), unit: '%', detail: `avg ${format(cacheMean)}${cacheMean === null ? '' : '%'}`, hint: 'Попадание входных токенов в prefix cache. В подписи — avg за последние 24 часа.' },
     { name: 'KV cache', field: 'kv_cache_percent', number: value('kv_cache_percent'), unit: '%', detail: '', hint: 'Занятая доля KV cache. Для всех запусков показывается максимальная занятость.' },
-    { name: 'Decode', field: 'decode_tps', number: decode, unit: 'tok/s', detail: extrema('decode'), hint: 'Общая скорость генерации выходных токенов.' },
+    { name: 'Decode', field: 'decode_tps', number: decode, unit: 'tok/s', detail: extrema('decode'), hint: 'Общая скорость генерации выходных токенов.', live: true },
     { name: 'Served', field: 'completed_requests', number: value('completed_requests'), unit: 'reqs', detail: 'За этот запуск', hint: 'Количество завершённых запросов с начала запуска.' },
-    { name: 'Queue', field: 'queue_requests', number: queue, unit: 'waiting', detail: `ожидание ${format(queueAge)}${queueAge === null ? '' : ' ms'}`, hint: 'Количество запросов в очереди. В подписи — максимальное текущее ожидание. Если движок не предоставляет его, показывается прочерк.' },
+    { name: 'Queue', field: 'queue_requests', number: queue, unit: 'waiting', detail: `ожидание ${format(queueAge)}${queueAge === null ? '' : ' ms'}`, hint: 'Количество запросов в очереди. В подписи — максимальное текущее ожидание. Если движок не предоставляет его, показывается прочерк.', live: true },
     { name: 'Draft Acceptance', field: 'spec_acceptance_percent', number: value('spec_acceptance_percent'), unit: '%', detail: `avg ${format(mean('spec_acceptance_percent'))}${mean('spec_acceptance_percent') === null ? '' : '%'}`, hint: 'Доля принятых draft-токенов. Avg за последние 24 часа, с весами по предложенным токенам, если доступны.' },
   ]
   const renderStat = (stat: ScalarStat) => <div key={stat.name} className="min-w-0" data-metric={stat.field} title={[stat.hint, 'Max и avg за последние 24 часа.', measurementNote(stat.metricField ?? stat.field)].filter(Boolean).join(' ')}>
-    <p className="text-xs text-muted-foreground">{stat.name}</p>
+    <p aria-label={stat.live ? `${stat.name}, live` : undefined} className={`text-xs text-muted-foreground ${stat.live ? "after:ml-1.5 after:rounded-sm after:border after:border-border after:px-1 after:py-px after:text-[8px] after:font-medium after:tracking-[0.1em] after:text-muted-foreground after:content-['LIVE']" : ''}`}>{stat.name}</p>
     <p className="mt-1 whitespace-nowrap text-xl font-medium tabular-nums">{stat.field === 'ttft_mean_ms' ? duration(stat.number).text : stat.field === 'prefill_tps' || stat.field === 'decode_per_request' ? stat.number === null ? '—' : plain.format(stat.number) : format(stat.number)}{stat.number !== null && <span className="ml-1 text-[11px] font-normal text-muted-foreground">{stat.field === 'ttft_mean_ms' ? duration(stat.number).unit : stat.unit}</span>}</p>
     {stat.field === 'kv_cache_percent' && stat.number !== null && <div className="mt-1 flex h-4 items-center"><Progress value={stat.number} /></div>}
     {stat.detail && <p className="mt-1 min-h-4 text-[10px] text-muted-foreground">{stat.detail}</p>}
@@ -140,13 +148,13 @@ export function ModelPerformance({ instance, data }: { instance?: Instance; data
   return <div className="model-performance-layout">
     <div className="model-performance-top">
       <div className="model-performance-stat-grid">{stats.map(renderStat)}</div>
-      {instance && <div className="model-performance-parallel"><ConcurrencyChart instance={instance} /></div>}
+      {(instance || selectedProfile) && <div className="model-performance-parallel"><ConcurrencyChart instance={instance} profileName={selectedProfile} /></div>}
     </div>
     <div className="model-performance-charts border-t border-border pt-4">
       <Chart title="Prefill" unit="tok/s" subtitle={extrema('prefill')} points={history} series={[{ key: 'prefill', label: 'Prefill', color: '#cf9a78' }]} />
       <Chart title="Generation" unit="tok/s" subtitle={`total ${extrema('decode')} · per req ${seriesSummary('perRequest')}`} points={history} series={[{ key: 'decode', label: 'Generation', color: '#cf9a78' }, { key: 'perRequest', label: 'Per request', color: '#e9e5dc', independent: true }]} />
       <Chart title="Requests" unit="live" subtitle={extrema('requests')} points={history} series={[{ key: 'requests', label: 'Active', color: '#cf9a78' }]} />
-      <TokenHistoryChart instance={instance} />
+      <TokenHistoryChart instance={instance} profileName={selectedProfile} />
     </div>
   </div>
 }

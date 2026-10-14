@@ -23,6 +23,77 @@ function dashboardClient() {
 afterEach(() => vi.unstubAllGlobals())
 
 describe('Dashboard workflow', () => {
+  it('sorts run tabs by active state, then puts text runs first', async () => {
+    const activeImage = { ...external, id: 'managed/image/1-10', source: 'managed', profile_name: 'Alpha image', model_name: 'image-model', types: ['image'] }
+    const activeText = { ...external, id: 'managed/text/2-20', source: 'managed', profile_name: 'Zulu text', model_name: 'text-model', types: ['text'] }
+    const stoppedProfile = { version: 1, name: 'Beta stopped', model_name: 'stopped-model', engine: { id: 'vllm', installation_id: 'inst_1' }, command: '{{engine}} serve', environment: {}, autostart: false }
+    const metric = (value: number) => ({ value, unit: 'tok/s', state: 'ok', source: 'sqlite' })
+    const summary = { profile_name: stoppedProfile.name, period: { from: '2026-10-13T00:00:00Z', to: '2026-10-13T12:00:00Z', timezone: 'UTC' }, performance: { prefill_tps: metric(120), decode_tps: metric(30) }, memory: {}, concurrency: {}, load: {}, endpoint: { port: 8000, state: 'ok', source: 'command', conflict: false, conflict_with: [] } }
+    const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/system')) return Promise.resolve(new Response(envelope({ cpu: { cores: 8, usage_percent: 10 }, ram: { used_bytes: 10, total_bytes: 100 }, gpus: [], instances: [activeImage, activeText] }), { status: 200 }))
+      if (url.endsWith('/api/v1/profiles/summary')) return Promise.resolve(new Response(envelope({ items: [summary], period: summary.period, source: 'sqlite' }), { status: 200 }))
+      if (url.endsWith('/api/v1/profiles')) return Promise.resolve(new Response(envelope({ items: [stoppedProfile], issues: [] }), { status: 200 }))
+      if (url.includes('/api/v1/metrics/concurrency')) return Promise.resolve(new Response(envelope({ items: [], days: 7, source: 'sqlite' }), { status: 200 }))
+      if (url.includes('/api/v1/metrics?')) return Promise.resolve(new Response(envelope({ history: [], current: null, peaks: {}, aggregates: {}, source: 'sqlite' }), { status: 200 }))
+      if (url.includes('/metrics')) return Promise.resolve(new Response(envelope(emptyMetrics), { status: 200 }))
+      return Promise.resolve(new Response(envelope({ items: [] }), { status: 200 }))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<QueryClientProvider client={dashboardClient()}><MemoryRouter><DashboardPage /></MemoryRouter></QueryClientProvider>)
+    const tabs = await screen.findAllByRole('tab')
+    expect(tabs).toHaveLength(4)
+    expect(tabs[0]).toHaveTextContent('Все')
+    expect(tabs[1]).toHaveTextContent('Zulu text')
+    expect(tabs[2]).toHaveTextContent('Alpha image')
+    expect(tabs[3]).toHaveTextContent('Beta stopped')
+  })
+
+  it('keeps a stopped profile tab when it has performance metrics for the current day', async () => {
+    const stoppedProfile = { version: 1, name: 'stopped-qwen', model_name: 'qwen-local', engine: { id: 'vllm', installation_id: 'inst_1' }, command: '{{engine}} serve', environment: {}, autostart: false }
+    const metric = (value: number | null) => ({ value, unit: 'tok/s', state: value === null ? 'unavailable' : 'ok', source: value === null ? 'unavailable' : 'sqlite' })
+    const summary = { profile_name: stoppedProfile.name, period: { from: '2026-10-13T00:00:00Z', to: '2026-10-13T12:00:00Z', timezone: 'UTC' }, performance: { prefill_tps: metric(120), decode_tps: metric(30) }, memory: {}, concurrency: {}, load: {}, endpoint: { port: 8000, state: 'ok', source: 'command', conflict: false, conflict_with: [] } }
+    const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/system')) return Promise.resolve(new Response(envelope({ cpu: { cores: 8, usage_percent: 10 }, ram: { used_bytes: 10, total_bytes: 100 }, gpus: [], instances: [] }), { status: 200 }))
+      if (url.endsWith('/api/v1/profiles/summary')) return Promise.resolve(new Response(envelope({ items: [summary], period: summary.period, source: 'sqlite' }), { status: 200 }))
+      if (url.endsWith('/api/v1/profiles')) return Promise.resolve(new Response(envelope({ items: [stoppedProfile], issues: [] }), { status: 200 }))
+      if (url.includes('/api/v1/metrics/concurrency')) return Promise.resolve(new Response(envelope({ items: [], days: 7, source: 'sqlite' }), { status: 200 }))
+      if (url.includes('/api/v1/metrics?')) return Promise.resolve(new Response(envelope({ history: [], current: null, peaks: {}, aggregates: {}, source: 'sqlite' }), { status: 200 }))
+      return Promise.resolve(new Response(envelope({ items: [] }), { status: 200 }))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<QueryClientProvider client={dashboardClient()}><MemoryRouter initialEntries={[`/?instance=${encodeURIComponent('profile:stopped-qwen')}`]}><DashboardPage /></MemoryRouter></QueryClientProvider>)
+    const tab = await screen.findByRole('tab', { name: /stopped-qwen/ })
+    expect(tab).toHaveAttribute('aria-selected', 'true')
+    expect(tab.querySelector('[data-run-status="inactive"]')).toBeInTheDocument()
+    expect(await screen.findByText('сохранённые метрики за сегодня')).toBeInTheDocument()
+    await waitFor(() => expect(fetchMock.mock.calls.some(([input]) => String(input).includes('profile_name=stopped-qwen'))).toBe(true))
+  })
+
+  it('shows the engine UI and hides text performance for a non-text run', async () => {
+    const image = { ...external, id: 'managed/ComfyUI/75-90', source: 'managed', profile_name: 'ComfyUI', engine_id: 'comfyui', model_name: 'qwen-image', types: ['image', 'video'], api_protocol: 'comfyui', api_base_url: 'http://127.0.0.1:8188', ui_url: 'http://127.0.0.1:8188', model_paths_restart_required: false }
+    const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/api/v1/metrics/concurrency')) return Promise.resolve(new Response(envelope({ items: [], days: 7, source: 'sqlite' }), { status: 200 }))
+      if (url.endsWith('/api/v1/system')) return Promise.resolve(new Response(envelope({ cpu: { cores: 8, usage_percent: 10 }, ram: { used_bytes: 10, total_bytes: 100 }, gpus: [], instances: [image] }), { status: 200 }))
+      if (url.includes('/api/v1/metrics?')) return Promise.resolve(new Response(envelope({ history: [], current: null, peaks: {}, source: 'sqlite' }), { status: 200 }))
+      if (url.includes('/metrics')) return Promise.resolve(new Response(envelope(emptyMetrics), { status: 200 }))
+      if (url.includes('/logs')) return Promise.resolve(new Response(envelope({ instance_id: image.id, lines: [], truncated: false }), { status: 200 }))
+      return Promise.resolve(new Response(envelope({ items: [] }), { status: 200 }))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<QueryClientProvider client={dashboardClient()}><MemoryRouter initialEntries={[`/?instance=${encodeURIComponent(image.id)}`]}><DashboardPage /></MemoryRouter></QueryClientProvider>)
+    expect((await screen.findByRole('tab', { name: /ComfyUI/ })).querySelector('[data-run-status="active"]')).toBeInTheDocument()
+    expect(await screen.findByRole('link', { name: 'Открыть UI' })).toHaveAttribute('href', 'http://127.0.0.1:8188')
+    expect(screen.queryByText('Decode')).not.toBeInTheDocument()
+    expect(screen.queryByText('Prefill')).not.toBeInTheDocument()
+    expect(screen.getByText('Логи запуска')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('tab', { name: /Все/ }))
+    const row = (await screen.findByRole('button', { name: 'ComfyUI' })).closest('tr')!
+    expect(within(row).getByRole('link', { name: 'Открыть UI ComfyUI' })).toHaveAttribute('href', 'http://127.0.0.1:8188')
+  })
+
   it('offers stop for an external instance and surfaces the operation contract', async () => {
     const operation = { id: 'op_stop', kind: 'stop_instance', state: 'succeeded', target_id: external.id, created_at: '2026-09-29T00:00:00Z', started_at: null, finished_at: '2026-09-29T00:00:01Z', stdout: '', stderr: '', exit_code: 0, error: null }
     const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) => {

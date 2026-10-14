@@ -42,7 +42,7 @@ it('restores 120 points, connects gaps, shows the hovered value and appends live
   client.clear()
 })
 
-it('retains every known scalar on missing measurements, accepts zero and retains profile history across restarts without filling chart gaps', async () => {
+it('shows zero for missing live measurements, retains state metrics and keeps profile history across restarts', async () => {
   vi.stubGlobal('fetch', vi.fn().mockImplementation(() => Promise.resolve(new Response(JSON.stringify({ data: { history: [], current: null, peaks: {}, source: 'sqlite', aggregates: daily } })))))
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const fields = ['decode_tps', 'prefill_tps', 'ttft_mean_ms', 'active_requests', 'kv_cache_percent', 'queue_requests', 'prompt_tokens_total', 'completion_tokens_total', 'completed_requests', 'queue_time_mean_ms', 'prefix_cache_hit_percent', 'prefix_cache_hit_mean_percent', 'spec_acceptance_percent']
@@ -52,7 +52,12 @@ it('retains every known scalar on missing measurements, accepts zero and retains
   const rendered = render(view(known))
   await waitFor(() => expect(screen.getByRole('img', { name: 'Prefill' }).querySelectorAll('circle')).toHaveLength(1))
   rendered.rerender(view(missing))
-  for (const label of ['Decode', 'Prefill', 'Requests', 'KV cache', 'Queue', 'Served']) {
+  for (const label of ['Decode', 'Prefill', 'Requests', 'Queue']) {
+    const card = screen.getByText(label, { selector: 'p' }).parentElement!
+    expect(within(card).getByText('0', { exact: false, selector: 'p.font-medium, p.text-xl' })).toBeInTheDocument()
+    expect(card).not.toHaveTextContent('Последнее измерение:')
+  }
+  for (const label of ['KV cache', 'Served']) {
     const card = screen.getByText(label, { selector: 'p' }).parentElement!
     expect(within(card).getByText('42', { exact: false, selector: 'p.font-medium, p.text-xl' })).toBeInTheDocument()
     expect(card).not.toHaveTextContent('Последнее измерение:')
@@ -71,16 +76,16 @@ it('retains every known scalar on missing measurements, accepts zero and retains
   rendered.rerender(view(missing, { ...instance, id: 'managed/profile/11', pid: 11 }))
   expect(screen.getByText('TTFT', { selector: 'p' }).parentElement).toHaveTextContent('max 300')
   rendered.rerender(view(missing, { ...instance, id: 'managed/other/12', profile_name: 'other', pid: 12 }))
-  expect(screen.getByText('Decode', { selector: 'p' }).parentElement).toHaveTextContent('—')
+  expect(screen.getByText('Decode', { selector: 'p' }).parentElement).toHaveTextContent('0tok/s')
   expect(screen.queryByText(/Последнее измерение:/)).not.toBeInTheDocument()
   client.clear()
 })
 
-it('restores the last known measurement from history even when the latest snapshot is unavailable', async () => {
+it('restores the last known measurement for a stopped profile even when the latest snapshot is unavailable', async () => {
   const metric = { name: 'prefill_tps', value: 125, state: 'ok', source: 'test', unit: 'ms', observed_at: '2026-10-02T10:00:00Z' }
   vi.stubGlobal('fetch', vi.fn().mockImplementation(() => Promise.resolve(new Response(JSON.stringify({ data: { history: [{ items: [metric], observed_at: metric.observed_at }], current: null, peaks: {}, source: 'sqlite', aggregates: daily } })))))
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  render(<QueryClientProvider client={client}><ModelPerformance instance={instance} data={{ items: [{ ...metric, value: null, state: 'stale' }] }} /></QueryClientProvider>)
+  render(<QueryClientProvider client={client}><ModelPerformance profileName="profile" data={{ items: [{ ...metric, value: null, state: 'stale' }] }} /></QueryClientProvider>)
   await waitFor(() => expect(screen.getByText('Prefill', { selector: 'p' }).parentElement).toHaveTextContent('125tok/s'))
   expect(screen.getByText('Prefill', { selector: 'p' }).parentElement).toHaveAttribute('title', expect.stringContaining('Данные устарели · Последнее измерение:'))
   client.clear()
@@ -103,6 +108,9 @@ it('uses the requested card order, weighted TTFT mean/max and separate scales fo
   await waitFor(() => expect(ttftCard).toHaveTextContent('150ms'))
   expect(ttftCard).toHaveTextContent('max 300')
   expect([...rendered.container.querySelectorAll('[data-metric] > p:first-child')].map((el) => el.textContent)).toEqual(['Prefill', 'Decode / req', 'TTFT', 'Requests', 'KV Hit', 'KV cache', 'Decode', 'Served', 'Queue', 'Draft Acceptance'])
+  for (const label of ['Prefill', 'Decode / req', 'Requests', 'Decode', 'Queue']) {
+    expect(screen.getByText(label, { selector: 'p' })).toHaveAttribute('aria-label', `${label}, live`)
+  }
   expect(rendered.container.querySelector('table')).toBeNull()
   expect(screen.getByText('Decode', { selector: 'p' }).parentElement?.title).not.toContain('vllm:')
   expect(screen.getByText('Decode / req', { selector: 'p' }).parentElement).toHaveTextContent('20tok/s')

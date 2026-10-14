@@ -241,12 +241,19 @@ class ProcessManager:
         async with self._guard:
             active = self._active_managed()
             active_external = [item.instance for item in self._external.values()]
-            if any(item.instance.profile_name == profile.name for item in active):
+            running_profile = next(
+                (item.instance for item in active if item.instance.profile_name == profile.name),
+                None,
+            )
+            if running_profile is not None:
                 raise AppError(
                     "profile_already_running",
                     "Профиль уже запущен",
                     status_code=409,
-                    details={"profile_name": profile.name},
+                    details={
+                        "profile_name": profile.name,
+                        "instance": running_profile.model_dump(mode="json"),
+                    },
                 )
             # Several managed profiles may intentionally publish the same
             # public model name.  TASK-004 groups them into one ordered route;

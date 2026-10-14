@@ -2,10 +2,11 @@ import { useQuery } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 
 type Filters = { profile_name?: string; pid?: number; scope?: 'profile' | 'all' }
-export function useDailyMetricAggregates(historyKey: string, filters: Filters) {
+export function useDailyMetricAggregates(historyKey: string, filters: Filters, enabled = true) {
   const query = useQuery({
     queryKey: ['metrics-aggregates', historyKey],
     queryFn: () => api.getMetricAggregates(filters),
+    enabled,
     refetchInterval: 30_000, refetchIntervalInBackground: false, retry: false,
   })
   return new Map(Object.entries(query.data?.aggregates ?? {}).map(([name, aggregate]) => [name, {

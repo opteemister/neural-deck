@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 
 import pytest
 from app.schemas.instances import Instance
+from app.schemas.system import InstanceData
 
 
 @pytest.mark.version_zero
@@ -17,6 +18,32 @@ def test_system_endpoint_returns_only_observable_data(client) -> None:
     assert body["data"]["cpu"]["cores"] >= 1
     assert body["data"]["ram"]["total_bytes"] > 0
     assert body["data"]["instances"] == []
+
+
+def test_system_instance_contract_accepts_runtime_api_metadata() -> None:
+    instance = Instance(
+        id="managed/ComfyUI/75-1",
+        source="managed",
+        profile_name="ComfyUI",
+        engine_id="comfyui",
+        pid=75,
+        process_start_time_ns=1,
+        identity_verified=True,
+        can_stop=True,
+        port=8188,
+        model_name="comfy",
+        types=["image", "video"],
+        api_protocol="comfyui",
+        api_base_url="http://127.0.0.1:8188",
+        ui_url="http://127.0.0.1:8188",
+        state="ready",
+        observed_at=datetime.now(UTC),
+    )
+
+    embedded = InstanceData.model_validate(instance.model_dump())
+
+    assert embedded.types == ["image", "video"]
+    assert embedded.api_protocol == "comfyui"
 
 
 @pytest.mark.version_zero

@@ -84,6 +84,21 @@ async def test_new_backend_restores_and_stops_previous_child(tmp_path, store):
 
 
 @pytest.mark.asyncio
+async def test_duplicate_start_returns_the_running_instance(tmp_path, store):
+    managed = manager(tmp_path, store)
+    instance = await managed.start_profile(profile(), "/bin/echo")
+    try:
+        with pytest.raises(AppError) as raised:
+            await managed.start_profile(profile(), "/bin/echo")
+        assert raised.value.code == "profile_already_running"
+        assert raised.value.details["instance"]["id"] == instance.id
+        assert raised.value.details["instance"]["profile_name"] == "demo"
+    finally:
+        await managed.stop(instance.id)
+        await managed.close()
+
+
+@pytest.mark.asyncio
 async def test_dead_and_reused_pid_rows_are_deleted(tmp_path, store):
     first = manager(tmp_path, store)
     instance = await first.start_profile(profile(), "/bin/echo")

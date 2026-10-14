@@ -140,6 +140,10 @@ export interface Instance {
   process_start_time_ns: number | null
   port: number | null
   model_name: string | null
+  types: EngineType[]
+  api_protocol: ApiProtocol
+  api_base_url: string | null
+  ui_url: string | null
   model_paths_restart_required: boolean
   state: InstanceState
   observed_at: string

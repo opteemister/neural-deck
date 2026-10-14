@@ -8,8 +8,10 @@ so a manual editor or a failed write cannot leave a half YAML document.
 from __future__ import annotations
 
 import os
+import shutil
 import tempfile
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -144,6 +146,48 @@ class ProfileRepository:
                     code = "profile_duplicate_key"
                 issues.append(ProfileIssue(file=path.name, code=code, message=message))
         return ProfileListData(items=items, issues=issues)
+
+    def migrate_legacy_image_engine_id(self) -> Path | None:
+        """Back up and rename the engine ID while preserving stable installation IDs."""
+        candidates: list[tuple[Path, ProfileData]] = []
+        for path in sorted(self.profiles_dir.glob("*.yaml")):
+            if path.is_symlink() or not path.is_file():
+                continue
+            try:
+                profile = self.read_file(path)
+            except (OSError, ValueError, TypeError):
+                continue
+            if profile.engine.id == "image":
+                candidates.append((path, profile))
+        if not candidates:
+            return None
+
+        backup_dir = self.profiles_dir / ".backups" / (
+            "image-to-comfyui-" + datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+        )
+        backup_dir.mkdir(parents=True, exist_ok=False)
+        for source, _profile in candidates:
+            shutil.copy2(source, backup_dir / source.name)
+        try:
+            directory_fd = os.open(backup_dir, os.O_DIRECTORY)
+        except OSError:
+            directory_fd = -1
+        if directory_fd >= 0:
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+
+        for source, profile in candidates:
+            # Installation IDs deliberately hash the legacy image alias for
+            # both engine IDs, so retaining this field keeps references valid.
+            migrated = profile.model_copy(
+                update={
+                    "engine": profile.engine.model_copy(update={"id": "comfyui"}),
+                }
+            )
+            self._atomic_write(source, migrated)
+        return backup_dir
 
     def create(self, profile: ProfileData) -> ProfileData:
         profile = profile.model_copy(

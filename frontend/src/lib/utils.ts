@@ -27,13 +27,13 @@ export function formatTimestamp(value: string | null | undefined): string {
   return new Intl.DateTimeFormat('ru-RU', { dateStyle: 'short', timeStyle: 'medium', timeZone: 'UTC' }).format(date) + ' UTC'
 }
 
-export function stateLabel(state: string): string {
+export function stateLabel(state: string, context: 'runtime' | 'installation' = 'runtime'): string {
   const labels: Record<string, string> = {
     ok: 'Работает',
     degraded: 'Есть ограничения',
     error: 'Ошибка',
-    ready: 'Готово',
-    running: 'Работает',
+    ready: context === 'installation' ? 'Готово' : 'Запущен',
+    running: 'Запущен',
     starting: 'Запускается',
     stopping: 'Останавливается',
     exited: 'Остановлен',

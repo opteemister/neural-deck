@@ -1,0 +1,17 @@
+version: 1
+id: comfyui
+name: ComfyUI
+types: [image, video]
+install_script_file: image.sh
+update_script_file: image.update.sh
+executable: "{{target}}/bin/comfyui"
+working_directory: "{{target}}"
+environment: {}
+command: "{{engine}} --listen 127.0.0.1 --port 8188 --disable-auto-launch --extra-model-paths-config {{extra_model_paths_config}}"
+healthcheck:
+  path: /system_stats
+  timeout_seconds: 3
+api:
+  protocol: comfyui
+  base_url: http://127.0.0.1:8188
+ui_url: http://127.0.0.1:8188

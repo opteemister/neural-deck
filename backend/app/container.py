@@ -29,6 +29,7 @@ from .profiles.service import ProfileService
 from .token_stats import RequestJournalService
 
 if TYPE_CHECKING:
+    from .image.service import ImageGenerationService
     from .metrics.service import MetricsService
     from .proxy.service import ProxyService
     from .statistics import StatisticsService
@@ -69,6 +70,7 @@ class AppContainer:
     process_manager: ProcessManager
     journal_service: RequestJournalService
     proxy_service: ProxyService
+    image_service: ImageGenerationService
     metrics_service: MetricsService
     statistics_service: StatisticsService
     external_discovery: ExternalDiscovery = discover_external
@@ -137,6 +139,7 @@ class AppContainer:
             await self.model_catalogue.stop_update_scheduler()
             await self.metrics_service.close()
             await self.proxy_service.close()
+            await self.image_service.close()
             await self.process_manager.close()
         finally:
             try:

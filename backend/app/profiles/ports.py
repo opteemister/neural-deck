@@ -13,6 +13,7 @@ ENGINE_DEFAULT_PORTS: dict[EngineId, int] = {
     "sglang": 30000,
     "ninfer": 8080,
     "freetoken": 1919,
+    "image": 8188,
 }
 
 _PORT_RE = re.compile(

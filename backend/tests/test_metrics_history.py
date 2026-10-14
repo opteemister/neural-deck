@@ -617,6 +617,74 @@ async def test_daily_aggregates_cover_all_snapshots_and_runs_and_expire_old_valu
         await service.close()
 
 
+async def test_daily_run_list_does_not_load_or_compute_metric_history(database):
+    from app.metrics.entities import MetricSample
+
+    now = datetime.now(UTC)
+    async with database() as session:
+        session.add_all([MetricSample(
+            profile_name=name, model_name="model", engine_id="llama.cpp", pid=pid,
+            observed_at=stamp, recorded_at=stamp, metric_meta={}, decode_tps=rate,
+        ) for name, pid, stamp, rate in [
+            ("today", 10, now, 25), ("today", 10, now, 30),
+            ("idle", 11, now, 0), ("unavailable", 12, now, None),
+            ("yesterday", 13, now - timedelta(days=1), 50),
+        ]])
+        await session.commit()
+    result = await MetricsStorage(database).daily_runs()
+    assert {row["profile_name"] for row in result} == {"today", "idle"}
+    assert len(result) == 2
+    assert all(set(row) == {"profile_name", "model_name", "engine_id"} for row in result)
+
+
+async def test_decode_window_uses_same_statistics_for_sqlite_and_remote(database):
+    from app.metrics.entities import MetricSample
+    from app.metrics.service import summarize_window
+    from app.metrics.storage import sample_data
+
+    end = datetime.now(UTC)
+    start = end - timedelta(hours=24)
+    at = end - timedelta(minutes=10)
+    rows = []
+    for index, (rate, requests, weight) in enumerate([(100, 2, 1), (90, 3, 3), (0, 0, 1)]):
+        stamp = at + timedelta(seconds=index * 5)
+        rows.append(MetricSample(
+            profile_name="profile", pid=10, engine_id="llama.cpp",
+            observed_at=stamp, recorded_at=stamp, decode_tps=rate, active_requests=requests,
+            metric_meta={
+                "decode_tps": {"state": "ok", "observed_at": stamp.isoformat(),
+                               "metadata": {"denominator": weight}},
+                "active_requests": {"state": "ok", "observed_at": stamp.isoformat()},
+            },
+        ))
+    remote = summarize_window([sample_data(row) for row in rows], start, end, False)
+    async with database() as session:
+        session.add_all(rows)
+        await session.commit()
+    local = await MetricsStorage(database).aggregates(
+        start=start, end=end, profile_name="profile",
+    )
+    assert local == remote
+    assert local["decode_tps"] == {"max": 100, "avg": 92.5}
+    assert local["per_request_tps"] == {"max": 50, "avg": 35}
+
+
+def test_all_decode_per_request_divides_combined_rate_by_combined_requests():
+    from app.metrics.service import summarize_window
+
+    end = datetime.now(UTC)
+    at = end - timedelta(minutes=1)
+    rows = [{
+        "profile_name": name, "pid": pid, "observed_at": at,
+        "items": [Metric(name=field, value=value, state="ok", unit="", source="test",
+                         observed_at=at)
+                  for field, value in [("decode_tps", rate), ("active_requests", requests)]],
+    } for name, pid, rate, requests in [("a", 10, 100, 2), ("b", 11, 90, 3)]]
+    result = summarize_window(rows, end - timedelta(hours=24), end, True)
+    assert result["decode_tps"] == {"avg": 190, "max": 190}
+    assert result["per_request_tps"] == {"avg": 38, "max": 38}
+
+
 def test_remote_daily_summary_ignores_cumulative_means_and_duplicate_measurements():
     from app.metrics.service import summarize_window
 

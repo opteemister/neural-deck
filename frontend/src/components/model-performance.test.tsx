@@ -4,7 +4,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { ModelPerformance } from './model-performance'
 import type { Instance, MetricsData } from '@/types/api'
 
-const daily = { decode_tps: { avg: 150, max: 777 }, prefill_tps: { avg: 1500, max: 1500 }, active_requests: { avg: 150, max: 200 }, ttft_mean_ms: { avg: 150, max: 300 } }
+const daily = { decode_tps: { avg: 150, max: 777 }, per_request_tps: { avg: 35, max: 50 }, prefill_tps: { avg: 1500, max: 1500 }, active_requests: { avg: 150, max: 200 }, ttft_mean_ms: { avg: 150, max: 300 } }
 const instance = { id: 'managed/profile/10', source: 'managed', profile_name: 'profile', engine_id: 'vllm', pid: 10, state: 'ready', observed_at: '2026-10-02T10:00:00Z' } as Instance
 function data(at: string, value: number): MetricsData {
   return { items: ['decode_tps', 'prefill_tps', 'active_requests'].map((name) => ({ name, value, observed_at: at, state: 'ok', source: 'test', unit: '' })) }
@@ -23,6 +23,8 @@ it('restores 120 points, connects gaps, shows the hovered value and appends live
   await waitFor(() => expect(generation.querySelectorAll('circle')).toHaveLength(240))
   expect(generation.querySelectorAll('path')).toHaveLength(2)
   expect(screen.getByText(/total max 777/)).toBeInTheDocument()
+  expect(screen.getByText(/total max 777/)).toHaveTextContent('per req max 50 · avg 35')
+  expect(rendered.container.querySelector('[data-metric="decode_per_request"]')).toHaveTextContent('max 50 · avg 35')
   Object.defineProperty(generation, 'getBoundingClientRect', { value: () => ({ left: 0, width: 400 }) })
   fireEvent.pointerMove(generation, { clientX: 0 })
   expect(await screen.findByRole('tooltip')).toHaveTextContent('3')
@@ -42,7 +44,7 @@ it('restores 120 points, connects gaps, shows the hovered value and appends live
   client.clear()
 })
 
-it('retains every known scalar on missing measurements, accepts zero and retains profile history across restarts without filling chart gaps', async () => {
+it('shows zero for missing live measurements, retains state metrics and keeps profile history across restarts', async () => {
   vi.stubGlobal('fetch', vi.fn().mockImplementation(() => Promise.resolve(new Response(JSON.stringify({ data: { history: [], current: null, peaks: {}, source: 'sqlite', aggregates: daily } })))))
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const fields = ['decode_tps', 'prefill_tps', 'ttft_mean_ms', 'active_requests', 'kv_cache_percent', 'queue_requests', 'prompt_tokens_total', 'completion_tokens_total', 'completed_requests', 'queue_time_mean_ms', 'prefix_cache_hit_percent', 'prefix_cache_hit_mean_percent', 'spec_acceptance_percent']
@@ -52,7 +54,12 @@ it('retains every known scalar on missing measurements, accepts zero and retains
   const rendered = render(view(known))
   await waitFor(() => expect(screen.getByRole('img', { name: 'Prefill' }).querySelectorAll('circle')).toHaveLength(1))
   rendered.rerender(view(missing))
-  for (const label of ['Decode', 'Prefill', 'Requests', 'KV cache', 'Queue', 'Served']) {
+  for (const label of ['Decode', 'Prefill', 'Requests', 'Queue']) {
+    const card = screen.getByText(label, { selector: 'p' }).parentElement!
+    expect(within(card).getByText('0', { exact: false, selector: 'p.font-medium, p.text-xl' })).toBeInTheDocument()
+    expect(card).not.toHaveTextContent('Последнее измерение:')
+  }
+  for (const label of ['KV cache', 'Served']) {
     const card = screen.getByText(label, { selector: 'p' }).parentElement!
     expect(within(card).getByText('42', { exact: false, selector: 'p.font-medium, p.text-xl' })).toBeInTheDocument()
     expect(card).not.toHaveTextContent('Последнее измерение:')
@@ -71,16 +78,16 @@ it('retains every known scalar on missing measurements, accepts zero and retains
   rendered.rerender(view(missing, { ...instance, id: 'managed/profile/11', pid: 11 }))
   expect(screen.getByText('TTFT', { selector: 'p' }).parentElement).toHaveTextContent('max 300')
   rendered.rerender(view(missing, { ...instance, id: 'managed/other/12', profile_name: 'other', pid: 12 }))
-  expect(screen.getByText('Decode', { selector: 'p' }).parentElement).toHaveTextContent('—')
+  expect(screen.getByText('Decode', { selector: 'p' }).parentElement).toHaveTextContent('0tok/s')
   expect(screen.queryByText(/Последнее измерение:/)).not.toBeInTheDocument()
   client.clear()
 })
 
-it('restores the last known measurement from history even when the latest snapshot is unavailable', async () => {
+it('restores the last known measurement for a stopped profile even when the latest snapshot is unavailable', async () => {
   const metric = { name: 'prefill_tps', value: 125, state: 'ok', source: 'test', unit: 'ms', observed_at: '2026-10-02T10:00:00Z' }
   vi.stubGlobal('fetch', vi.fn().mockImplementation(() => Promise.resolve(new Response(JSON.stringify({ data: { history: [{ items: [metric], observed_at: metric.observed_at }], current: null, peaks: {}, source: 'sqlite', aggregates: daily } })))))
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  render(<QueryClientProvider client={client}><ModelPerformance instance={instance} data={{ items: [{ ...metric, value: null, state: 'stale' }] }} /></QueryClientProvider>)
+  render(<QueryClientProvider client={client}><ModelPerformance profileName="profile" data={{ items: [{ ...metric, value: null, state: 'stale' }] }} /></QueryClientProvider>)
   await waitFor(() => expect(screen.getByText('Prefill', { selector: 'p' }).parentElement).toHaveTextContent('125tok/s'))
   expect(screen.getByText('Prefill', { selector: 'p' }).parentElement).toHaveAttribute('title', expect.stringContaining('Данные устарели · Последнее измерение:'))
   client.clear()
@@ -103,6 +110,9 @@ it('uses the requested card order, weighted TTFT mean/max and separate scales fo
   await waitFor(() => expect(ttftCard).toHaveTextContent('150ms'))
   expect(ttftCard).toHaveTextContent('max 300')
   expect([...rendered.container.querySelectorAll('[data-metric] > p:first-child')].map((el) => el.textContent)).toEqual(['Prefill', 'Decode / req', 'TTFT', 'Requests', 'KV Hit', 'KV cache', 'Decode', 'Served', 'Queue', 'Draft Acceptance'])
+  for (const label of ['Prefill', 'Decode / req', 'Requests', 'Decode', 'Queue']) {
+    expect(screen.getByText(label, { selector: 'p' })).toHaveAttribute('aria-label', `${label}, live`)
+  }
   expect(rendered.container.querySelector('table')).toBeNull()
   expect(screen.getByText('Decode', { selector: 'p' }).parentElement?.title).not.toContain('vllm:')
   expect(screen.getByText('Decode / req', { selector: 'p' }).parentElement).toHaveTextContent('20tok/s')

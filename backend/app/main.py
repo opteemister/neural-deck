@@ -40,6 +40,10 @@ from .errors import (
     unhandled_error_handler,
     validation_error_handler,
 )
+from .image.router import internal_router as internal_image_router
+from .image.router import native_router as native_image_router
+from .image.router import router as image_router
+from .image.service import ImageGenerationService
 from .mcp.server import MCPDependencies, mcp_lifespan, mount_mcp
 from .metrics.service import MetricsService
 from .models.catalogue import ModelCatalogue
@@ -204,6 +208,7 @@ def _publish_runtime(app: FastAPI, runtime: AppContainer) -> None:
     app.state.external_discovery = runtime.external_discovery
     app.state.journal_service = runtime.journal_service
     app.state.proxy_service = runtime.proxy_service
+    app.state.image_service = runtime.image_service
     app.state.metrics_service = runtime.metrics_service
     app.state.mcp_server = runtime.mcp_server
     app.state.runtime_diagnostics = runtime.diagnostics
@@ -281,12 +286,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         launch_mode = os.environ.get("NEURAL_DECK_MODEL_LAUNCHER", "process")
         if launch_mode not in {"process", "systemd"}:
             raise ValueError("NEURAL_DECK_MODEL_LAUNCHER must be process or systemd")
+        model_catalogue = ModelCatalogue(paths, operations=operation_manager)
         process_manager = ProcessManager(
             log_root=paths.profiles_log_dir,
+            runtime_root=paths.runtime_dir,
+            models_root=paths.models_root,
             run_store=RunStore(db_engine),
             launcher=(SystemdLauncher(paths.runtime_dir) if launch_mode == "systemd" else None),
             registry=model_registry,
             external_discovery=external_discovery,
+            model_paths_refresher=model_catalogue.refresh_comfyui_model_paths,
         )
         engine_service = EngineService(
             settings,
@@ -294,8 +303,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             operations=operation_manager,
             installation_in_use=process_manager.is_installation_running,
         )
-        model_catalogue = ModelCatalogue(paths, operations=operation_manager)
+        process_manager.profile_resolver = engine_service.resolve_profile
         profile_repository = ProfileRepository(paths.profiles_dir)
+        migration_backup = profile_repository.migrate_legacy_image_engine_id()
+        if migration_backup is not None:
+            logger.info("Профили image переведены на comfyui; копия: %s", migration_backup)
         profile_service = ProfileService(
             paths.profiles_dir,
             repository=profile_repository,
@@ -305,10 +317,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         session_factory = create_session_factory(db_engine)
         journal_service = RequestJournalService(session_factory=session_factory)
         route_manager = RouteManager(paths.config_dir, profile_repository)
+        image_service = ImageGenerationService(process_manager, profile_repository)
         proxy_service = ProxyService(
             process_manager,
             journal=journal_service,
             route_manager=route_manager,
+            image_service=image_service,
         )
         import secrets
 
@@ -341,6 +355,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             process_manager=process_manager,
             journal_service=journal_service,
             proxy_service=proxy_service,
+            image_service=image_service,
             metrics_service=metrics_service,
             statistics_service=statistics_service,
             external_discovery=external_discovery,
@@ -409,19 +424,25 @@ def _mcp_dependencies(app: FastAPI) -> MCPDependencies:
     async def stop_instance(instance_id: str) -> object:
         return await app.state.runtime.process_manager.stop(instance_id)
 
+    async def generate_image(**payload: Any) -> object:
+        return await app.state.runtime.proxy_service.generate_image(
+            payload, request_id=f"mcp_{uuid4().hex}"
+        )
+
     return MCPDependencies(
         get_system_state=get_system_state,
         list_models=list_models,
         list_profiles=list_profiles,
         start_profile=start_profile,
         stop_instance=stop_instance,
+        generate_image=generate_image,
     )
 
 
 def _add_frontend_route(app: FastAPI, frontend_dist: Path) -> None:
     """Serve built frontend files and route client-side paths to index.html."""
 
-    reserved_prefixes = ("/api", "/v1", "/mcp")
+    reserved_prefixes = ("/api", "/v1", "/mcp", "/comfyui")
     resolved_dist = frontend_dist.expanduser().resolve(strict=False)
 
     @app.get("/{frontend_path:path}", include_in_schema=False)
@@ -472,6 +493,7 @@ def create_app(
     app.include_router(management_router)
     app.include_router(proxy_routes_router)
     app.include_router(internal_proxy_router)
+    app.include_router(internal_image_router)
     app.include_router(profiles_router)
     # Register metrics before the greedy /instances/{instance_id:path}
     # detail route, which would otherwise consume the /metrics suffix.
@@ -540,6 +562,8 @@ def create_proxy_app(runtime: AppContainer) -> FastAPI:
     app.add_exception_handler(StarletteHTTPException, cast(Any, http_error_handler))
     app.add_exception_handler(Exception, unhandled_error_handler)
     app.include_router(proxy_router)
+    app.include_router(image_router)
+    app.include_router(native_image_router)
     return app
 
 

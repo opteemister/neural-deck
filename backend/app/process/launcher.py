@@ -77,7 +77,14 @@ class SystemdLauncher:
         temporary.replace(path)
         return path
 
-    async def start(self, unit: str, command: str, env: dict[str, str], log: Path) -> int:
+    async def start(
+        self,
+        unit: str,
+        command: str,
+        env: dict[str, str],
+        log: Path,
+        working_directory: Path | None = None,
+    ) -> int:
         env_path = self.pending_dir / f"{unit}.env"
         with env_path.open("w", encoding="utf-8") as handle:
             os.chmod(env_path, 0o600)
@@ -115,7 +122,7 @@ class SystemdLauncher:
                 "--property=Restart=no",
                 "--property=KillMode=control-group",
                 "--property=TimeoutStopSec=10",
-                f"--property=WorkingDirectory={str(Path.cwd())}",
+                f"--property=WorkingDirectory={str((working_directory or Path.cwd()).resolve())}",
                 f"--property=EnvironmentFile={str(env_path)}",
                 f"--property=StandardOutput=append:{str(log)}",
                 "--property=StandardError=inherit",

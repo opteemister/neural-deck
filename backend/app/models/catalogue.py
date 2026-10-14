@@ -62,6 +62,26 @@ MODEL_EXTENSIONS = {
     ".tflite": "tflite",
 }
 SIDECAR_DIR = ".neural-deck-hf.yaml"
+COMFYUI_CATEGORIES = frozenset({
+    "checkpoints", "diffusion_models", "text_encoders", "vae", "loras",
+    "embeddings", "clip_vision", "controlnet", "gligen", "upscale_models",
+    "hypernetworks", "style_models", "vae_approx", "photomaker",
+    "model_patches", "latent_upscale_models", "configs", "diffusers",
+    "classifiers", "audio_encoders", "background_removal", "frame_interpolation",
+    "geometry_estimation", "optical_flow", "detection",
+})
+COMFYUI_CATEGORY_ALIASES = {
+    "clip": "text_encoders",
+    "unet": "diffusion_models",
+    "t2i_adapter": "controlnet",
+}
+COMFYUI_WEIGHT_EXTENSIONS = frozenset({
+    ".safetensors", ".ckpt", ".pt", ".pt2", ".pth", ".bin", ".pkl", ".sft", ".gguf",
+})
+COMFYUI_CATEGORY_EXTENSIONS = {
+    "configs": frozenset({".yaml"}),
+    "classifiers": frozenset({""}),
+}
 _AUXILIARY_ROLE_RE = re.compile(
     r"(^|[\\/_.-])(?:mtp|mmproj|projector|projection|vision(?:[-_]?(?:encoder|tower))?"
     r"|audio(?:[-_]?(?:encoder|tower))?|adapter|d[\s_-]?spark)(?=$|[\\/_.-])",
@@ -85,6 +105,69 @@ class ModelCatalogue:
         self._manifest_lock = _MANIFEST_LOCK
         self._update_task: asyncio.Task[None] | None = None
         self._update_check_lock = asyncio.Lock()
+        self._comfyui_paths_lock = threading.RLock()
+        self.comfyui_model_paths_diagnostics: list[dict[str, Any]] = []
+
+    def refresh_comfyui_model_paths(self, *, discovered_paths: list[Path] | None = None) -> Path:
+        """Atomically publish existing category directories, without moving weights."""
+
+        with self._comfyui_paths_lock:
+            root = self.paths.models_root.resolve(strict=False)
+            paths = discovered_paths if discovered_paths is not None else sorted(root.rglob("*"))
+            categories: dict[str, set[str]] = {}
+            names: dict[tuple[str, str], set[str]] = {}
+            for directory in paths:
+                category = COMFYUI_CATEGORY_ALIASES.get(directory.name, directory.name)
+                if category not in COMFYUI_CATEGORIES or not _visible_relative(directory, root):
+                    continue
+                try:
+                    actual = directory.resolve(strict=True)
+                    actual.relative_to(root)
+                    if not actual.is_dir():
+                        continue
+                    files = []
+                    accepted_extensions = COMFYUI_CATEGORY_EXTENSIONS.get(
+                        category, COMFYUI_WEIGHT_EXTENSIONS
+                    )
+                    for file in actual.rglob("*"):
+                        if not _visible_relative(file, root) or file.suffix.lower() not in accepted_extensions:
+                            continue
+                        resolved = file.resolve(strict=True)
+                        resolved.relative_to(root)
+                        if resolved.is_file():
+                            files.append(resolved)
+                    has_diffusers_models = category == "diffusers" and any(
+                        child.is_dir() and not child.is_symlink() for child in actual.iterdir()
+                    )
+                    if not files and not has_diffusers_models:
+                        continue
+                except (OSError, RuntimeError, ValueError):
+                    logger.warning("ComfyUI: недоступный каталог компонентов %s", directory)
+                    continue
+                categories.setdefault(category, set()).add(str(actual))
+                for file in files:
+                    names.setdefault((category, file.name.casefold()), set()).add(str(file))
+            diagnostics = [
+                {"code": "comfyui_duplicate_basename", "category": category, "basename": name, "paths": sorted(files)}
+                for (category, name), files in sorted(names.items()) if len(files) > 1
+            ]
+            for item in diagnostics:
+                logger.warning("ComfyUI: неоднозначное имя %s/%s: %s", item["category"], item["basename"], item["paths"])
+            self.comfyui_model_paths_diagnostics = diagnostics
+            # ComfyUI's native loader accepts newline-separated paths per category.
+            document = {"neural_deck": {
+                category: "\n".join(sorted(directories))
+                for category, directories in sorted(categories.items())
+            }}
+            value = yaml.safe_dump(document, allow_unicode=True, sort_keys=True)
+            destination = self.paths.runtime_dir / "comfyui" / "extra_model_paths.yaml"
+            try:
+                unchanged = destination.read_text(encoding="utf-8") == value
+            except OSError:
+                unchanged = False
+            if not unchanged:
+                _atomic_write_text_sync(destination, value)
+            return destination
 
     async def start_update_scheduler(self, interval_seconds: int | None = None) -> None:
         """Start the non-blocking Hugging Face update loop."""
@@ -152,12 +235,14 @@ class ModelCatalogue:
         try:
             if not root.exists():
                 self._items = []
+                self.refresh_comfyui_model_paths(discovered_paths=[])
                 return []
             paths = sorted(root.rglob("*"), key=lambda value: str(value))
         except (OSError, RuntimeError) as exc:
             self.scan_error = str(exc)
             self._items = []
             return []
+        self.refresh_comfyui_model_paths(discovered_paths=paths)
         directories = [
             path
             for path in paths
@@ -310,6 +395,7 @@ class ModelCatalogue:
             id=identifier,
             path=path,
             kind="directory" if path.is_dir() else "file",
+            model_kind="image" if (_is_image_model_directory(path) or _is_diffusers_image_directory(path)) else "llm" if path.is_dir() else "unknown",
             vendor=_model_vendor(path, self.paths.models_root),
             model_name=_model_name(path, self.paths.models_root),
             format=format_name,
@@ -334,7 +420,9 @@ class ModelCatalogue:
             except OSError:
                 return "unknown"
             names = {item.name for item in children}
-            if "config.json" in names or "model_index.json" in names:
+            if "model_index.json" in names:
+                return "diffusers"
+            if "config.json" in names:
                 return "transformers"
             if any(item.is_file() and item.suffix.lower() in {".gguf", ".ggml"} for item in path.rglob("*")):
                 return "gguf"
@@ -990,6 +1078,8 @@ def _is_directory(path: Path) -> bool:
 
 
 def _has_model_marker(path: Path) -> bool:
+    if _is_image_model_directory(path):
+        return True
     try:
         children = list(path.iterdir())
     except OSError:
@@ -1002,6 +1092,38 @@ def _has_model_marker(path: Path) -> bool:
         or "model.safetensors.index.json" in names
         or any(child.is_file() and child.suffix.lower() in MODEL_EXTENSIONS for child in children)
     )
+
+
+def _is_diffusers_image_directory(path: Path) -> bool:
+    """Identify image pipelines independently of ComfyUI bundle compatibility."""
+
+    try:
+        index = json.loads((path / "model_index.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, RuntimeError):
+        return False
+    return (
+        isinstance(index, dict)
+        and isinstance(index.get("_class_name"), str)
+        and "vae" in index
+        and ("transformer" in index or "unet" in index)
+    )
+
+
+def _is_image_model_directory(path: Path) -> bool:
+    """Recognise a ComfyUI image bundle by its required model subfolders."""
+
+    if not path.is_dir():
+        return False
+    try:
+        return all(
+            any(
+                item.is_file() and item.suffix.lower() in MODEL_EXTENSIONS
+                for item in (path / category).rglob("*")
+            )
+            for category in ("diffusion_models", "text_encoders", "vae")
+        )
+    except (OSError, RuntimeError):
+        return False
 
 
 def _model_directories(root: Path, directories: list[Path]) -> list[Path]:

@@ -1,7 +1,8 @@
+import { NotificationToast } from '@/components/ui/notification-toast'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowDown, ArrowUp, ArrowUpDown, ChevronRight, Cpu, Database, Info, MemoryStick, RefreshCw, Zap } from 'lucide-react'
-import { Button } from '@/components/ui/button'
+import { ArrowDown, ArrowUp, ArrowUpDown, ChevronRight, Cpu, Database, ExternalLink, Info, MemoryStick, Play, RefreshCw, Zap } from 'lucide-react'
+import { Button, ButtonLink } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { RunTabs } from '@/components/ui/run-tabs'
 import { ModelPerformance } from '@/components/model-performance'
@@ -15,7 +16,7 @@ import { QueryEmpty, QueryError, QueryLoading } from '@/components/query-state'
 import { StatusBadge } from '@/components/status-badge'
 import { api, queryKeys } from '@/lib/api'
 import { formatBytes, formatPercent } from '@/lib/utils'
-import type { Instance, MetricsData } from '@/types/api'
+import type { Instance, MetricsData, ProfileData } from '@/types/api'
 import { useSearchParams } from 'react-router-dom'
 
 const gpuColumns = [
@@ -113,18 +114,52 @@ function canStopInstance(instance: Instance | undefined): boolean {
   return instance?.can_stop === true && instance.identity_verified === true
 }
 
+function showsTextPerformance(instance: Instance): boolean {
+  return !instance.types?.length || instance.types.includes('text')
+}
+
+function instanceTitle(instance: Instance): string {
+  return instance.profile_name ?? instance.model_name ?? 'Внешний запуск'
+}
+
+function compareRunTitles(left: string, right: string): number {
+  return left.localeCompare(right, 'ru', { numeric: true, sensitivity: 'base' })
+}
+
+type HistoricalRun = { value: string; profile: ProfileData }
+const historicalRunValue = (profileName: string) => `profile:${profileName}`
+
+
 export function DashboardPage() {
   const openLogs = useLogsDrawer()
   const queryClient = useQueryClient()
   const [searchParams, setSearchParams] = useSearchParams()
   const system = useQuery({ queryKey: queryKeys.system, queryFn: api.getSystem, refetchInterval: 2_000, refetchIntervalInBackground: false })
+  const profiles = useQuery({ queryKey: queryKeys.profiles, queryFn: api.getProfiles })
+  const dailyRuns = useQuery({ queryKey: ['daily-metric-runs'], queryFn: api.getDailyMetricRuns, refetchInterval: 30_000, refetchIntervalInBackground: false })
   const activeInstances = useMemo(() => (system.data?.instances ?? []).filter((instance) => ['starting', 'ready', 'running', 'stopping'].includes(instance.state) || (instance.source === 'external' && instance.state === 'unknown')), [system.data?.instances])
+  const sortedActiveInstances = useMemo(() => [...activeInstances].sort((left, right) => {
+    const typeOrder = Number(showsTextPerformance(right)) - Number(showsTextPerformance(left))
+    return typeOrder || compareRunTitles(instanceTitle(left), instanceTitle(right)) || left.id.localeCompare(right.id)
+  }), [activeInstances])
+  const historicalRuns = useMemo<HistoricalRun[]>(() => {
+    const activeProfiles = new Set(activeInstances.flatMap((instance) => instance.profile_name ? [instance.profile_name] : []))
+    const dailyProfiles = new Set((dailyRuns.data?.items ?? []).map((run) => run.profile_name))
+    return (profiles.data?.items ?? []).flatMap((profile) => {
+      return dailyProfiles.has(profile.name) && !activeProfiles.has(profile.name)
+        ? [{ value: historicalRunValue(profile.name), profile }]
+        : []
+    }).sort((left, right) => compareRunTitles(left.profile.name, right.profile.name) || left.value.localeCompare(right.value))
+  }, [activeInstances, dailyRuns.data?.items, profiles.data?.items])
   const selectedId = searchParams.get('instance') ?? 'all'
-  const selected = activeInstances.find((instance) => instance.id === selectedId)
+  const selected = activeInstances.find((instance) => instance.id === selectedId
+    || (instance.profile_name && historicalRunValue(instance.profile_name) === selectedId))
+  const selectedHistorical = historicalRuns.find((run) => run.value === selectedId)
   const selectedCanStop = canStopInstance(selected)
-  const metricQueries = useQueries({ queries: activeInstances.map((instance) => ({ queryKey: ['metrics', instance.id], queryFn: () => api.getMetrics(instance.id), retry: instance.source === 'external' ? false as const : 1, refetchInterval: 2_000, refetchIntervalInBackground: false })) })
-  const selectedMetrics = metricQueries[activeInstances.findIndex((instance) => instance.id === selectedId)]
-  const allMetrics = useQuery({ queryKey: ['metrics-current', 'all'], queryFn: () => api.getMetricsHistory({ scope: 'all', mode: 'current' }), refetchInterval: 2_000, refetchIntervalInBackground: false })
+  const selectedShowsPerformance = selected ? showsTextPerformance(selected) : Boolean(selectedHistorical)
+  const metricQueries = useQueries({ queries: activeInstances.map((instance) => ({ enabled: dailyRuns.isSuccess && (selectedId === 'all' || selected?.id === instance.id), queryKey: ['metrics', instance.id], queryFn: () => api.getMetrics(instance.id), retry: instance.source === 'external' ? false as const : 1, refetchInterval: 2_000, refetchIntervalInBackground: false })) })
+  const selectedMetrics = metricQueries[activeInstances.findIndex((instance) => instance.id === selected?.id)]
+  const allMetrics = useQuery({ queryKey: ['metrics-current', 'all'], enabled: dailyRuns.isSuccess && selectedId === 'all', queryFn: () => api.getMetricsHistory({ scope: 'all', mode: 'current' }), refetchInterval: 2_000, refetchIntervalInBackground: false })
   const fallbackAggregate: MetricsData = {
     items: ['decode_tps', 'ttft_mean_ms', 'prefill_tps', 'kv_cache_percent', 'active_requests', 'queue_requests', 'prompt_tokens_total', 'completion_tokens_total', 'inflight_completion_tokens', 'completed_requests'].map((name) => {
       const observations = metricQueries.map((query) => query.isError ? undefined : query.data?.items.find((item) => item.name === name))
@@ -137,7 +172,7 @@ export function DashboardPage() {
       return { name, value, unit: null, source: complete ? source : 'Не все запуски предоставили этот показатель', observed_at: observedAt, state: complete ? 'ok' as const : 'unavailable' as const }
     }),
   }
-  const aggregateMetrics: MetricsData = allMetrics.data?.current ?? (activeInstances.length === 0 ? fallbackAggregate : { items: [] })
+  const aggregateMetrics: MetricsData | undefined = allMetrics.data?.current ?? (allMetrics.isSuccess ? activeInstances.length === 0 ? fallbackAggregate : { items: [] } : undefined)
   const logs = useQuery({ queryKey: ['logs', selected?.id], queryFn: async () => {
     const data = await api.getLogs(selected!.id)
     // Keep previously observed external output if its source temporarily disappears.
@@ -148,33 +183,60 @@ export function DashboardPage() {
     return data
   }, enabled: Boolean(selected), retry: selected?.source === 'external' ? false : 1, refetchInterval: 2_000, refetchIntervalInBackground: false })
   const [stopOperationId, setStopOperationId] = useState<string | null>(null)
-  const [stopOperationProfile, setStopOperationProfile] = useState<string | null>(null)
+  const [stopNotification, setStopNotification] = useState<{ id: string; title: string; message?: string; tone: 'success' | 'error' } | null>(null)
   const stopOperation = useQuery({ queryKey: queryKeys.operation(stopOperationId ?? ''), queryFn: () => api.getOperation(stopOperationId!), enabled: Boolean(stopOperationId), refetchInterval: (query) => ['queued', 'running'].includes(query.state.data?.state ?? '') ? 1_500 : false })
-  const stop = useMutation({ mutationFn: (id: string) => api.stopInstance(id), onSuccess: (operation, id) => { setStopOperationProfile(system.data?.instances.find((instance) => instance.id === id)?.profile_name ?? null); setStopOperationId(operation.id); void queryClient.invalidateQueries({ queryKey: queryKeys.system }) } })
+  const stop = useMutation({ mutationFn: (id: string) => api.stopInstance(id), onSuccess: (operation) => { setStopNotification(null); setStopOperationId(operation.id); void queryClient.invalidateQueries({ queryKey: queryKeys.system }) } })
+  const start = useMutation({
+    mutationFn: api.startProfile,
+    onMutate: async () => { await queryClient.cancelQueries({ queryKey: queryKeys.system }) },
+    onSuccess: (instance) => {
+      queryClient.setQueryData<Awaited<ReturnType<typeof api.getSystem>>>(queryKeys.system, (current) => current ? {
+        ...current, instances: [...current.instances.filter((item) => item.id !== instance.id), instance],
+      } : current)
+      void queryClient.invalidateQueries({ queryKey: queryKeys.system })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.instances })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.models })
+    },
+  })
 
   useEffect(() => {
-    if (system.isLoading || selectedId === 'all' || selected) return
+    if (system.isLoading || system.isFetching || start.isPending || profiles.isLoading || dailyRuns.isLoading || selectedId === 'all' || selected || selectedHistorical) return
     setSearchParams((current) => { current.delete('instance'); return current }, { replace: true })
-  }, [selected, selectedId, setSearchParams, system.isLoading])
+  }, [dailyRuns.isLoading, profiles.isLoading, selected, selectedHistorical, selectedId, setSearchParams, start.isPending, system.isFetching, system.isLoading])
+
+  useEffect(() => {
+    const operation = stopOperation.data
+    if (!operation || ['queued', 'running'].includes(operation.state)) return
+    setStopNotification({
+      id: operation.id,
+      tone: operation.state === 'succeeded' ? 'success' : 'error',
+      title: operation.state === 'succeeded' ? 'Экземпляр остановлен' : 'Остановка экземпляра не выполнена',
+      message: operation.error ?? undefined,
+    })
+    setStopOperationId(null)
+    void queryClient.invalidateQueries({ queryKey: queryKeys.system })
+  }, [stopOperation.data, queryClient])
 
   function selectInstance(id: string) {
     setSearchParams((current) => { if (id === 'all') current.delete('instance'); else current.set('instance', id); return current }, { replace: true })
   }
 
   return <div><PageHeader title="Dashboard" action={<Button variant="secondary" size="sm" onClick={() => { void system.refetch() }}><RefreshCw className="size-3.5" />Обновить</Button>} />
-    {stopOperation?.data && <div className="mb-4 rounded-md border border-border bg-secondary px-4 py-3 text-xs"><div className="flex items-center gap-2"><StatusBadge state={stopOperation.data.state} onClick={stopOperationProfile ? () => openLogs(stopOperationProfile) : undefined} title={stopOperationProfile ? `Логи профиля «${stopOperationProfile}»` : undefined} /><span>Остановка экземпляра <code>{stopOperation.data.target_id}</code></span></div>{stopOperation.data.error && <p className="mt-1 text-[#d0a390]">{stopOperation.data.error}</p>}</div>}{stopOperation.isError && <div className="mb-4"><QueryError error={stopOperation.error} retry={() => void stopOperation.refetch()} label="Состояние остановки недоступно" /></div>}{stop.isError && <div className="mb-4"><QueryError error={stop.error} label="Остановка экземпляра не запущена" /></div>}
+    {dailyRuns.isError && <QueryError error={dailyRuns.error} retry={() => void dailyRuns.refetch()} label="Список запусков за день недоступен" />}
+    {start.isError && <QueryError error={start.error} label="Запуск профиля не выполнен" />}
+    {stopNotification && <NotificationToast key={stopNotification.id} tone={stopNotification.tone} title={stopNotification.title} message={stopNotification.message} />}{stopOperation.isError && <QueryError error={stopOperation.error} retry={() => void stopOperation.refetch()} label="Состояние остановки недоступно" />}{stop.isError && <QueryError error={stop.error} label="Остановка экземпляра не запущена" />}
     {system.isLoading ? <QueryLoading label="Получаем состояние системы" /> : system.isError ? <QueryError error={system.error} retry={() => void system.refetch()} label="Состояние системы недоступно" /> : system.data && <div className="space-y-6">
       <Hardware data={system.data} sampleAt={system.dataUpdatedAt} />
       <section>
-        <div className="mb-3 flex items-end justify-between gap-3"><div className="flex items-center gap-2"><h2 className="text-base font-medium">Активные запуски</h2><span className="group relative inline-flex shrink-0"><button type="button" aria-label="Информация об активных запусках" aria-describedby="active-runs-info" className="rounded-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-copper"><Info className="size-3.5" /></button><span id="active-runs-info" role="tooltip" className="pointer-events-none absolute left-0 top-full z-20 mt-2 hidden w-64 max-w-[calc(100vw-4rem)] rounded-md border border-border bg-popover p-2 text-xs font-normal text-popover-foreground shadow-md group-hover:block group-focus-within:block">Профили и внешние процессы, которые backend видит сейчас.</span></span></div></div>
+        <div className="mb-3 flex items-end justify-between gap-3"><div className="flex items-center gap-2"><h2 className="text-base font-medium">Запуски</h2><span className="group relative inline-flex shrink-0"><button type="button" aria-label="Информация о запусках" aria-describedby="active-runs-info" className="rounded-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-copper"><Info className="size-3.5" /></button><span id="active-runs-info" role="tooltip" className="pointer-events-none absolute left-0 top-full z-20 mt-2 hidden w-64 max-w-[calc(100vw-4rem)] rounded-md border border-border bg-popover p-2 text-xs font-normal text-popover-foreground shadow-md group-hover:block group-focus-within:block">Активные процессы и остановленные профили с performance-метриками за текущие UTC-сутки.</span></span></div></div>
         <div>
-          <RunTabs panelId="run-metrics-panel" value={selected?.id ?? 'all'} onChange={selectInstance} items={[{ value: 'all', title: 'Все', subtitle: `${activeInstances.length} активных запусков` }, ...activeInstances.map((instance) => ({ value: instance.id, title: instance.profile_name ?? instance.model_name ?? 'Внешний запуск', subtitle: instance.model_name ?? 'модель неизвестна', uptime: runUptime(instance), meta: `${instance.engine_id} · ${instance.port === null ? '—' : `:${instance.port}`}` }))]} />
-          <Card className="rounded-t-none border-t-0" role="tabpanel" id="run-metrics-panel" aria-labelledby={`run-metrics-panel-tab-${encodeURIComponent(selected?.id ?? 'all')}`}>
-            <CardHeader><div className="flex h-8 items-center justify-between gap-3">{selected ? <><span className="min-w-0 truncate text-xs text-muted-foreground">{selected.source === 'external' ? 'Внешний процесс' : 'Профиль Neural Deck'} · PID {selected.pid}</span><div className="flex shrink-0 items-center gap-2"><StatusBadge state={selected.state} onClick={selected.profile_name ? () => openLogs(selected.profile_name!) : undefined} title={selected.profile_name ? `Логи профиля «${selected.profile_name}»` : undefined} /><Button size="sm" variant="danger" disabled={!selectedCanStop || stop.isPending || selected.state === 'stopping'} title={selectedCanStop ? undefined : 'Backend не подтвердил право остановки этого процесса'} onClick={() => void stop.mutate(selected.id)}>{selected.source === 'external' ? 'Остановить внешний' : 'Остановить'}</Button></div></> : <span className="text-xs text-muted-foreground">Сводные показатели всех активных моделей</span>}</div></CardHeader>
+          <RunTabs panelId="run-metrics-panel" value={selected?.id ?? selectedHistorical?.value ?? 'all'} onChange={selectInstance} items={[{ value: 'all', title: 'Все', subtitle: `${activeInstances.length} активных запусков` }, ...sortedActiveInstances.map((instance) => ({ value: instance.id, title: instanceTitle(instance), subtitle: instance.model_name ?? 'модель неизвестна', uptime: runUptime(instance), meta: `${instance.engine_id} · ${instance.port === null ? '—' : `:${instance.port}`}`, status: instance.state === 'starting' ? 'starting' as const : 'active' as const })), ...historicalRuns.map((run) => ({ value: run.value, title: run.profile.name, subtitle: run.profile.model_name, meta: `${run.profile.engine.id} · остановлен`, status: 'inactive' as const }))]} />
+          <Card className="rounded-t-none border-t-0" role="tabpanel" id="run-metrics-panel" aria-labelledby={`run-metrics-panel-tab-${encodeURIComponent(selected?.id ?? selectedHistorical?.value ?? 'all')}`}>
+            <CardHeader><div className="flex h-8 items-center justify-between gap-3">{selected ? <><span className="min-w-0 truncate text-xs text-muted-foreground">{selected.source === 'external' ? 'Внешний процесс' : 'Профиль Neural Deck'} · PID {selected.pid}</span><div className="flex shrink-0 items-center gap-2"><StatusBadge state={selected.state} onClick={selected.profile_name ? () => openLogs(selected.profile_name!) : undefined} title={selected.profile_name ? `Логи профиля «${selected.profile_name}»` : undefined} />{selected.ui_url && <ButtonLink href={selected.ui_url} target="_blank" rel="noopener noreferrer" size="sm" variant="secondary"><ExternalLink className="size-3.5" />Открыть UI</ButtonLink>}<Button size="sm" variant="danger" disabled={!selectedCanStop || stop.isPending || selected.state === 'stopping'} title={selectedCanStop ? undefined : 'Backend не подтвердил право остановки этого процесса'} onClick={() => void stop.mutate(selected.id)}>{selected.source === 'external' ? 'Остановить внешний' : 'Остановить'}</Button></div></> : selectedHistorical ? <><span className="min-w-0 truncate text-xs text-muted-foreground">Профиль Neural Deck · сохранённые метрики за сегодня</span><div className="flex shrink-0 items-center gap-2"><StatusBadge state="exited" onClick={() => openLogs(selectedHistorical.profile.name)} title={`Логи профиля «${selectedHistorical.profile.name}»`} /><Button size="sm" variant="primary" disabled={start.isPending} onClick={() => start.mutate(selectedHistorical.profile.name)}><Play className="size-3.5" />{start.isPending ? 'Запускаем…' : 'Запустить'}</Button></div></> : <span className="text-xs text-muted-foreground">Сводные показатели всех активных моделей</span>}</div></CardHeader>
             {selected ? <>
 
-              <CardContent className="pt-4"><ModelPerformance instance={selected} data={selectedMetrics?.data} /><LogsPanel key={selected.id} instance={selected} data={logs.data} loading={logs.isLoading} error={logs.error} retry={() => void logs.refetch()} /></CardContent>
-            </> : <CardContent className="pt-4"><ModelPerformance data={aggregateMetrics} />{activeInstances.length > 0 && <div className="mt-4 border-t border-border pt-3"><Table><TableHeader><TableRow><TableHead>Запуск</TableHead><TableHead>Статус</TableHead><TableHead className="text-right">Prefill avg, tok/s</TableHead><TableHead className="text-right">Decode avg, tok/s</TableHead><TableHead className="text-right">Served</TableHead><TableHead className="text-right">Output tokens</TableHead><TableHead className="text-right"><span className="sr-only">Остановить</span></TableHead></TableRow></TableHeader><TableBody>{activeInstances.map((instance, index) => <RunSummaryRow key={instance.id} instance={instance} data={metricQueries[index]?.data} onSelect={() => selectInstance(instance.id)} onLogs={instance.profile_name ? () => openLogs(instance.profile_name!) : undefined} onStop={() => stop.mutate(instance.id)} stopping={stop.isPending} />)}</TableBody></Table></div>}</CardContent>}
+              <CardContent className="pt-4">{dailyRuns.isSuccess && selectedShowsPerformance && <ModelPerformance instance={selected} data={selectedMetrics?.data} />}<LogsPanel key={selected.id} instance={selected} data={logs.data} loading={logs.isLoading} error={logs.error} retry={() => void logs.refetch()} /></CardContent>
+            </> : selectedHistorical ? <CardContent className="pt-4">{dailyRuns.isSuccess && <ModelPerformance profileName={selectedHistorical.profile.name} />}</CardContent> : <CardContent className="pt-4">{dailyRuns.isSuccess && selectedId === 'all' && <ModelPerformance data={aggregateMetrics} live={activeInstances.some(showsTextPerformance)} />}{activeInstances.length > 0 && <div className="mt-4 border-t border-border pt-3"><Table><TableHeader><TableRow><TableHead>Запуск</TableHead><TableHead>Статус</TableHead><TableHead className="text-right">Prefill avg, tok/s</TableHead><TableHead className="text-right">Decode avg, tok/s</TableHead><TableHead className="text-right">Served</TableHead><TableHead className="text-right">Output tokens</TableHead><TableHead className="text-right"><span className="sr-only">Остановить</span></TableHead></TableRow></TableHeader><TableBody>{activeInstances.map((instance, index) => <RunSummaryRow key={instance.id} instance={instance} data={metricQueries[index]?.data} showPerformance={showsTextPerformance(instance)} onSelect={() => selectInstance(instance.id)} onLogs={instance.profile_name ? () => openLogs(instance.profile_name!) : undefined} onStop={() => stop.mutate(instance.id)} stopping={stop.isPending} />)}</TableBody></Table></div>}</CardContent>}
           </Card>
         </div>
 

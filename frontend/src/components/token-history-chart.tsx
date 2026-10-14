@@ -14,9 +14,10 @@ const format = (number: number | null) => number === null ? '—' : number.toLoc
 const compact = new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 })
 const time = (at?: string) => at ? new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' }) : ''
 
-export function TokenHistoryChart({ instance }: { instance?: Instance }) {
-  const query = useQuery({ queryKey: ['token-history', instance?.profile_name ?? instance?.id ?? 'all'],
-    queryFn: () => api.getTokenHistory(instance?.profile_name ?? undefined, instance?.profile_name ? undefined : instance?.pid),
+export function TokenHistoryChart({ instance, profileName }: { instance?: Instance; profileName?: string }) {
+  const selectedProfile = profileName ?? instance?.profile_name ?? undefined
+  const query = useQuery({ queryKey: ['token-history', selectedProfile ?? instance?.id ?? 'all'],
+    queryFn: () => api.getTokenHistory(selectedProfile, selectedProfile ? undefined : instance?.pid),
     refetchInterval: 30_000, refetchIntervalInBackground: false, retry: false })
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null)
   const [tooltipPosition, setTooltipPosition] = useState({ left: 0, top: 0 })

@@ -11,13 +11,15 @@ from ..config import Settings
 from ..paths import DataPaths
 from ..schemas.engines import Engine, Installation
 from .adapters import ADAPTER_BY_ID, ADAPTERS, Candidate, read_engine_manifest
-from .templates import LAUNCH_TEMPLATES
 from .installation_templates import frontend_installation_template
+from .templates import LAUNCH_TEMPLATES
 
 
 def installation_id(engine_id: str, kind: str, path: Path) -> str:
     canonical = str(Path(path).expanduser().resolve(strict=False))
-    digest = hashlib.sha256(f"{engine_id}\0{kind}\0{canonical}".encode()).hexdigest()[:24]
+    # Preserve profile references created before the Image engine was renamed.
+    identity_engine = "image" if engine_id == "comfyui" else engine_id
+    digest = hashlib.sha256(f"{identity_engine}\0{kind}\0{canonical}".encode()).hexdigest()[:24]
     return f"inst_{digest}"
 
 

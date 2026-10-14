@@ -1,0 +1,28 @@
+version: 1
+id: qwen3-tts-openai
+name: Qwen3-TTS OpenAI Speech adapter (experimental)
+types: [tts]
+install_script: |
+  set -eu
+  target={{target}}
+  python3 -m venv "$target"
+  "$target/bin/pip" install -r /opt/neural-deck/backend/app/serving/requirements/qwen3-tts.txt
+  install -m 0644 /opt/neural-deck/backend/app/serving/qwen3_tts_openai.py "$target/qwen3_tts_openai.py"
+  cat > "$target/bin/qwen3-tts-openai" <<'SCRIPT'
+  #!/bin/sh
+  exec "$(dirname "$0")/python" "$(dirname "$0")/../qwen3_tts_openai.py" "$@"
+  SCRIPT
+  chmod 0755 "$target/bin/qwen3-tts-openai"
+update_script: null
+executable: "{{target}}/bin/qwen3-tts-openai"
+working_directory: null
+environment: {}
+command: "{{engine}} --model {{model}} --model-name {{model_name}} --host 127.0.0.1 --port 18101"
+healthcheck:
+  path: /health
+  timeout_seconds: 3
+api:
+  protocol: openai
+  base_url: http://127.0.0.1:18101/v1
+ui_url: null
+version_command: null

@@ -19,6 +19,7 @@ from ..profiles.repository import ProfileRepository
 from ..profiles.service import ProfileService
 
 if TYPE_CHECKING:
+    from ..image.service import ImageGenerationService
     from ..metrics.service import MetricsService
     from ..proxy.service import ProxyService
     from ..statistics import StatisticsService
@@ -79,6 +80,10 @@ def get_proxy_service(request: Request) -> ProxyService:
 
 def get_metrics_service(request: Request) -> MetricsService:
     return get_runtime(request).metrics_service
+
+
+def get_image_service(request: Request) -> ImageGenerationService:
+    return get_runtime(request).image_service
 
 
 def get_statistics_service(request: Request) -> StatisticsService:

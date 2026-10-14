@@ -8,6 +8,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from .instances import Instance
+
 
 class CpuData(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -38,32 +40,8 @@ class GpuData(BaseModel):
     power_limit_watts: float | None = None
 
 
-InstanceState = Literal[
-    "starting",
-    "ready",
-    "running",
-    "stopping",
-    "exited",
-    "error",
-    "unknown",
-]
-
-
-class InstanceData(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    id: str = Field(min_length=1)
-    source: Literal["managed", "external"]
-    profile_name: str | None = None
-    engine_id: str = Field(min_length=1)
-    pid: int = Field(gt=0)
-    process_start_time_ns: int | None = Field(default=None, gt=0)
-    identity_verified: bool = False
-    can_stop: bool = False
-    port: int | None = Field(default=None, ge=1, le=65535)
-    model_name: str | None = None
-    state: InstanceState
-    observed_at: datetime
+class InstanceData(Instance):
+    """Runtime instance embedded into system telemetry responses."""
 
 
 class SystemData(BaseModel):

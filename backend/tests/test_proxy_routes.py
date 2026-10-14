@@ -118,6 +118,25 @@ def test_auto_routes_group_profiles_and_report_runtime_availability(tmp_path: Pa
     assert ordered.candidate_profile_ids == ("second", "first")
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("profiles_present", [True, False])
+async def test_alias_is_advertised_without_running_candidates(
+    tmp_path: Path, profiles_present: bool
+) -> None:
+    repository = ProfileRepositoryStub([profile("first")])
+    manager = RouteManager(tmp_path, repository)
+    manager.create_alias("permanent-chat", ["first"])
+    if not profiles_present:
+        repository._profiles = []
+    service = ProxyService(ProcessManagerStub([]), route_manager=manager)
+
+    result = await service.models()
+
+    assert [model["id"] for model in result["data"]] == ["permanent-chat"]
+    assert result["data"][0]["object"] == "model"
+    await service.close()
+
+
 def test_alias_order_is_persisted_and_collisions_are_rejected(tmp_path: Path) -> None:
     first = profile("first")
     second = profile("second")

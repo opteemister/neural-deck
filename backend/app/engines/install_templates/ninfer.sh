@@ -1,5 +1,7 @@
 set -euo pipefail
-if [ -f {{target}} ]; then
+target_root={{target}}
+if [[ "$target_root" == */ninfer-serve ]]; then executable="$target_root"; else executable="$target_root/bin/ninfer-serve"; fi
+if [ -f "$executable" ]; then
   echo 'Бинарник уже существует; сборка пропущена. Приложение проверит и зарегистрирует его.'
   exit 0
 fi
@@ -15,5 +17,5 @@ cmake -S "$source_dir" -B "$source_dir/build" -G Ninja \
   -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=120a
 cmake --build "$source_dir/build" --parallel "$(nproc)"
 # Upstream запускает продукт из дерева сборки; сохраняем этот путь через symlink.
-mkdir -p {{target_dir}}
-ln -sfn "$source_dir/build/apps/ninfer-serve" {{target}}
+mkdir -p "$(dirname "$executable")"
+ln -sfn "$source_dir/build/apps/ninfer-serve" "$executable"

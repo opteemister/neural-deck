@@ -26,7 +26,9 @@ from ..process.manager import ProcessManager
 from ..process.registry import RegisteredModel
 from ..schemas.instances import Instance
 from ..token_stats import RequestJournalService
-from .routes import RouteInfo, RouteManager, RuntimeModel
+from .decisions import adapt_jev_response, build_jev_request
+from .operations import public_types, supports, upstream_url
+from .routes import RouteCandidate, RouteInfo, RouteManager, RuntimeModel
 
 _HOP_BY_HOP = {
     "connection",
@@ -49,7 +51,7 @@ _route_override: ContextVar[RegisteredModel | None] = ContextVar("route_override
 
 @dataclass(slots=True)
 class _ModelsCache:
-    identity: tuple[int, int | None, int | None, str | None, str]
+    identity: tuple[Any, ...]
     refreshed_at: float
     metadata: dict[str, dict[str, Any]]
 
@@ -63,14 +65,19 @@ class ProxyService:
         route_manager: RouteManager | None = None,
         client_factory: Callable[[], httpx.AsyncClient] | None = None,
         timeout: float = 120.0,
+        image_service: Any | None = None,
     ) -> None:
         self.process_manager = process_manager
         self.journal = journal
         self.route_manager = route_manager
         self.client_factory = client_factory
         self.timeout = timeout
+        self.image_service = image_service
         self._models_lock = asyncio.Lock()
         self._models_cache: dict[str, _ModelsCache] = {}
+        # Locks live for this ProxyService's application lifespan. Keeping them
+        # stable avoids removing a lock while requests are queued on it.
+        self._decision_locks: dict[tuple[str, str], asyncio.Lock] = {}
 
     async def close(self) -> None:
         """Release proxy-owned resources.
@@ -82,19 +89,139 @@ class ProxyService:
 
         return None
 
+    def _decision_lock_for(self, instance: Instance, registered: RegisteredModel) -> asyncio.Lock:
+        key = (
+            registered.instance_id or instance.id,
+            registered.profile_name or instance.profile_name or "",
+        )
+        lock = self._decision_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._decision_locks[key] = lock
+        return lock
+
+    async def generate_image(
+        self, payload: Mapping[str, Any], *, request_id: str
+    ) -> dict[str, Any]:
+        """Run MCP image generation through the same operation/protocol router as /v1."""
+
+        requested_model = payload.get("model")
+        models = (await self.models()).get("data", [])
+        image_models = sorted({
+            item["id"]
+            for item in models
+            if isinstance(item, Mapping)
+            and isinstance(item.get("id"), str)
+            and isinstance(item.get("types"), list)
+            and "image" in item["types"]
+        })
+        if self.route_manager is not None:
+            _, instances, _, routes = await self._refresh_route_catalog()
+            image_routes = {
+                route.name
+                for route in routes
+                if not route.diagnostics
+                and any(
+                    candidate.available
+                    and candidate.instance_id is not None
+                    and candidate.instance_id in instances
+                    and supports(instances[candidate.instance_id], "/v1/images/generations")
+                    for candidate in route.candidates
+                )
+            }
+            image_models = sorted(set(image_models) | image_routes)
+        model_name: str | None = None
+        if requested_model is not None:
+            if not isinstance(requested_model, str) or not requested_model:
+                raise AppError("invalid_model", "Поле model должно быть непустой строкой", status_code=400)
+            if requested_model in image_models:
+                model_name = requested_model
+            else:
+                registered = [
+                    item for item in self.process_manager.model_registry().list()
+                    if item.profile_name == requested_model and item.id in image_models
+                ]
+                if registered:
+                    model_name = registered[0].id
+                elif self.route_manager is not None:
+                    profiles = await asyncio.to_thread(self.route_manager.profiles)
+                    profile = next((item for item in profiles if item.name == requested_model), None)
+                    if profile is not None and profile.model_name in image_models:
+                        model_name = profile.model_name
+            if model_name is None:
+                raise AppError(
+                    "model_not_found", "Image-профиль не найден или не поддерживает image API",
+                    status_code=404, details={"model": requested_model},
+                )
+        elif len(image_models) == 1:
+            model_name = image_models[0]
+        elif not image_models:
+            raise AppError("image_instance_not_found", "Нет готового image-профиля", status_code=404)
+        else:
+            raise AppError(
+                "image_model_required", "Укажите модель для генерации изображения",
+                status_code=409, details={"models": image_models},
+            )
+
+        request_payload = {**payload, "model": model_name}
+        response = await self.forward(
+            route="/v1/images/generations",
+            payload=request_payload,
+            headers={},
+            request_id=request_id,
+        )
+        if isinstance(response, httpx.Response):
+            if response.status_code >= 400:
+                try:
+                    upstream_error = response.json()
+                except (ValueError, TypeError):
+                    upstream_error = {"body": response.text[:500]}
+                error = upstream_error.get("error") if isinstance(upstream_error, Mapping) else None
+                message = error.get("message") if isinstance(error, Mapping) else None
+                raise AppError(
+                    "image_generation_failed",
+                    message if isinstance(message, str) and message else "Image upstream завершил запрос с ошибкой",
+                    status_code=response.status_code,
+                    details={"upstream_error": upstream_error},
+                )
+            try:
+                result = response.json()
+            except (ValueError, TypeError) as exc:
+                raise AppError(
+                    "upstream_contract_unsupported", "Image upstream вернул не JSON",
+                    status_code=502,
+                ) from exc
+            if not isinstance(result, Mapping):
+                raise AppError(
+                    "upstream_contract_unsupported", "Image upstream вернул неверный JSON",
+                    status_code=502,
+                )
+            return dict(result)
+        if isinstance(response, Mapping):
+            return dict(response)
+        raise AppError(
+            "upstream_contract_unsupported", "Image router вернул неподдерживаемый ответ",
+            status_code=502,
+        )
+
     async def models(self) -> dict[str, Any]:
         if self.route_manager is not None:
             _, instances, metadata, routes = await self._refresh_route_catalog()
             route_names = {route.name for route in routes}
             result: list[dict[str, Any]] = []
             for route_info in routes:
-                if route_info.diagnostics:
-                    continue
                 candidate = next(iter(route_info.available_candidates()), None)
-                if candidate is None:
-                    continue
-                instance = instances.get(candidate.instance_id or "")
-                if instance is None:
+                instance = instances.get(candidate.instance_id or "") if candidate else None
+                if route_info.diagnostics or candidate is None or instance is None:
+                    # Aliases are persistent public model names. Runtime
+                    # availability controls routing, not catalogue membership.
+                    if route_info.kind == "alias":
+                        result.append({
+                            "id": route_info.name,
+                            "object": "model",
+                            "created": 0,
+                            "owned_by": "neural-deck",
+                        })
                     continue
                 result.append(
                     {
@@ -103,7 +230,8 @@ class ProxyService:
                         "created": int(instance.observed_at.timestamp()),
                         "owned_by": "neural-deck",
                         "engine_id": candidate.engine_id,
-                        **candidate.metadata,
+                        **_public_metadata(candidate.metadata),
+                        "types": public_types(instance),
                     }
                 )
             for registered in sorted(
@@ -112,9 +240,12 @@ class ProxyService:
                 if registered.profile_name is not None or registered.id in route_names:
                     continue
                 engine_models = metadata.get(registered.instance_id, {})
+                instance = instances.get(registered.instance_id)
+                if instance is None or instance.state != "ready" or not public_types(instance):
+                    continue
                 if (
-                    registered.upstream_model is None
-                    or registered.upstream_model not in engine_models
+                    "text" in instance.types
+                    and registered.upstream_model not in engine_models
                 ):
                     continue
                 result.append(
@@ -124,9 +255,11 @@ class ProxyService:
                         "created": int(registered.observed_at.timestamp()),
                         "owned_by": "neural-deck",
                         "engine_id": registered.engine_id,
-                        **engine_models[registered.upstream_model],
+                        **_public_metadata(engine_models.get(registered.upstream_model or "", {})),
+                        "types": public_types(instance),
                     }
                 )
+            self._append_image_models(result, instances)
             return {"object": "list", "data": result}
         async with self._models_lock:
             # Observe process identities on every request without probing ready engines.
@@ -141,11 +274,16 @@ class ProxyService:
             for instance_id in list(self._models_cache):
                 if instance_id not in instances:
                     del self._models_cache[instance_id]
+            llm_instances = {
+                instance_id: instance
+                for instance_id, instance in instances.items()
+                if instance.api_protocol == "openai" and instance.state == "ready"
+            }
             metadata = dict(
                 zip(
-                    instances,
+                    llm_instances,
                     await asyncio.gather(
-                        *(self._cached_model_metadata(instance) for instance in instances.values())
+                        *(self._cached_model_metadata(instance) for instance in llm_instances.values())
                     ),
                     strict=True,
                 )
@@ -156,9 +294,12 @@ class ProxyService:
             result = []
             for registered in registered_models:
                 engine_models = metadata.get(registered.instance_id, {})
+                instance = instances.get(registered.instance_id)
+                if instance is None or instance.state != "ready" or not public_types(instance):
+                    continue
                 if (
-                    registered.upstream_model is None
-                    or registered.upstream_model not in engine_models
+                    "text" in instance.types
+                    and registered.upstream_model not in engine_models
                 ):
                     continue
                 result.append(
@@ -168,10 +309,33 @@ class ProxyService:
                         "created": int(registered.observed_at.timestamp()),
                         "owned_by": "neural-deck",
                         "engine_id": registered.engine_id,
-                        **engine_models[registered.upstream_model],
+                        **_public_metadata(engine_models.get(registered.upstream_model or "", {})),
+                        "types": public_types(instance),
                     }
                 )
+            self._append_image_models(result, instances)
             return {"object": "list", "data": result}
+
+    @staticmethod
+    def _append_image_models(result: list[dict[str, Any]], instances: dict[str, Instance]) -> None:
+        existing_ids = {item["id"] for item in result}
+        for instance in instances.values():
+            if not supports(instance, "/v1/images/generations") or instance.state != "ready":
+                continue
+            image_id = instance.model_name or instance.profile_name
+            if not image_id or image_id in existing_ids:
+                continue
+            result.append({
+                "id": image_id,
+                "object": "model",
+                "created": int(instance.observed_at.timestamp()),
+                "owned_by": "neural-deck",
+                "engine_id": instance.engine_id,
+                "types": public_types(instance),
+                "capabilities": {"image_generation": True},
+            })
+            existing_ids.add(image_id)
+        result.sort(key=lambda item: item["id"])
 
     async def route_data(self) -> dict[str, Any]:
         if self.route_manager is None:
@@ -224,11 +388,16 @@ class ProxyService:
             for instance_id in list(self._models_cache):
                 if instance_id not in instances:
                     del self._models_cache[instance_id]
+            llm_instances = {
+                instance_id: instance
+                for instance_id, instance in instances.items()
+                if instance.api_protocol == "openai" and instance.state == "ready"
+            }
             metadata = dict(
                 zip(
-                    instances,
+                    llm_instances,
                     await asyncio.gather(
-                        *(self._cached_model_metadata(instance) for instance in instances.values())
+                        *(self._cached_model_metadata(instance) for instance in llm_instances.values())
                     ),
                     strict=True,
                 )
@@ -249,6 +418,9 @@ class ProxyService:
             instance.port,
             instance.model_name if instance.source == "managed" else None,
             instance.engine_id,
+            instance.api_protocol,
+            instance.api_base_url,
+            tuple(instance.types),
         )
         cached = self._models_cache.get(instance.id)
         if cached is not None and cached.identity == identity:
@@ -269,16 +441,14 @@ class ProxyService:
         """Refresh engine model names and their metadata in one HTTP probe."""
         details: dict[str, dict[str, Any]] = {}
         try:
-            if instance.port is None:
-                logger.warning("Опрос моделей пропущен: нет порта instance_id=%s", instance.id)
+            if instance.api_protocol != "openai" or instance.state != "ready":
                 return {}
             client = (
                 self.client_factory() if self.client_factory else httpx.AsyncClient(timeout=1.0)
             )
             async with client:
-                base = f"http://127.0.0.1:{instance.port}"
-                logger.info("Опрос моделей: instance_id=%s url=%s/v1/models", instance.id, base)
-                response = await client.get(f"{base}/v1/models", timeout=1.0)
+                target = upstream_url(instance, "/v1/models")
+                response = await client.get(target, timeout=1.0)
                 response.raise_for_status()
                 items = response.json().get("data")
                 if not isinstance(items, list):
@@ -290,6 +460,9 @@ class ProxyService:
                     if not isinstance(name, str) or not name:
                         continue
                     item_details = _reasoning_capabilities(model)
+                    for key in ("dimensions", "embedding_dimensions", "embedding_space"):
+                        if key in model:
+                            item_details[key] = model[key]
                     for key in ("max_model_len", "context_length", "max_context_length"):
                         limit = model.get(key)
                         if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0:
@@ -306,11 +479,14 @@ class ProxyService:
                     self.process_manager.model_registry().register_instance(
                         instance, upstream_models=list(details)
                     )
-                    instance.state = "ready"
                 else:
                     self.process_manager.model_registry().clear_instance(instance.id)
                 if instance.engine_id == "llama.cpp":
-                    response = await client.get(f"{base}/props", timeout=1.0)
+                    from urllib.parse import urlsplit, urlunsplit
+
+                    base = urlsplit(target)
+                    props_url = urlunsplit((base.scheme, base.netloc, "/props", "", ""))
+                    response = await client.get(props_url, timeout=1.0)
                     if response.is_success:
                         props = response.json()
                         shared = _reasoning_capabilities(props)
@@ -342,6 +518,8 @@ class ProxyService:
         request_id: str,
         client_ip: str | None = None,
         force_usage: bool = False,
+        multipart_data: Mapping[str, Any] | None = None,
+        multipart_files: Mapping[str, Any] | None = None,
     ) -> httpx.Response | Any:
         tracking: dict[str, Any] = {
             "journal_id": f"journal_{uuid4().hex}",
@@ -383,6 +561,8 @@ class ProxyService:
                 headers=headers,
                 request_id=request_id,
                 force_usage=force_usage,
+                multipart_data=multipart_data,
+                multipart_files=multipart_files,
             )
         finally:
             _request_tracking.reset(token)
@@ -395,6 +575,8 @@ class ProxyService:
         headers: Mapping[str, str],
         request_id: str,
         force_usage: bool,
+        multipart_data: Mapping[str, Any] | None = None,
+        multipart_files: Mapping[str, Any] | None = None,
     ) -> httpx.Response | Any:
         started = time.perf_counter()
         model_name = payload.get("model")
@@ -409,10 +591,19 @@ class ProxyService:
             )
             raise AppError("invalid_model", "Поле model обязательно", status_code=400)
         if self.route_manager is not None and _route_override.get() is None:
-            _, _, _, routes = await self._refresh_route_catalog()
+            _, instances, _, routes = await self._refresh_route_catalog()
             route_info = next((item for item in routes if item.name == model_name), None)
             if route_info is not None:
-                if route_info.diagnostics or not route_info.available:
+                matching = [candidate for candidate in route_info.candidates
+                            if candidate.instance_id in instances
+                            and supports(instances[candidate.instance_id], route)]
+                if not matching:
+                    raise AppError("unsupported_operation", "Модель не поддерживает эту операцию",
+                                   status_code=400, details={"model": model_name, "route": route})
+                available = [candidate for candidate in matching if candidate.available]
+                if route in {"/v1/embeddings", "/v1/embeddings/media"}:
+                    await self._validate_embedding_route(matching)
+                if route_info.diagnostics or not available:
                     await self._journal_without_target(
                         request_id=request_id,
                         route=route,
@@ -429,7 +620,7 @@ class ProxyService:
                         details={"model": model_name},
                     )
                 last_error: AppError | None = None
-                for candidate in route_info.available_candidates():
+                for candidate in available:
                     registered = RegisteredModel(
                         id=route_info.name,
                         upstream_model=candidate.upstream_model,
@@ -446,6 +637,8 @@ class ProxyService:
                             headers=headers,
                             request_id=request_id,
                             force_usage=force_usage,
+                            multipart_data=multipart_data,
+                            multipart_files=multipart_files,
                         )
                     except AppError as exc:
                         if exc.code != "upstream_unavailable" or not exc.retryable:
@@ -495,6 +688,11 @@ class ProxyService:
             )
             raise
         tracking = _request_tracking.get()
+        if not supports(instance, route):
+            raise AppError("unsupported_operation", "Модель не поддерживает эту операцию",
+                           status_code=400)
+        if instance.state != "ready" or not instance.identity_verified:
+            raise AppError("upstream_unavailable", "API экземпляра не готов", status_code=503)
         if tracking is not None:
             tracking["pid"] = instance.pid
             tracking["profile_name"] = registered.profile_name
@@ -513,7 +711,7 @@ class ProxyService:
                     created_at=tracking["started_at"],
                     **tracking,
                 )
-        if instance.port is None:
+        if not instance.api_base_url:
             await self._journal(
                 request_id=request_id,
                 route=route,
@@ -528,18 +726,53 @@ class ProxyService:
             )
             raise AppError(
                 "upstream_unavailable",
-                "У экземпляра отсутствует подтверждённый API-порт",
+                "У экземпляра отсутствует API URL",
                 status_code=503,
                 retryable=True,
             )
         upstream_model = registered.upstream_model or model_name
         upstream_payload = dict(payload)
         upstream_payload["model"] = upstream_model
-        target = f"http://127.0.0.1:{instance.port}{route}"
+        if route == "/v1/images/generations" and instance.api_protocol == "openai":
+            # The MCP schema retains ComfyUI controls. Drop their defaults for
+            # OpenAI servers, but report non-default requests instead of
+            # silently claiming to honor unsupported behavior.
+            unsupported_controls = {}
+            if payload.get("seed") is not None:
+                unsupported_controls["seed"] = payload["seed"]
+            if payload.get("steps", 25) not in (None, 25):
+                unsupported_controls["steps"] = payload["steps"]
+            if payload.get("transparent") is True:
+                unsupported_controls["transparent"] = True
+            if unsupported_controls:
+                raise AppError(
+                    "unsupported_operation",
+                    "Выбранный OpenAI image profile не поддерживает параметры ComfyUI",
+                    status_code=400,
+                    details={"parameters": sorted(unsupported_controls)},
+                )
+            for key in ("seed", "steps", "transparent"):
+                upstream_payload.pop(key, None)
+        if route == "/v1/images/generations" and instance.api_protocol == "comfyui":
+            if self.image_service is None:
+                raise AppError("unsupported_operation", "Image adapter недоступен", status_code=503)
+            upstream_payload["model"] = instance.profile_name or instance.model_name
+            result = await self.image_service.generate(
+                upstream_payload, request_id=request_id,
+                url_prefix="/api/proxy" if force_usage else "/v1",
+            )
+            await self._journal(request_id=request_id, route=route, model_name=model_name,
+                                registered=registered, status_code=200, started=started,
+                                input_tokens=None, output_tokens=None, stream=False, error_code=None)
+            return httpx.Response(200, json=result)
+        if route == "/v1/decisions":
+            _, upstream_payload, decision_mappings = build_jev_request(payload)
+        target = upstream_url(instance, route)
         outgoing_headers = {
             key: value
             for key, value in headers.items()
             if key.lower() not in _HOP_BY_HOP and key.lower() != "authorization"
+            and (multipart_files is None or key.lower() != "content-type")
         }
         stream = bool(upstream_payload.get("stream")) and route == "/v1/chat/completions"
         if force_usage and stream and registered.engine_id in _USAGE_STREAM_OPTION_ENGINES:
@@ -558,6 +791,15 @@ class ProxyService:
             if self.client_factory is not None
             else httpx.AsyncClient(timeout=self.timeout)
         )
+        if route in {"/v1/audio/speech", "/v1/audio/transcriptions"}:
+            data = dict(multipart_data or {})
+            if multipart_files is not None:
+                data["model"] = upstream_model
+            return await self._forward_media(
+                client, target, upstream_payload, outgoing_headers, route, model_name,
+                registered, request_id, started,
+                data=data if multipart_files is not None else None, files=multipart_files,
+            )
         if stream:
             return await self._forward_stream(
                 client,
@@ -570,57 +812,165 @@ class ProxyService:
                 request_id,
                 started,
             )
+        decision_lock = (
+            self._decision_lock_for(instance, registered)
+            if route == "/v1/decisions"
+            else None
+        )
+        if decision_lock is not None:
+            await decision_lock.acquire()
         try:
-            response = await client.request(
-                "POST",
-                target,
-                json=upstream_payload,
-                headers=outgoing_headers,
-            )
+            try:
+                response = await client.request(
+                    "POST",
+                    target,
+                    json=upstream_payload,
+                    headers=outgoing_headers,
+                )
+            except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as exc:
+                await self._journal(
+                    request_id=request_id,
+                    route=route,
+                    model_name=model_name,
+                    registered=registered,
+                    status_code=502,
+                    started=started,
+                    input_tokens=None,
+                    output_tokens=None,
+                    stream=False,
+                    error_code="upstream_unavailable",
+                )
+                raise AppError(
+                    "upstream_unavailable",
+                    "Экземпляр инференса недоступен",
+                    status_code=502,
+                    details={"reason": str(exc)[:200]},
+                    retryable=_safe_to_retry(exc),
+                ) from exc
+            try:
+                body = await response.aread()
+                if route == "/v1/decisions" and response.status_code < 400:
+                    try:
+                        raw_decision = json.loads(body)
+                        if not isinstance(raw_decision, Mapping):
+                            raise AppError("upstream_contract_unsupported", "Jev вернул неверный JSON",
+                                           status_code=502)
+                        body = json.dumps(adapt_jev_response(
+                            raw_decision, model_name, decision_mappings
+                        ), ensure_ascii=False).encode("utf-8")
+                    except (ValueError, AppError) as exc:
+                        await self._journal(request_id=request_id, route=route, model_name=model_name,
+                                            registered=registered, status_code=502, started=started,
+                                            input_tokens=None, output_tokens=None, stream=False,
+                                            error_code="upstream_contract_unsupported")
+                        if isinstance(exc, AppError):
+                            raise
+                        raise AppError("upstream_contract_unsupported", "Jev вернул неверный JSON",
+                                       status_code=502) from exc
+                input_tokens, output_tokens = _extract_usage(body, response.headers.get("content-type"))
+                if tracking is not None:
+                    tracking.update(
+                        _response_metrics(body, streaming=False, engine_id=registered.engine_id)
+                    )
+                await self._journal(
+                    request_id=request_id,
+                    route=route,
+                    model_name=model_name,
+                    registered=registered,
+                    status_code=response.status_code,
+                    started=started,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    stream=False,
+                    error_code=None if response.status_code < 400 else "upstream_error",
+                )
+                if route == "/v1/decisions" and response.status_code < 400:
+                    return httpx.Response(response.status_code, content=body,
+                                          headers={"content-type": "application/json"})
+                return _passthrough_response(response.status_code, response.headers, body)
+            finally:
+                await response.aclose()
+        finally:
+            try:
+                await client.aclose()
+            finally:
+                if decision_lock is not None:
+                    decision_lock.release()
+
+    async def _validate_embedding_route(
+        self, candidates: list[RouteCandidate]
+    ) -> None:
+        profile_ids = tuple(dict.fromkeys(candidate.profile_id for candidate in candidates))
+        if self.route_manager is None or len(profile_ids) < 2:
+            return
+        profiles = {profile.name: profile for profile in
+                    await asyncio.to_thread(self.route_manager.profiles)}
+        paths = []
+        for profile_id in profile_ids:
+            profile = profiles.get(profile_id)
+            if profile is None or profile.model is None:
+                raise AppError("embedding_space_unverified",
+                               "Для embeddings alias нужно явно выбрать одну модель во всех профилях",
+                               status_code=409)
+            paths.append(str(profile.model.path.resolve(strict=False)))
+        dimensions = [candidate.metadata.get(
+            "dimensions", candidate.metadata.get("embedding_dimensions")
+        ) for candidate in candidates]
+        known_dimensions = [value for value in dimensions if value is not None]
+        spaces = [candidate.metadata.get("embedding_space")
+                  for candidate in candidates
+                  if candidate.metadata.get("embedding_space") is not None]
+        if (len(set(paths)) != 1
+                or any(value != known_dimensions[0] for value in known_dimensions[1:])
+                or any(value != spaces[0] for value in spaces[1:])):
+            raise AppError("embedding_space_mismatch",
+                           "Embeddings alias объединяет разные модели или размерности",
+                           status_code=409)
+
+    async def _forward_media(
+        self, client: httpx.AsyncClient, target: str, payload: Mapping[str, Any],
+        headers: Mapping[str, str], route: str, model_name: str, registered: RegisteredModel,
+        request_id: str, started: float, *, data: Mapping[str, Any] | None,
+        files: Mapping[str, Any] | None,
+    ) -> Any:
+        # httpx's multipart encoder reads the spooled upload in fixed-size
+        # chunks. Neither uploads nor binary/SSE replies are materialised here.
+        tracking = _request_tracking.get()
+        kwargs = {"data": data, "files": files} if files is not None else {"json": payload}
+        context = client.stream("POST", target, headers=headers, **kwargs)
+        try:
+            response = await context.__aenter__()
         except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as exc:
             await client.aclose()
-            await self._journal(
-                request_id=request_id,
-                route=route,
-                model_name=model_name,
-                registered=registered,
-                status_code=502,
-                started=started,
-                input_tokens=None,
-                output_tokens=None,
-                stream=False,
-                error_code="upstream_unavailable",
-            )
-            raise AppError(
-                "upstream_unavailable",
-                "Экземпляр инференса недоступен",
-                status_code=502,
-                details={"reason": str(exc)[:200]},
-                retryable=True,
-            ) from exc
-        try:
-            body = await response.aread()
-            input_tokens, output_tokens = _extract_usage(body, response.headers.get("content-type"))
-            if tracking is not None:
-                tracking.update(
-                    _response_metrics(body, streaming=False, engine_id=registered.engine_id)
-                )
-            await self._journal(
-                request_id=request_id,
-                route=route,
-                model_name=model_name,
-                registered=registered,
-                status_code=response.status_code,
-                started=started,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                stream=False,
-                error_code=None if response.status_code < 400 else "upstream_error",
-            )
-            return _passthrough_response(response.status_code, response.headers, body)
-        finally:
-            await response.aclose()
-            await client.aclose()
+            await self._journal(request_id=request_id, route=route, model_name=model_name,
+                                registered=registered, status_code=502, started=started,
+                                input_tokens=None, output_tokens=None, stream=True,
+                                error_code="upstream_unavailable")
+            raise AppError("upstream_unavailable", "Audio upstream недоступен", status_code=502,
+                           retryable=_safe_to_retry(exc)) from exc
+
+        async def body() -> AsyncIterator[bytes]:
+            error_code = None
+            try:
+                async for chunk in response.aiter_raw(chunk_size=64 * 1024):
+                    yield chunk
+            except (asyncio.CancelledError, GeneratorExit):
+                error_code = "client_disconnected"
+                raise
+            except httpx.HTTPError:
+                error_code = "upstream_unavailable"
+                raise
+            finally:
+                await self._journal(request_id=request_id, route=route, model_name=model_name,
+                                    registered=registered, status_code=response.status_code,
+                                    started=started, input_tokens=None, output_tokens=None,
+                                    stream=True, error_code=error_code or (
+                                        "upstream_error" if response.status_code >= 400 else None
+                                    ), tracking=tracking)
+                await context.__aexit__(None, None, None)
+                await client.aclose()
+
+        return _streaming_response(response.status_code, response.headers, body())
 
     async def _forward_stream(
         self,
@@ -657,7 +1007,7 @@ class ProxyService:
                 "Экземпляр инференса недоступен",
                 status_code=502,
                 details={"reason": str(exc)[:200]},
-                retryable=True,
+                retryable=_safe_to_retry(exc),
             ) from exc
         if response.status_code >= 400:
             try:
@@ -849,6 +1199,22 @@ class ProxyService:
 
 def _forward_headers(headers: Mapping[str, str]) -> dict[str, str]:
     return {key: value for key, value in headers.items() if key.lower() not in _HOP_BY_HOP}
+
+
+def _safe_to_retry(exc: Exception) -> bool:
+    # Read/write timeouts and connection loss may happen after generation was
+    # accepted. Only connection acquisition failures permit alias failover.
+    return isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout))
+
+
+def _public_metadata(metadata: Mapping[str, Any]) -> dict[str, Any]:
+    result = {key: metadata[key] for key in ("context_length", "reasoning_capabilities")
+              if key in metadata}
+    capabilities = {key: metadata[key] for key in
+                    ("dimensions", "embedding_dimensions", "embedding_space") if key in metadata}
+    if capabilities:
+        result["capabilities"] = capabilities
+    return result
 
 
 def _passthrough_response(

@@ -326,3 +326,27 @@ def test_operation_log_failure_is_visible(tmp_path: Path) -> None:
     operation = asyncio.run(run())
     assert operation["state"] == "failed"
     assert "сохранить лог" in str(operation["error"])
+
+
+@pytest.mark.parametrize("padding", ["", "x" * 5000])
+def test_operation_error_keeps_context_and_final_cause(padding: str) -> None:
+    message = "Загрузчик Hugging Face завершился с кодом 1: " + padding
+    message += "\nRuntimeError: Internal Writer Error: No space left on device"
+
+    async def run() -> dict[str, object]:
+        async def fail(_: dict[str, object]) -> None:
+            raise RuntimeError(message)
+
+        manager = OperationManager()
+        operation = await manager.create("download", "target", fail)
+        await asyncio.gather(*manager._tasks)
+        return operation
+
+    error = str(asyncio.run(run())["error"])
+    assert error.startswith("Загрузчик Hugging Face завершился с кодом 1:")
+    assert error.endswith("Internal Writer Error: No space left on device")
+    if padding:
+        assert "середина сообщения сокращена" in error
+        assert len(error) < 2100
+    else:
+        assert error == message

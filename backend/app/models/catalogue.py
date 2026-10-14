@@ -735,7 +735,7 @@ class ModelCatalogue:
                 )
                 operation["stderr"] = stderr
                 if code:
-                    raise RuntimeError(f"Загрузчик Hugging Face завершился с кодом {code}: {stderr[-2000:]}")
+                    raise RuntimeError(f"Загрузчик Hugging Face завершился с кодом {code}: {stderr}")
                 operation["stdout"] += "".join(f"downloaded {item.path}\n" for item in wanted)
             finally:
                 await asyncio.to_thread(Path(plan_path).unlink, missing_ok=True)
@@ -1207,7 +1207,10 @@ def _group_status(
         is_nested = "/" in key or any(
             item.relative_to(root).parent != Path(".") for item in files
         )
-        if is_nested and relative.startswith(f"{key}/"):
+        component_key = f"{Path(relative).parent.as_posix()}/{_root_group_key(Path(relative).name)}"
+        if is_nested and Path(relative).suffix.lower() in MODEL_EXTENSIONS and component_key == key:
+            expected.append(item)
+        elif is_nested and relative.startswith(f"{key}/"):
             expected.append(item)
         elif not is_nested and "/" not in relative and Path(relative).suffix.lower() in MODEL_EXTENSIONS:
             if _root_group_key(relative) == key:
@@ -2021,6 +2024,12 @@ def _model_groups(
         ]
     except (OSError, RuntimeError):
         return [], [], [], [], 0
+    directories = {part for item in files for part in item.relative_to(path).parts[:-1]}
+    image_components = bool(directories & {"diffusion_models", "unet", "checkpoints"}) or (
+        bool(directories & {"vae", "audio_vae"})
+        and any(re.fullmatch(r"transformer(?:_.*)?|text_encoders?|clip", part)
+                for part in directories)
+    )
     for item in files:
         if item.name == SIDECAR_DIR:
             continue
@@ -2031,6 +2040,8 @@ def _model_groups(
         key = relative.parent.as_posix() if relative.parent != Path(".") else "."
         if key == ".":
             key = _root_group_key(item.name)
+        elif image_components:
+            key = f"{key}/{_root_group_key(item.name)}"
         buckets.setdefault(key, []).append(item)
 
     variants: list[LocalModelGroup] = []
@@ -2041,7 +2052,9 @@ def _model_groups(
         kind = "auxiliary_block" if _is_auxiliary_path("/".join([key, *(item.name for item in group_files)])) else "variant"
         relative_files = [_file_description(path, item) for item in group_files]
         size = sum(item.size_bytes or 0 for item in relative_files) if all(item.size_bytes is not None for item in relative_files) else None
-        physical_path = key if any(item.relative_to(path).parent != Path(".") for item in group_files) else None
+        physical_path = key if all(
+            item.relative_to(path).parent.as_posix() == key for item in group_files
+        ) else None
         status = _group_status(path, key, group_files, manifest)
         group_id = "group_" + hashlib.sha256(f"{path}\0{kind}\0{key}".encode()).hexdigest()[:24]
         group = LocalModelGroup(

@@ -30,7 +30,7 @@ export function componentFileSize(files: ComponentFile[]): number | null {
   return files.every((file) => file.size !== null) ? files.reduce((sum, file) => sum + (file.size ?? 0), 0) : null
 }
 
-export function hasImageVideoStructure(files: ComponentFile[]): boolean {
+export function hasImageVideoStructure(files: Pick<ComponentFile, 'path'>[]): boolean {
   const directories = new Set(files.flatMap((file) => file.path.split('/').slice(0, -1)))
   return ['diffusion_models', 'unet', 'checkpoints'].some((name) => directories.has(name))
     || (['vae', 'audio_vae'].some((name) => directories.has(name))

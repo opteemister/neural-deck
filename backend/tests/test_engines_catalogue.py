@@ -9,6 +9,50 @@ from app.models.catalogue import ModelCatalogue
 from app.paths import build_paths, prepare_data_dirs
 
 
+def test_image_component_delete_preserves_other_quants_and_sidecars(tmp_path: Path) -> None:
+    settings = Settings(
+        data_root=tmp_path / "data", models_root=tmp_path / "models",
+        host="127.0.0.1", port=8000, _env_file=None,
+    )
+    paths = build_paths(settings)
+    prepare_data_dirs(paths)
+    root = paths.models_root / "vendor" / "image"
+    files = [
+        "diffusion_models/example_bf16.safetensors",
+        "diffusion_models/example_int8_convrot.safetensors",
+        "text_encoders/encoder_bf16.safetensors",
+        "vae/decoder_fp16.safetensors",
+        "diffusion_models/config.json",
+    ]
+    for name in files:
+        target = root / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"test")
+    catalogue = ModelCatalogue(paths)
+    model = catalogue._describe(root)
+    catalogue._items = [model]
+    group = next(item for item in model.groups if item.label.endswith("example_int8_convrot"))
+    assert group.path is None
+    assert group.deletable
+    assert [file.path for file in group.files] == [files[1]]
+    catalogue.delete_group(model.id, group.id)
+    assert not (root / files[1]).exists()
+    assert all((root / name).exists() for name in files if name != files[1])
+
+
+def test_text_model_directory_grouping_is_unchanged(tmp_path: Path) -> None:
+    from app.models.catalogue import _model_groups
+
+    for filename in ["model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"]:
+        target = tmp_path / "text-variant" / filename
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"test")
+    groups, _, _, _, _ = _model_groups(tmp_path, None)
+    assert len(groups) == 1
+    assert groups[0].path == "text-variant"
+    assert groups[0].file_count == 2
+
+
 @pytest.mark.version_zero
 def test_discovery_verifies_each_python_engine_inside_a_venv(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

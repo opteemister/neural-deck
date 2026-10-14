@@ -210,13 +210,18 @@ class ProxyService:
             route_names = {route.name for route in routes}
             result: list[dict[str, Any]] = []
             for route_info in routes:
-                if route_info.diagnostics:
-                    continue
                 candidate = next(iter(route_info.available_candidates()), None)
-                if candidate is None:
-                    continue
-                instance = instances.get(candidate.instance_id or "")
-                if instance is None:
+                instance = instances.get(candidate.instance_id or "") if candidate else None
+                if route_info.diagnostics or candidate is None or instance is None:
+                    # Aliases are persistent public model names. Runtime
+                    # availability controls routing, not catalogue membership.
+                    if route_info.kind == "alias":
+                        result.append({
+                            "id": route_info.name,
+                            "object": "model",
+                            "created": 0,
+                            "owned_by": "neural-deck",
+                        })
                     continue
                 result.append(
                     {

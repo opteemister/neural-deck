@@ -1,3 +1,4 @@
+import { NotificationToast } from '@/components/ui/notification-toast'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useSearchParams } from 'react-router-dom'
@@ -243,8 +244,8 @@ export function LogsViewer({ initialProfile, initialSource = '', drawer = false 
             <label className="flex items-center gap-2 text-xs text-muted-foreground"><input type="checkbox" checked={autoScroll} onChange={(event) => setAutoScroll(event.target.checked)} />Автоскролл</label>
           </div>
         </div>
-        {copyError && <p role="alert" className="mb-3 text-xs text-[#d0a390]">{copyError}</p>}
-        {downloadError && <p className="mb-3 text-xs text-[#d0a390]">{downloadError}</p>}
+        {copyError && <NotificationToast tone="error" title="Лог не скопирован" message={copyError} />}
+        {downloadError && <NotificationToast tone="error" title="Лог не скачан" message={downloadError} />}
         {!activeSelectedId ? <QueryEmpty title="Логи профиля пока не появились" description={`Профиль: ${profileName ?? ''}`} /> : log.isError ? <QueryError error={log.error} retry={() => void log.refetch()} label="Лог недоступен" /> : log.isPending && !log.data ? <QueryLoading label="Загружаем выбранный лог" /> : <div className={drawer ? 'relative flex min-h-0 flex-1 flex-col' : 'relative'}><div ref={scrollRef} onScroll={onScroll} className={`${drawer ? 'min-h-0 flex-1 p-2' : 'h-[min(65vh,42rem)] rounded-md border border-border p-3'} overflow-auto overscroll-contain bg-background font-mono text-[11px] leading-5`} aria-label="Содержимое лога">{loadingOlder && <p className="mb-2 text-center text-muted-foreground">Загружаем более ранние строки…</p>}{visibleLines.length === 0 ? <p className="text-muted-foreground">В выбранном логе пока нет строк.</p> : visibleLines.map((line) => <div key={line.number} className="flex min-w-max whitespace-pre"><span style={{ width: `calc(${lineNumberDigits}ch + 0.5rem)` }} className="mr-2 inline-block shrink-0 select-none border-r border-border pr-2 text-right text-muted-foreground">{line.number + 1}</span><span>{line.text || ' '}</span></div>)}</div>{!atBottom && <Button type="button" size="md" variant="secondary" className="absolute bottom-4 right-4 z-10 min-w-24 rounded-full px-4 shadow-md" aria-label="Прокрутить лог до конца" title="Прокрутить лог до конца" onClick={scrollToBottom}><ArrowDown className="size-4" />Вниз</Button>}</div>}
       </Content>
     </Container>}

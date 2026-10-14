@@ -7,15 +7,16 @@ import logging
 import time
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
-from typing import Any, cast
+from typing import Any
 
 from ..process.manager import ProcessManager
 from ..schemas.instances import Metric, MetricList
 from ..token_stats import RequestJournalService
+from .aggregation import WindowSummary, aggregate_history, aggregate_samples
 from .performance import PerformanceNormalizer, process_vram
 from .prometheus import PrometheusReader, exposition
 from .providers import MetricProvider, default_providers
-from .storage import AGGREGATE_FIELDS, MetricsStorage, utc
+from .storage import MetricsStorage, utc
 
 logger = logging.getLogger(__name__)
 
@@ -416,127 +417,12 @@ class MetricsService:
 __all__ = ["MetricsService"]
 
 
-def aggregate_samples(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    from .performance import FIELDS, UNITS
-
-    items = []
-    sums = {
-        "decode_tps",
-        "prefill_tps",
-        "active_requests",
-        "queue_requests",
-        "prompt_tokens_total",
-        "completion_tokens_total",
-        "inflight_completion_tokens",
-        "completed_requests",
-        "cached_prompt_tokens_total",
-    }
-    for name in FIELDS:
-        matches = [next((item for item in row["items"] if item.name == name), None) for row in rows]
-        complete = all(
-            item is not None and item.state == "ok" and isinstance(item.value, (int, float))
-            for item in matches
-        )
-        values = [
-            item.value
-            for item in matches
-            if item is not None and isinstance(item.value, (int, float))
-        ]
-        value = None
-        if complete:
-            if name in sums:
-                value = sum(values)
-            elif name == "kv_cache_percent":
-                value = max(values, default=0)
-            elif not rows:
-                value = 0
-            elif len(rows) == 1:
-                value = values[0]
-            else:
-                weight_key = (
-                    "count" if name in {"ttft_mean_ms", "queue_time_mean_ms"} else "denominator"
-                )
-                weights = [item.metadata.get(weight_key) if item else None for item in matches]
-                if all(isinstance(weight, (int, float)) and weight > 0 for weight in weights):
-                    numeric_weights = [cast(float, weight) for weight in weights]
-                    value = sum(v * w for v, w in zip(values, numeric_weights, strict=True)) / sum(
-                        numeric_weights
-                    )
-        stamp = max((item.observed_at for item in matches if item), default=datetime.now(UTC))
-        metadata: dict[str, float] = {}
-        weight_key = "count" if name in {"ttft_mean_ms", "queue_time_mean_ms"} else "denominator"
-        sample_weights = [item.metadata.get(weight_key) if item else None for item in matches]
-        if sample_weights and all(
-            isinstance(weight, (int, float)) and weight > 0 for weight in sample_weights
-        ):
-            metadata[weight_key] = sum(cast(float, weight) for weight in sample_weights)
-        mean_pairs = [
-            (item.metadata.get("mean"), item.metadata.get("mean_weight"))
-            for item in matches if item is not None
-        ]
-        if len(mean_pairs) == len(rows) and mean_pairs and all(
-            isinstance(mean, (int, float)) and isinstance(weight, (int, float)) and weight > 0
-            for mean, weight in mean_pairs
-        ):
-            mean_weight = sum(cast(float, weight) for _, weight in mean_pairs)
-            metadata.update(
-                mean=sum(cast(float, mean) * cast(float, weight) for mean, weight in mean_pairs)
-                / mean_weight,
-                mean_weight=mean_weight,
-            )
-        items.append(
-            Metric(
-                name=name,
-                value=value,
-                unit=UNITS.get(name, ""),
-                source="aggregate",
-                observed_at=stamp,
-                state="ok" if value is not None else "unavailable",
-                metadata=metadata,
-            )
-        )
-    sources = {row.get("source", "local") for row in rows}
-    return {
-        "items": items,
-        "source": next(iter(sources)) if len(sources) == 1 else "mixed" if sources else "local",
-        "observed_at": max((item.observed_at for item in items), default=datetime.now(UTC)),
-    }
-
-
-def aggregate_history(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    groups: dict[int, dict[tuple[str | None, int], dict[str, Any]]] = {}
-    for row in rows:
-        key = int(row["observed_at"].timestamp()) // 5
-        groups.setdefault(key, {})[(row["profile_name"], row["pid"])] = row
-    return [aggregate_samples(list(group.values())) for _, group in sorted(groups.items())]
 
 
 def summarize_window(
     rows: list[dict[str, Any]], start: datetime, end: datetime, all_profiles: bool,
 ) -> dict[str, dict[str, float]]:
-    unique = {
-        (row["profile_name"], row["pid"], row["observed_at"]): row for row in rows
-    }
-    samples = aggregate_history(list(unique.values())) if all_profiles else list(unique.values())
-    seen: set[tuple[Any, ...]] = set()
-    totals: dict[str, list[float]] = {}
-    for row in samples:
-        for item in row["items"]:
-            value = item.value
-            if (
-                item.name not in AGGREGATE_FIELDS or item.state != "ok"
-                or not isinstance(value, (int, float)) or value <= 0
-                or not start <= utc(item.observed_at) <= end
-            ):
-                continue
-            key = (row.get("profile_name"), row.get("pid"), item.name, item.observed_at)
-            if key in seen:
-                continue
-            seen.add(key)
-            native = item.metadata.get("count" if item.name == "ttft_mean_ms" else "denominator")
-            weight = native if isinstance(native, (int, float)) and native > 0 else 1
-            total = totals.setdefault(item.name, [0, 0, 0])
-            total[0] += value * weight
-            total[1] += weight
-            total[2] = max(total[2], value)
-    return {name: {"avg": total[0] / total[1], "max": total[2]} for name, total in totals.items()}
+    summary = WindowSummary(start, end, all_profiles)
+    for row in sorted(rows, key=lambda row: row["observed_at"]):
+        summary.add(row)
+    return summary.result()

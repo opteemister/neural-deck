@@ -239,6 +239,7 @@ export const api = {
   downloadModels: (body: DownloadRequest) => request<Operation>('/api/v1/models/downloads', json(body)),
   getProfiles: () => request<ProfileListData>('/api/v1/profiles'),
   getProfileSummary: () => request<ProfileSummaryData>('/api/v1/profiles/summary'),
+  getDailyMetricRuns: () => request<{ items: Array<{ profile_name: string; model_name: string | null; engine_id: string }> }>('/api/v1/metrics/runs'),
   getProfile: (name: string) => request<ProfileData>(`/api/v1/profiles/${encodeURIComponent(name)}`),
   getProxyRoutes: () => request<ProxyRoutesData>('/api/v1/proxy/routes'),
   createProxyAlias: (body: { name: string; profile_ids: string[] }) => request<ProxyRoute>('/api/v1/proxy/routes/aliases', json(body)),

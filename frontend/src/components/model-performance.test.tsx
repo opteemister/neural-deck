@@ -4,7 +4,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { ModelPerformance } from './model-performance'
 import type { Instance, MetricsData } from '@/types/api'
 
-const daily = { decode_tps: { avg: 150, max: 777 }, prefill_tps: { avg: 1500, max: 1500 }, active_requests: { avg: 150, max: 200 }, ttft_mean_ms: { avg: 150, max: 300 } }
+const daily = { decode_tps: { avg: 150, max: 777 }, per_request_tps: { avg: 35, max: 50 }, prefill_tps: { avg: 1500, max: 1500 }, active_requests: { avg: 150, max: 200 }, ttft_mean_ms: { avg: 150, max: 300 } }
 const instance = { id: 'managed/profile/10', source: 'managed', profile_name: 'profile', engine_id: 'vllm', pid: 10, state: 'ready', observed_at: '2026-10-02T10:00:00Z' } as Instance
 function data(at: string, value: number): MetricsData {
   return { items: ['decode_tps', 'prefill_tps', 'active_requests'].map((name) => ({ name, value, observed_at: at, state: 'ok', source: 'test', unit: '' })) }
@@ -23,6 +23,8 @@ it('restores 120 points, connects gaps, shows the hovered value and appends live
   await waitFor(() => expect(generation.querySelectorAll('circle')).toHaveLength(240))
   expect(generation.querySelectorAll('path')).toHaveLength(2)
   expect(screen.getByText(/total max 777/)).toBeInTheDocument()
+  expect(screen.getByText(/total max 777/)).toHaveTextContent('per req max 50 · avg 35')
+  expect(rendered.container.querySelector('[data-metric="decode_per_request"]')).toHaveTextContent('max 50 · avg 35')
   Object.defineProperty(generation, 'getBoundingClientRect', { value: () => ({ left: 0, width: 400 }) })
   fireEvent.pointerMove(generation, { clientX: 0 })
   expect(await screen.findByRole('tooltip')).toHaveTextContent('3')

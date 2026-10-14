@@ -23,10 +23,14 @@ type ScalarStat = {
 
 const liveMetricNames = new Set(['prefill_tps', 'decode_tps', 'active_requests', 'queue_requests'])
 
+function perRequestRate(decode: number | null, requests: number | null): number | null {
+  return decode === null || requests === null ? null : requests > 0 ? decode / requests : 0
+}
+
 function pointFrom(items: Metric[], at: number): Point {
   const metrics = new Map(items.map((item) => [item.name, item]))
   const decode = numeric(metrics.get('decode_tps')), requests = numeric(metrics.get('active_requests'))
-  return { at, decode, requests, prefill: numeric(metrics.get('prefill_tps')), ttft: numeric(metrics.get('ttft_mean_ms')), perRequest: decode !== null && requests !== null && requests > 0 ? decode / requests : decode !== null && requests === 0 ? 0 : null }
+  return { at, decode, requests, prefill: numeric(metrics.get('prefill_tps')), ttft: numeric(metrics.get('ttft_mean_ms')), perRequest: perRequestRate(decode, requests) }
 }
 const compact = new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 })
 const plain = new Intl.NumberFormat('en-US', { useGrouping: false, maximumFractionDigits: 2 })
@@ -103,12 +107,12 @@ export function ModelPerformance({ instance, profileName, data, live }: { instan
       return { ...current, [historyKey]: [...merged.values()].sort((a, b) => a.at - b.at).slice(-maxHistoryPoints) }
     })
   }, [bootstrap.data, historyKey])
-  const extrema = (key: 'decode' | 'prefill' | 'ttft' | 'requests') => {
-    const field = { decode: 'decode_tps', prefill: 'prefill_tps', ttft: 'ttft_max_ms', requests: 'active_requests' }[key]
+  const extrema = (key: 'decode' | 'prefill' | 'ttft' | 'requests' | 'perRequest') => {
+    const field = { decode: 'decode_tps', prefill: 'prefill_tps', ttft: 'ttft_mean_ms', requests: 'active_requests', perRequest: 'per_request_tps' }[key]
     const aggregate = averages.get(key === 'ttft' ? 'ttft_mean_ms' : field)
     const maximum = aggregate?.max ?? null
     const average = aggregate ? aggregate.sum / aggregate.weight : null
-    const formatSummary = (number: number | null) => key === 'ttft' ? `${duration(number).text}${number === null ? '' : ` ${duration(number).unit}`}` : number === null ? '—' : key === 'prefill' ? plain.format(number) : compact.format(number)
+    const formatSummary = (number: number | null) => key === 'ttft' ? `${duration(number).text}${number === null ? '' : ` ${duration(number).unit}`}` : number === null ? '—' : key === 'prefill' || key === 'perRequest' ? plain.format(number) : compact.format(number)
     return `max ${formatSummary(maximum)} · avg ${formatSummary(average)}`
   }
   const mean = (field: string) => {
@@ -116,20 +120,15 @@ export function ModelPerformance({ instance, profileName, data, live }: { instan
     return average ? average.sum / average.weight : null
   }
   const format = (number: number | null) => number === null ? '—' : compact.format(number)
-  const seriesSummary = (field: keyof Pick<Point, 'decode' | 'prefill' | 'ttft' | 'requests' | 'perRequest'>) => {
-    const values = history.map((point) => point[field]).filter((number): number is number => number !== null && Number.isFinite(number))
-    if (!values.length) return 'max — · avg —'
-    return `max ${plain.format(Math.max(...values))} · avg ${plain.format(values.reduce((sum, number) => sum + number, 0) / values.length)}`
-  }
   const decode = value('decode_tps'), requests = value('active_requests')
-  const decodePerRequest = decode !== null && requests !== null ? requests > 0 ? decode / requests : 0 : null
+  const decodePerRequest = perRequestRate(decode, requests)
   const cacheMean = mean('prefix_cache_hit_percent')
   const queue = value('queue_requests')
   // A completed-request histogram cannot tell us the age of currently waiting requests.
   const queueAge = queue === 0 ? 0 : numeric(currentItems.get('queue_wait_max_ms'))
   const stats: ScalarStat[] = [
     { name: 'Prefill', field: 'prefill_tps', number: value('prefill_tps'), unit: 'tok/s', detail: extrema('prefill'), hint: 'Скорость обработки входных токенов.', live: true },
-    { name: 'Decode / req', field: 'decode_per_request', metricField: 'decode_tps', number: decodePerRequest, unit: 'tok/s', detail: `${format(decode)} total · ${format(requests)} reqs`, hint: 'Скорость генерации выходных токенов в пересчёте на один активный запрос.', live: true },
+    { name: 'Decode / req', field: 'decode_per_request', metricField: 'decode_tps', number: decodePerRequest, unit: 'tok/s', detail: extrema('perRequest'), hint: 'Скорость генерации выходных токенов в пересчёте на один активный запрос.', live: true },
     { name: 'TTFT', field: 'ttft_mean_ms', number: mean('ttft_mean_ms'), unit: 'ms', detail: extrema('ttft'), hint: 'Avg времени до первого токена за последние 24 часа. Взвешено по числу запросов, если оно доступно.' },
     { name: 'Requests', field: 'active_requests', number: value('active_requests'), unit: 'live', detail: extrema('requests'), hint: 'Количество запросов, обрабатываемых сейчас.', live: true },
     { name: 'KV Hit', field: 'prefix_cache_hit_percent', number: value('prefix_cache_hit_percent'), unit: '%', detail: `avg ${format(cacheMean)}${cacheMean === null ? '' : '%'}`, hint: 'Попадание входных токенов в prefix cache. В подписи — avg за последние 24 часа.' },
@@ -152,7 +151,7 @@ export function ModelPerformance({ instance, profileName, data, live }: { instan
     </div>
     <div className="model-performance-charts border-t border-border pt-4">
       <Chart title="Prefill" unit="tok/s" subtitle={extrema('prefill')} points={history} series={[{ key: 'prefill', label: 'Prefill', color: '#cf9a78' }]} />
-      <Chart title="Generation" unit="tok/s" subtitle={`total ${extrema('decode')} · per req ${seriesSummary('perRequest')}`} points={history} series={[{ key: 'decode', label: 'Generation', color: '#cf9a78' }, { key: 'perRequest', label: 'Per request', color: '#e9e5dc', independent: true }]} />
+      <Chart title="Generation" unit="tok/s" subtitle={`total ${extrema('decode')} · per req ${extrema('perRequest')}`} points={history} series={[{ key: 'decode', label: 'Generation', color: '#cf9a78' }, { key: 'perRequest', label: 'Per request', color: '#e9e5dc', independent: true }]} />
       <Chart title="Requests" unit="live" subtitle={extrema('requests')} points={history} series={[{ key: 'requests', label: 'Active', color: '#cf9a78' }]} />
       <TokenHistoryChart instance={instance} profileName={selectedProfile} />
     </div>

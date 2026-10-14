@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 from uuid import uuid4
 
 import psutil
@@ -24,6 +24,7 @@ import psutil
 from ..errors import AppError
 from ..profiles.formatting import substitute_placeholders
 from ..profiles.ports import resolve_effective_port
+from ..schemas.engines import ResolvedEngineProfile
 from ..schemas.instances import (
     Instance,
     InstanceList,
@@ -33,8 +34,13 @@ from ..schemas.instances import (
     ProcessOperation,
 )
 from ..schemas.profiles import ProfileData
-from ..schemas.engines import ResolvedEngineProfile
-from .discovery import ExternalObservation, discover_external, legacy_runtime_metadata, process_host, query_readiness
+from .discovery import (
+    ExternalObservation,
+    discover_external,
+    legacy_runtime_metadata,
+    process_host,
+    query_readiness,
+)
 from .external_logs import external_logs
 from .launcher import ObservedProcess, SystemdLauncher, process_start_ns
 from .registry import ModelRegistry
@@ -56,6 +62,7 @@ class _Managed:
     working_directory: Path | None = None
     healthcheck: dict[str, Any] | None = None
     model_paths_fingerprint: str | None = None
+    api_base_url_explicit: bool = False
 
 
 def _identity_start_ns(pid: int) -> int | None:
@@ -144,6 +151,7 @@ class ProcessManager:
             "working_directory": str(item.working_directory) if item.working_directory else None,
             "healthcheck": item.healthcheck,
             "model_paths_fingerprint": item.model_paths_fingerprint,
+            "api_base_url_explicit": item.api_base_url_explicit,
         }
 
     @property
@@ -184,7 +192,13 @@ class ProcessManager:
                         can_stop=True,
                         port=data["port"],
                         model_name=data["model_name"],
-                        **_snapshot_metadata(data, data["engine_id"], data["command"], data["port"]),
+                        **_snapshot_metadata(
+                            data,
+                            data["engine_id"],
+                            data["command"],
+                            data["port"],
+                            api_base_url_explicit=bool(data.get("api_base_url_explicit", False)),
+                        ),
                         state="starting",
                         observed_at=datetime.now(UTC),
                     ).model_dump(mode="json")
@@ -195,7 +209,11 @@ class ProcessManager:
         for data in snapshots:
             raw_instance = dict(data["instance"])
             raw_instance.update(_snapshot_metadata(
-                raw_instance, raw_instance["engine_id"], data["command"], raw_instance.get("port")
+                raw_instance,
+                raw_instance["engine_id"],
+                data["command"],
+                raw_instance.get("port"),
+                api_base_url_explicit=bool(data.get("api_base_url_explicit", False)),
             ))
             instance = Instance.model_validate(raw_instance)
             actual = process_start_ns(instance.pid)
@@ -222,6 +240,7 @@ class ProcessManager:
                 Path(data["working_directory"]) if data.get("working_directory") else None,
                 data.get("healthcheck"),
                 data.get("model_paths_fingerprint"),
+                bool(data.get("api_base_url_explicit", False)),
             )
             self._managed[instance.id] = item
             self.registry.register_instance(instance)
@@ -237,7 +256,11 @@ class ProcessManager:
             if self.profile_resolver is not None else None
         )
         if resolved is None and engine_path is None:
-            raise AppError("installation_unavailable", "Для профиля не подтверждена установка движка", status_code=409)
+            raise AppError(
+                "installation_unavailable",
+                "Для профиля не подтверждена установка движка",
+                status_code=409,
+            )
         async with self._guard:
             active = self._active_managed()
             active_external = [item.instance for item in self._external.values()]
@@ -258,8 +281,16 @@ class ProcessManager:
             # Several managed profiles may intentionally publish the same
             # public model name.  TASK-004 groups them into one ordered route;
             # port conflicts remain a separate safety check below.
-            model_path = resolved.model_path if resolved else (profile.model.path if profile.model else None)
-            protocol = resolved.api_protocol if resolved else legacy_runtime_metadata(profile.engine.id, [], None)["api_protocol"]
+            model_path = (
+                resolved.model_path
+                if resolved
+                else (profile.model.path if profile.model else None)
+            )
+            protocol = (
+                resolved.api_protocol
+                if resolved
+                else legacy_runtime_metadata(profile.engine.id, [], None)["api_protocol"]
+            )
             if protocol == "comfyui" and self.model_paths_refresher is not None:
                 await asyncio.to_thread(self.model_paths_refresher)
             command = substitute_placeholders(
@@ -267,23 +298,38 @@ class ProcessManager:
                 engine=str(resolved.executable_path) if resolved else str(engine_path),
                 model=str(model_path) if model_path is not None else None,
                 model_name=resolved.model_name if resolved else profile.model_name,
-                model_draft=str(profile.model.draft_path) if profile.model and profile.model.draft_path else None,
+                model_draft=(
+                    str(profile.model.draft_path)
+                    if profile.model and profile.model.draft_path
+                    else None
+                ),
                 port=profile.port or (8188 if protocol == "comfyui" else None),
                 target=str(resolved.installation.root_path) if resolved else None,
                 models_root=str(self.models_root) if self.models_root is not None else None,
                 extra_model_paths_config=str(self.extra_model_paths_config),
             )
-            port = resolve_effective_port("image" if protocol == "comfyui" else profile.engine.id, command).port
+            port_resolution = resolve_effective_port(
+                "image" if protocol == "comfyui" else profile.engine.id,
+                command,
+            )
+            port = port_resolution.port
+            if port_resolution.source != "command":
+                configured_url = resolved.api_base_url if resolved else None
+                configured_port = urlsplit(configured_url).port if configured_url else None
+                port = profile.port or configured_port or port
             metadata = legacy_runtime_metadata(profile.engine.id, _command_words(command), port)
+            api_base_url_explicit = False
             if resolved is not None:
+                api_base_url_explicit = bool(
+                    profile.api is not None
+                    and "base_url" in profile.api.model_fields_set
+                    and profile.api.base_url is not None
+                )
                 api_base_url = resolved.api_base_url
-                if api_base_url is None and port is not None and resolved.api_protocol in {"openai", "comfyui"}:
-                    host = process_host(_command_words(command)) or "127.0.0.1"
-                    if ":" in host and not host.startswith("["):
-                        host = f"[{host}]"
-                    api_base_url = f"http://{host}:{port}"
-                    if resolved.api_protocol == "openai":
-                        api_base_url += "/v1"
+                if not api_base_url_explicit:
+                    api_base_url = _command_api_base_url(
+                        resolved.api_protocol, command, port
+                    ) or api_base_url
                 metadata = {
                     "types": list(resolved.types),
                     "api_protocol": resolved.api_protocol,
@@ -291,8 +337,14 @@ class ProcessManager:
                     "ui_url": resolved.ui_url,
                 }
             working_directory = resolved.working_directory if resolved else Path.cwd()
-            healthcheck = resolved.healthcheck.model_dump(mode="json") if resolved and resolved.healthcheck else None
-            model_paths_fingerprint = self._model_paths_fingerprint() if protocol == "comfyui" else None
+            healthcheck = (
+                resolved.healthcheck.model_dump(mode="json")
+                if resolved and resolved.healthcheck
+                else None
+            )
+            model_paths_fingerprint = (
+                self._model_paths_fingerprint() if protocol == "comfyui" else None
+            )
             if port is not None and (
                 any(item.instance.port == port for item in active)
                 or any(item.port == port for item in active_external)
@@ -330,9 +382,16 @@ class ProcessManager:
                         "working_directory": str(working_directory),
                         "healthcheck": healthcheck,
                         "model_paths_fingerprint": model_paths_fingerprint,
+                        "api_base_url_explicit": api_base_url_explicit,
                     },
                 )
-                pid = await self.launcher.start(unit_name, command, env, temporary_log, working_directory=working_directory)
+                pid = await self.launcher.start(
+                    unit_name,
+                    command,
+                    env,
+                    temporary_log,
+                    working_directory=working_directory,
+                )
                 start_ns = process_start_ns(pid) if pid else None
                 if start_ns is None:
                     await self.launcher.stop(unit_name)
@@ -420,6 +479,7 @@ class ProcessManager:
                 working_directory=working_directory,
                 healthcheck=healthcheck,
                 model_paths_fingerprint=model_paths_fingerprint,
+                api_base_url_explicit=api_base_url_explicit,
             )
             if self.run_store is not None:
                 try:
@@ -507,7 +567,10 @@ class ProcessManager:
         if item.process.returncode is not None:
             self._process_done(instance_id)
             return
-        if item.healthcheck is None or item.instance.api_protocol == "none" or (
+        if (
+            item.healthcheck is None
+            and item.instance.api_protocol not in {"openai", "comfyui"}
+        ) or item.instance.api_protocol == "none" or (
             item.instance.api_base_url is None and item.instance.port is None
         ):
             item.instance.state = "running"
@@ -827,16 +890,39 @@ def _command_words(command: str) -> list[str]:
         return []
 
 
+def _command_api_base_url(protocol: str, command: str, port: int | None) -> str | None:
+    if port is None or protocol not in {"openai", "comfyui"}:
+        return None
+    host = process_host(_command_words(command)) or "127.0.0.1"
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    suffix = "/v1" if protocol == "openai" else ""
+    return f"http://{host}:{port}{suffix}"
+
+
 def _snapshot_metadata(
-    snapshot: dict[str, Any], engine_id: str, command: str, port: int | None
+    snapshot: dict[str, Any],
+    engine_id: str,
+    command: str,
+    port: int | None,
+    *,
+    api_base_url_explicit: bool = False,
 ) -> dict[str, Any]:
     # Missing keys identify old snapshots; an explicit new protocol=none is
     # an operator choice and must not be replaced by legacy engine defaults.
     legacy = legacy_runtime_metadata(engine_id, _command_words(command), port)
-    return {
+    metadata = {
         key: snapshot[key] if key in snapshot else value
         for key, value in legacy.items()
     }
+    # Snapshots written before API URL provenance was stored may contain the
+    # fixed URL from an engine definition even though the profile command uses
+    # another port. Repair known built-in engines from their rendered command.
+    if not api_base_url_explicit:
+        metadata["api_base_url"] = _command_api_base_url(
+            str(metadata["api_protocol"]), command, port
+        ) or metadata["api_base_url"]
+    return metadata
 
 
 def _pid_exists(pid: int) -> bool:

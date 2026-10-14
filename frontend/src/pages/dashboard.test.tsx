@@ -24,7 +24,7 @@ afterEach(() => vi.unstubAllGlobals())
 
 describe('Dashboard workflow', () => {
   it('sorts run tabs by active state, then puts text runs first', async () => {
-    const activeImage = { ...external, id: 'managed/image/1-10', source: 'managed', profile_name: 'Alpha image', model_name: 'image-model', types: ['image'] }
+    const activeImage = { ...external, id: 'managed/image/1-10', source: 'managed', profile_name: 'Alpha image', model_name: 'image-model', types: ['image'], state: 'starting' }
     const activeText = { ...external, id: 'managed/text/2-20', source: 'managed', profile_name: 'Zulu text', model_name: 'text-model', types: ['text'] }
     const stoppedProfile = { version: 1, name: 'Beta stopped', model_name: 'stopped-model', engine: { id: 'vllm', installation_id: 'inst_1' }, command: '{{engine}} serve', environment: {}, autostart: false }
     const metric = (value: number) => ({ value, unit: 'tok/s', state: 'ok', source: 'sqlite' })
@@ -32,7 +32,7 @@ describe('Dashboard workflow', () => {
     const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) => {
       const url = String(input)
       if (url.endsWith('/api/v1/system')) return Promise.resolve(new Response(envelope({ cpu: { cores: 8, usage_percent: 10 }, ram: { used_bytes: 10, total_bytes: 100 }, gpus: [], instances: [activeImage, activeText] }), { status: 200 }))
-      if (url.endsWith('/api/v1/profiles/summary')) return Promise.resolve(new Response(envelope({ items: [summary], period: summary.period, source: 'sqlite' }), { status: 200 }))
+      if (url.endsWith('/api/v1/metrics/runs')) return Promise.resolve(new Response(envelope({ items: [summary], period: summary.period, source: 'sqlite' }), { status: 200 }))
       if (url.endsWith('/api/v1/profiles')) return Promise.resolve(new Response(envelope({ items: [stoppedProfile], issues: [] }), { status: 200 }))
       if (url.includes('/api/v1/metrics/concurrency')) return Promise.resolve(new Response(envelope({ items: [], days: 7, source: 'sqlite' }), { status: 200 }))
       if (url.includes('/api/v1/metrics?')) return Promise.resolve(new Response(envelope({ history: [], current: null, peaks: {}, aggregates: {}, source: 'sqlite' }), { status: 200 }))
@@ -46,6 +46,7 @@ describe('Dashboard workflow', () => {
     expect(tabs[0]).toHaveTextContent('Все')
     expect(tabs[1]).toHaveTextContent('Zulu text')
     expect(tabs[2]).toHaveTextContent('Alpha image')
+    expect(tabs[2].querySelector('[data-run-status="starting"]')).toHaveAttribute('aria-label', 'Запускается')
     expect(tabs[3]).toHaveTextContent('Beta stopped')
   })
 
@@ -56,7 +57,7 @@ describe('Dashboard workflow', () => {
     const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) => {
       const url = String(input)
       if (url.endsWith('/api/v1/system')) return Promise.resolve(new Response(envelope({ cpu: { cores: 8, usage_percent: 10 }, ram: { used_bytes: 10, total_bytes: 100 }, gpus: [], instances: [] }), { status: 200 }))
-      if (url.endsWith('/api/v1/profiles/summary')) return Promise.resolve(new Response(envelope({ items: [summary], period: summary.period, source: 'sqlite' }), { status: 200 }))
+      if (url.endsWith('/api/v1/metrics/runs')) return Promise.resolve(new Response(envelope({ items: [summary], period: summary.period, source: 'sqlite' }), { status: 200 }))
       if (url.endsWith('/api/v1/profiles')) return Promise.resolve(new Response(envelope({ items: [stoppedProfile], issues: [] }), { status: 200 }))
       if (url.includes('/api/v1/metrics/concurrency')) return Promise.resolve(new Response(envelope({ items: [], days: 7, source: 'sqlite' }), { status: 200 }))
       if (url.includes('/api/v1/metrics?')) return Promise.resolve(new Response(envelope({ history: [], current: null, peaks: {}, aggregates: {}, source: 'sqlite' }), { status: 200 }))
@@ -119,9 +120,9 @@ describe('Dashboard workflow', () => {
     fireEvent.click(screen.getByRole('tab', { name: /public-qwen/ }))
     fireEvent.click(await screen.findByRole('button', { name: 'Остановить внешний' }))
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(`/api/v1/instances/${encodeURIComponent(external.id)}/stop`, expect.objectContaining({ method: 'POST' })))
-    const banner = await screen.findByText(/Остановка экземпляра/)
-    expect(banner).toHaveTextContent(external.id)
-    expect(within(banner.parentElement!).getByText('Завершено')).toBeInTheDocument()
+    const notification = await screen.findByRole('status')
+    expect(notification).toHaveTextContent('Экземпляр остановлен')
+    expect(screen.queryByText(/Остановка экземпляра/)).not.toBeInTheDocument()
     expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith('/api/v1/operations/op_stop'))).toBe(true)
   })
 

@@ -63,6 +63,24 @@ describe('Engines workflow', () => {
     expect(imageHeading.closest('section')).toHaveTextContent('ComfyUI')
   })
 
+  it('shows the update action for a ready binary when its definition has an updater', async () => {
+    const llama = { ...engine, id: 'llama.cpp', display_name: 'llama.cpp', installation_kinds: ['binary'], installations: [{ id: 'inst_llama', engine_id: 'llama.cpp', kind: 'binary', root_path: '/opt/llama.cpp', executable_path: '/opt/llama.cpp/bin/llama-server', version: 'b1234', status: 'ready', verified: true, diagnostic: null, registered: true }] }
+    const llamaDefinition = { ...definition, id: 'llama.cpp', name: 'llama.cpp', install_script: 'install', update_script: 'update', executable: '{{target}}/bin/llama-server' }
+    const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/engines/definitions')) return Promise.resolve(new Response(envelope({ items: [llamaDefinition], issues: [] }), { status: 200 }))
+      if (url.endsWith('/api/v1/installations/inst_llama/update') && init?.method === 'POST') return Promise.resolve(new Response(envelope({ id: 'op_update', kind: 'update', state: 'queued', target_id: 'inst_llama', created_at: '2026-10-16T00:00:00Z', started_at: null, finished_at: null, stdout: '', stderr: '', exit_code: null, error: null }), { status: 202 }))
+      return Promise.resolve(new Response(envelope({ items: [llama] }), { status: 200 }))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    renderPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Развернуть' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Обновить до актуальной версии' }))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/v1/installations/inst_llama/update', expect.objectContaining({ method: 'POST' })))
+  })
+
   it('scans the engine catalogue and reports a created operation', async () => {
     const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)

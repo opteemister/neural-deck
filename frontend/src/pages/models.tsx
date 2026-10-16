@@ -5,7 +5,7 @@ import { AlertTriangle, ArrowLeft, ChevronDown, ChevronUp, Download, ExternalLin
 import { useSearchParams } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { ModelComponentList } from '@/components/model-component-list'
-import { groupModelComponents, componentDownloadFiles, componentFileSize, hasImageVideoStructure, componentPrecisions, selectComponentPrecision } from '@/lib/model-components'
+import { groupModelComponents, componentDownloadFiles, componentFileSize, hasImageVideoStructure, componentPrecisions, selectComponentPrecision, isAuxiliaryModelPath, isDownloadableModelWeight } from '@/lib/model-components'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardTitle } from '@/components/ui/card'
 import { IconButton } from '@/components/ui/icon-button'
@@ -14,6 +14,7 @@ import { Select } from '@/components/ui/select'
 import { Progress } from '@/components/ui/progress'
 import { PageHeader } from '@/components/page-header'
 import { QueryEmpty, QueryError, QueryLoading } from '@/components/query-state'
+import { NotificationToast } from '@/components/ui/notification-toast'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { api, queryKeys } from '@/lib/api'
 import { formatBytes } from '@/lib/utils'
@@ -23,6 +24,7 @@ type ModelView = 'local' | 'huggingface'
 type RepoTab = 'description' | 'files' | 'quantizations'
 type HfModelFilter = 'all' | string
 type RepoNavigation = { repo_id: string; revision?: string; tab: RepoTab }
+type OperationNotification = { id: string; tone: 'info' | 'success' | 'error'; title: string; message: string }
 
 type HfBadgeGroup = 'format' | 'library' | 'task' | 'capability' | 'generation'
 type HfBadgeDefinition = { group: HfBadgeGroup; label: string; values: string[] }
@@ -105,6 +107,8 @@ export function ModelsPage() {
   const [selectedFiles, setSelectedFiles] = useState<string[]>([])
   const [downloadsCollapsed, setDownloadsCollapsed] = useState(false)
   const [downloadsClosed, setDownloadsClosed] = useState(false)
+  const [updateCheckOperationId, setUpdateCheckOperationId] = useState<string | null>(null)
+  const [operationNotification, setOperationNotification] = useState<OperationNotification | null>(null)
   const [favoriteModels, setFavoriteModels] = useState<string[]>(() => {
     try {
       const saved = window.localStorage.getItem('neural-deck.favorite-models')
@@ -119,7 +123,26 @@ export function ModelsPage() {
   const hfTrending = useQuery({ queryKey: queryKeys.hfTrending('all'), queryFn: () => api.getHfTrending('all', 50), enabled: view === 'huggingface' && !hfQuery.trim() && !repoId })
   const repoParts = repoId.split('/')
   const hfRepo = useQuery({ queryKey: queryKeys.hfRepo(repoId, revision), queryFn: () => api.getHfRepo(repoParts[0], repoParts[1], revision), enabled: view === 'huggingface' && repoParts.length === 2 && Boolean(repoId) })
-  const scan = useMutation({ mutationFn: api.scanLocalModels, onSuccess: (data) => queryClient.setQueryData(queryKeys.localModels, data) })
+  const updateCheckOperation = useQuery({ queryKey: queryKeys.operation(updateCheckOperationId ?? ''), queryFn: () => api.getOperation(updateCheckOperationId!), enabled: Boolean(updateCheckOperationId), refetchInterval: (query) => ['queued', 'running'].includes(query.state.data?.state ?? '') ? 1_500 : false })
+  const startUpdateCheck = useMutation({
+    mutationFn: api.startLocalModelUpdateCheck,
+    onSuccess: (operation) => {
+      queryClient.setQueryData(queryKeys.operation(operation.id), operation)
+      setUpdateCheckOperationId(operation.id)
+    },
+    onError: (error) => setOperationNotification({ id: `update-check-start-error-${Date.now()}`, tone: 'error', title: 'Локальное сканирование завершено', message: `Не удалось запустить сверку с Hugging Face: ${error instanceof Error ? error.message : 'неизвестная ошибка'}` }),
+  })
+  const scan = useMutation({
+    mutationFn: api.scanLocalModels,
+    onSuccess: async (data) => {
+      queryClient.setQueryData(queryKeys.localModels, data)
+      try {
+        await startUpdateCheck.mutateAsync()
+      } catch {
+        // The start mutation displays the failure while preserving scan results.
+      }
+    },
+  })
   const deleteModel = useMutation({ mutationFn: api.deleteLocalModel, onSuccess: (data) => queryClient.setQueryData(queryKeys.localModels, data) })
   const deleteModelGroup = useMutation({ mutationFn: ({ modelId, groupId }: { modelId: string; groupId: string }) => api.deleteLocalModelGroup(modelId, groupId), onSuccess: (data) => queryClient.setQueryData(queryKeys.localModels, data) })
   const downloads = useQuery({ queryKey: queryKeys.downloads, queryFn: api.getDownloads, refetchInterval: 1_500 })
@@ -128,6 +151,20 @@ export function ModelsPage() {
   const downloadOperations = downloadHistory
   const download = useMutation({ mutationFn: api.downloadModels, onSuccess: () => { const shouldCollapse = downloadsClosed || downloadOperations.length === 0; setDownloadsClosed(false); if (shouldCollapse) setDownloadsCollapsed(true); void queryClient.invalidateQueries({ queryKey: queryKeys.downloads }); void queryClient.invalidateQueries({ queryKey: queryKeys.localModels }) } })
   const cancelDownload = useMutation({ mutationFn: api.cancelOperation, onSuccess: () => { void queryClient.invalidateQueries({ queryKey: queryKeys.downloads }); void queryClient.invalidateQueries({ queryKey: queryKeys.localModels }) } })
+  useEffect(() => {
+    const operation = updateCheckOperation.data
+    if (!operation || ['queued', 'running'].includes(operation.state)) return
+    void queryClient.invalidateQueries({ queryKey: queryKeys.localModels })
+    if (operation.state === 'failed') {
+      setOperationNotification({
+        id: `${operation.id}-${operation.state}`,
+        tone: 'error',
+        title: 'Сверка с Hugging Face не выполнена',
+        message: operation.error ?? 'Проверьте журнал операций.',
+      })
+    }
+    setUpdateCheckOperationId(null)
+  }, [queryClient, updateCheckOperation.data])
   useEffect(() => { window.localStorage.setItem('neural-deck.favorite-models', JSON.stringify(favoriteModels)) }, [favoriteModels])
   useEffect(() => { setSearchInput(hfQuery) }, [hfQuery])
   useEffect(() => {
@@ -151,6 +188,16 @@ export function ModelsPage() {
     previousDownloadIds.current = ids
   }, [downloads.data, queryClient])
   const localItems = useMemo(() => (localModels.data?.items ?? []).filter((model) => `${model.path} ${model.format} ${model.compatibility}`.toLowerCase().includes(localQuery.toLowerCase())).sort((left, right) => Number(!favoriteModels.includes(left.id)) - Number(!favoriteModels.includes(right.id))), [favoriteModels, localModels.data?.items, localQuery])
+  const updateCheckRunning = Boolean(updateCheckOperationId) && (
+    !updateCheckOperation.data || ['queued', 'running'].includes(updateCheckOperation.data.state)
+  )
+  const scanState: 'idle' | 'scanning' | 'starting-check' | 'checking' = scan.isPending || Boolean(localModels.data?.scanning)
+    ? 'scanning'
+    : startUpdateCheck.isPending
+      ? 'starting-check'
+      : updateCheckRunning
+        ? 'checking'
+        : 'idle'
 
   function setView(next: ModelView) { setParams((current) => { current.set('view', next); current.delete('q'); current.delete('parent_repo'); current.delete('parent_revision'); current.delete('parent_tab'); current.delete('repo_stack'); current.delete('repo_tab'); if (next !== 'huggingface') { current.delete('repo'); current.delete('revision') } return current }, { replace: true }) }
   function submitSearch(event: FormEvent<HTMLFormElement>) { event.preventDefault(); setParams((current) => { const value = searchInput.trim(); if (value) current.set('hf_q', value); else current.delete('hf_q'); current.set('hf_group', 'all'); current.set('view', 'huggingface'); current.delete('repo'); current.delete('revision'); current.delete('parent_repo'); current.delete('parent_revision'); current.delete('parent_tab'); current.delete('repo_stack'); current.delete('repo_tab'); current.delete('q'); return current }, { replace: true }) }
@@ -206,8 +253,10 @@ export function ModelsPage() {
     <div className="mb-5 flex flex-wrap gap-1 border-b border-border"><Tab active={view === 'local'} onClick={() => setView('local')}>Локальные</Tab><Tab active={view === 'huggingface'} onClick={() => setView('huggingface')}>Hugging Face</Tab></div>
     {deleteModel.isError && <QueryError error={deleteModel.error} label="Папку модели не удалось удалить" />}
     {deleteModelGroup.isError && <QueryError error={deleteModelGroup.error} label="Компонент модели не удалось удалить" />}
-    {view === 'local' && <LocalModels query={localQuery} items={localItems} state={localModels} scanError={scan.error ?? (localModels.data?.scan_error ? new Error(localModels.data.scan_error) : null)} onSearch={(value) => setParams((current) => { if (value) current.set('local_q', value); else current.delete('local_q'); return current }, { replace: true })} onScan={() => void scan.mutate()} scanning={scan.isPending || Boolean(localModels.data?.scanning)} favorites={favoriteModels} onToggleFavorite={(id) => setFavoriteModels((current) => current.includes(id) ? current.filter((value) => value !== id) : [...current, id])} onOpenHf={openLocalHfRepo} onDelete={(model) => { if (window.confirm(`Удалить папку модели «${model.path}»? Все файлы внутри будут удалены.`)) void deleteModel.mutate(model.id) }} onDeleteGroup={(model, group) => { const kind = group.kind === 'variant' ? 'вариант' : 'вспомогательный блок'; if (window.confirm(`Удалить ${kind} «${group.label}»?`)) void deleteModelGroup.mutate({ modelId: model.id, groupId: group.id }) }} deletingId={deleteModel.isPending ? deleteModel.variables : null} deletingGroupId={deleteModelGroup.isPending ? deleteModelGroup.variables?.groupId : null} />}
+    {updateCheckOperation.isError && updateCheckOperationId && <QueryError error={updateCheckOperation.error} retry={() => void updateCheckOperation.refetch()} label="Состояние сверки недоступно" />}
+    {view === 'local' && <LocalModels query={localQuery} items={localItems} state={localModels} scanError={scan.error ?? (localModels.data?.scan_error ? new Error(localModels.data.scan_error) : null)} onSearch={(value) => setParams((current) => { if (value) current.set('local_q', value); else current.delete('local_q'); return current }, { replace: true })} onScan={() => void scan.mutate()} scanState={scanState} favorites={favoriteModels} onToggleFavorite={(id) => setFavoriteModels((current) => current.includes(id) ? current.filter((value) => value !== id) : [...current, id])} onOpenHf={openLocalHfRepo} onDelete={(model) => { if (window.confirm(`Удалить папку модели «${model.path}»? Все файлы внутри будут удалены.`)) void deleteModel.mutate(model.id) }} onDeleteGroup={(model, group) => { const kind = group.kind === 'variant' ? 'вариант' : 'вспомогательный блок'; if (window.confirm(`Удалить ${kind} «${group.label}»?`)) void deleteModelGroup.mutate({ modelId: model.id, groupId: group.id }) }} deletingId={deleteModel.isPending ? deleteModel.variables : null} deletingGroupId={deleteModelGroup.isPending ? deleteModelGroup.variables?.groupId : null} />}
     {view === 'huggingface' && <section className="space-y-4">{!repoId && <form className="flex w-full gap-2" onSubmit={submitSearch}><div className="min-w-0 flex-1"><SearchField label="Поиск Hugging Face" value={searchInput} onChange={setSearchInput} onClear={() => { setSearchInput(''); setParams((current) => { current.delete('hf_q'); current.set('hf_group', 'all'); current.delete('repo'); current.delete('revision'); current.delete('parent_repo'); current.delete('parent_revision'); current.delete('parent_tab'); current.delete('repo_stack'); current.delete('repo_tab'); return current }, { replace: true }) }} placeholder="Qwen, llama, mistral…" /></div><Button type="submit" variant="primary"><Search className="size-3.5" />Искать</Button></form>}{repoId ? <RepoView repo={hfRepo.data} query={hfRepo} initialTab={repoTab} backLabel={backRepoId ? `К квантам ${backRepoId}` : 'Назад'} selectedFiles={selectedFiles} toggleFile={toggleFile} onBack={goBackFromRepo} onOpenQuantization={openQuantization} onDownload={startDownload} downloadOperations={downloadOperations} /> : hfQuery ? <HfResults query={hfQuery} filter={hfGroup} data={hfSearch.data} state={hfSearch} openRepo={openRepo} onFilterChange={(filter) => setParams((current) => { current.set('view', 'huggingface'); current.set('hf_group', filter); return current }, { replace: true })} /> : <HfTrending filter={hfGroup} data={hfTrending.data} state={hfTrending} openRepo={openRepo} onFilterChange={(filter) => setParams((current) => { current.set('view', 'huggingface'); current.set('hf_group', filter); current.delete('hf_q'); return current }, { replace: true })} />}</section>}
+    {operationNotification && <NotificationToast key={operationNotification.id} tone={operationNotification.tone} title={operationNotification.title} message={operationNotification.message} />}
   </div>
 }
 
@@ -217,8 +266,10 @@ function SearchField({ id, label, value, placeholder, onChange, onClear }: { id?
   return <div className="relative"><Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" /><Input id={id} aria-label={label} className="pl-9 pr-10" value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} />{value && <button type="button" className="absolute right-2 top-1/2 flex size-7 -translate-y-1/2 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground" onClick={onClear} aria-label={`Очистить: ${label}`}><X className="size-3.5" /></button>}</div>
 }
 
-function LocalModels({ query, items, state, scanError, onSearch, onScan, scanning, favorites, onToggleFavorite, onOpenHf, onDelete, onDeleteGroup, deletingId, deletingGroupId }: { query: string; items: LocalModelArtifact[]; state: ReturnType<typeof useQuery<Awaited<ReturnType<typeof api.getLocalModels>>, Error>>; scanError: unknown; onSearch: (value: string) => void; onScan: () => void; scanning: boolean; favorites: string[]; onToggleFavorite: (id: string) => void; onOpenHf: (repoId: string, revision?: string | null) => void; onDelete: (model: LocalModelArtifact) => void; onDeleteGroup: (model: LocalModelArtifact, group: LocalGroup) => void; deletingId: string | null | undefined; deletingGroupId: string | null | undefined }) {
-  return <section>{Boolean(scanError) && <QueryError error={scanError} label="Сканирование моделей не выполнено" />}<div className="mb-4 flex items-center gap-2"><div className="min-w-0 flex-1"><SearchField id="model-search" label="Поиск локальной модели" value={query} onChange={onSearch} onClear={() => onSearch('')} placeholder="Путь, формат или имя" /></div><Button variant="secondary" onClick={onScan} disabled={scanning}><RefreshCw className={`size-3.5 ${scanning ? 'animate-spin' : ''}`} />{scanning ? 'Сканируем…' : 'Сканировать'}</Button></div>{(state.isLoading || (scanning && items.length === 0 && !query && !scanError)) ? <QueryLoading label="Сканируем локальные модели" /> : state.isError ? <QueryError error={state.error} retry={() => void state.refetch()} label="Каталог локальных моделей недоступен" /> : items.length === 0 ? <QueryEmpty title={query ? 'Совпадений нет' : 'Локальные модели не найдены'} description="Добавьте каталог модели в настроенную папку моделей и повторите сканирование." /> : <div className="grid gap-3">{items.map((model) => <ModelFolder key={model.id} model={model} favorite={favorites.includes(model.id)} onToggleFavorite={() => onToggleFavorite(model.id)} onOpenHf={onOpenHf} onDelete={onDelete} onDeleteGroup={onDeleteGroup} deleting={deletingId === model.id} deletingGroupId={deletingGroupId} />)}</div>}</section>
+function LocalModels({ query, items, state, scanError, onSearch, onScan, scanState, favorites, onToggleFavorite, onOpenHf, onDelete, onDeleteGroup, deletingId, deletingGroupId }: { query: string; items: LocalModelArtifact[]; state: ReturnType<typeof useQuery<Awaited<ReturnType<typeof api.getLocalModels>>, Error>>; scanError: unknown; onSearch: (value: string) => void; onScan: () => void; scanState: 'idle' | 'scanning' | 'starting-check' | 'checking'; favorites: string[]; onToggleFavorite: (id: string) => void; onOpenHf: (repoId: string, revision?: string | null) => void; onDelete: (model: LocalModelArtifact) => void; onDeleteGroup: (model: LocalModelArtifact, group: LocalGroup) => void; deletingId: string | null | undefined; deletingGroupId: string | null | undefined }) {
+  const busy = scanState !== 'idle'
+  const buttonLabel = scanState === 'scanning' ? 'Сканируем…' : scanState === 'starting-check' ? 'Запускаем сверку…' : scanState === 'checking' ? 'Сверяем с HF…' : 'Сканировать'
+  return <section>{Boolean(scanError) && <QueryError error={scanError} label="Сканирование моделей не выполнено" />}<div className="mb-4 flex items-center gap-2"><div className="min-w-0 flex-1"><SearchField id="model-search" label="Поиск локальной модели" value={query} onChange={onSearch} onClear={() => onSearch('')} placeholder="Путь, формат или имя" /></div><Button variant="secondary" onClick={onScan} disabled={busy}><RefreshCw className={`size-3.5 ${busy ? 'animate-spin' : ''}`} />{buttonLabel}</Button></div>{(state.isLoading || (scanState === 'scanning' && items.length === 0 && !query && !scanError)) ? <QueryLoading label="Сканируем локальные модели" /> : state.isError ? <QueryError error={state.error} retry={() => void state.refetch()} label="Каталог локальных моделей недоступен" /> : items.length === 0 ? <QueryEmpty title={query ? 'Совпадений нет' : 'Локальные модели не найдены'} description="Добавьте каталог модели в настроенную папку моделей и повторите сканирование." /> : <div className="grid gap-3">{items.map((model) => <ModelFolder key={model.id} model={model} favorite={favorites.includes(model.id)} onToggleFavorite={() => onToggleFavorite(model.id)} onOpenHf={onOpenHf} onDelete={onDelete} onDeleteGroup={onDeleteGroup} deleting={deletingId === model.id} deletingGroupId={deletingGroupId} />)}</div>}</section>
 }
 
 type LocalGroup = NonNullable<LocalModelArtifact['groups']>[number]
@@ -250,41 +301,20 @@ function toCamelCase(value: string): string {
 }
 
 function ModelSourceStatus({ match }: { match: LocalModelArtifact['hf_match'] }) {
-  const missing = match.missing_files ?? []
-  const unverified = match.unverified_files ?? []
-  const text = match.status === 'downloaded' ? match.scope === 'selection' ? 'HF: выбранный набор скачан' : unverified.length > 0 ? 'HF: snapshot найден' : 'HF: snapshot проверен' : match.status === 'incomplete' ? 'HF: не хватает файлов' : 'HF: источник не подтверждён'
-  const hint = match.status === 'downloaded' && match.scope === 'selection'
-    ? 'Скачан выбранный набор файлов, например один квант. Остальные файлы репозитория не считаются обязательными и не загружены.'
-    : match.status === 'downloaded'
-      ? 'Для каждого файла совпали наличие и размер с manifest Hugging Face.'
-      : match.status === 'incomplete'
-      ? 'Часть файлов из сохранённого набора отсутствует, имеет другой размер или не прошла локальную проверку.'
-        : 'Модель найдена локально, но её источник или полнота не подтверждены.'
-  const localDivergenceBadge = match.local_integrity?.baseline_status === 'diverged_from_downloaded'
-    ? <span className="inline-flex rounded-sm border border-[#8b7652] px-2 py-1 text-[#d4b878]">Локальный файл изменён</span>
-    : null
+  const differences = match.local_differences ?? []
+  if (differences.length === 0) return null
   return (
     <div className="flex max-w-full flex-col items-end gap-1 text-right text-[10px] leading-4 text-muted-foreground">
-      <span title={hint} className="inline-flex rounded-sm border border-border px-2 py-1">{text}</span>
-      {localDivergenceBadge}
-      {missing.length > 0 && (
-        <details className="max-w-xl">
-          <summary className="cursor-pointer">Не хватает или отличаются: {missing.length}</summary>
-          <ul className="mt-1 max-h-32 space-y-0.5 overflow-auto text-left">
-            {missing.slice(0, 8).map((file) => <li key={file} className="break-all font-mono">{file}</li>)}
-            {missing.length > 8 && <li>и ещё {missing.length - 8}</li>}
-          </ul>
-        </details>
-      )}
-      {unverified.length > 0 && (
-        <details className="max-w-xl">
-          <summary className="cursor-pointer">Размер совпал, локальная проверка не завершена: {unverified.length}</summary>
-          <ul className="mt-1 max-h-32 space-y-0.5 overflow-auto text-left">
-            {unverified.slice(0, 8).map((file) => <li key={file} className="break-all font-mono">{file}</li>)}
-            {unverified.length > 8 && <li>и ещё {unverified.length - 8}</li>}
-          </ul>
-        </details>
-      )}
+      <details className="max-w-xl">
+        <summary className="cursor-pointer">Файлы с расхождением: {differences.length}</summary>
+        <ul className="mt-1 max-h-32 space-y-0.5 overflow-auto text-left">
+          {differences.slice(0, 8).map((file) => {
+            const reasons = file.reasons.map((reason) => reason === 'size' ? 'размер' : 'хэш').join(', ')
+            return <li key={file.path} className="break-all font-mono">{file.path} · {reasons}</li>
+          })}
+          {differences.length > 8 && <li>и ещё {differences.length - 8}</li>}
+        </ul>
+      </details>
     </div>
   )
 }
@@ -294,8 +324,12 @@ function HfUpdateBadge({ match }: { match: LocalModelArtifact['hf_match'] }) {
     ? <HfAuthorAvatar author={match.repo_id.split('/')[0]} avatarUrl={`https://huggingface.co/api/avatars/${encodeURIComponent(match.repo_id.split('/')[0])}`} className="order-first size-8" />
     : null
   const update = match.remote_update
-  const badge = match.remote_check?.availability === 'success' && update?.status === 'update_available' && update.changed_files > 0
-    ? <span className="inline-flex rounded-sm border border-[#81554c] px-2 py-1 text-[10px] text-[#d09b87]">Доступно обновление · {update.changed_files} файлов</span>
+  const badge = match.remote_check?.availability === 'success' && update && update.changed_files > 0
+    ? update.status === 'update_available'
+      ? <span className="inline-flex rounded-sm border border-[#81554c] px-2 py-1 text-[10px] text-[#d09b87]">Доступно обновление · {update.changed_files} файлов</span>
+      : update.status === 'unknown'
+        ? <span className="inline-flex rounded-sm border border-[#806a45] px-2 py-1 text-[10px] text-[#d8bd85]">Отличия от HF · {update.changed_files} файлов · нужна сверка</span>
+        : null
     : null
   if (!avatar && !badge) return null
   return <>{avatar}{badge}</>
@@ -433,12 +467,11 @@ function DownloadBundles(props: { repo: HfRepoData; onDownload: (files: string[]
 function LegacyDownloadBundles({ repo, onDownload, downloadOperations }: { repo: HfRepoData; onDownload: (files: string[] | null, repo: HfRepoData, label?: string) => void; downloadOperations: Operation[] }) {
   const [extras, setExtras] = useState<string[]>([])
   useEffect(() => { setExtras([]) }, [repo.repo_id, repo.revision])
-  const weights = /\.(gguf|ggml|mmproj|safetensors|bin|pt|pth|ckpt|onnx|nemo|tflite)$/i
-  const auxiliary = (path: string) => /(^|[\\/_.-])(?:mtp|mmproj|projector|projection|vision(?:[-_]?(?:encoder|tower))?|audio(?:[-_]?(?:encoder|tower))?|adapter|d[\s_-]?spark)(?=$|[\\/_.-])/i.test(path)
+  const auxiliary = isAuxiliaryModelPath
   const groups = new Map<string, HfFile[]>()
   const extraGroups = new Map<string, HfFile[]>()
   for (const file of repo.files) {
-    if (!weights.test(file.path)) continue
+    if (!isDownloadableModelWeight(file.path)) continue
     const parts = file.path.split('/')
     const name = parts[parts.length - 1]
     if (auxiliary(file.path)) {
@@ -452,7 +485,7 @@ function LegacyDownloadBundles({ repo, onDownload, downloadOperations }: { repo:
   const supporting = repo.files.filter((file) => !file.path.includes('/') && /(^README\.md$|^LICENSE(?:\..*)?$|config.*\.json$|^tokenizer.*\.json$|^special_tokens_map\.json$|^.*\.index\.json$|^vocab\.(json|txt)$|^merges\.txt$|^.*\.jinja$|^tokenizer\.model$)/i.test(file.path))
   if (!groups.size) return null
   const imageCategories = ['diffusion_models', 'text_encoders', 'vae']
-  const imageFiles = repo.files.filter((file) => imageCategories.some((category) => file.path.startsWith(`${category}/`)) && weights.test(file.path))
+  const imageFiles = repo.files.filter((file) => imageCategories.some((category) => file.path.startsWith(`${category}/`)) && isDownloadableModelWeight(file.path))
   const hasImageBundle = imageCategories.every((category) => imageFiles.some((file) => file.path.startsWith(`${category}/`)))
   const imageBundle = [...new Map([...imageFiles, ...supporting].map((file) => [file.path, file])).values()]
   const imageLabel = `${repo.repo_id} — ComfyUI Image`

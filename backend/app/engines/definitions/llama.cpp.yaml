@@ -3,7 +3,9 @@ id: llama.cpp
 name: llama.cpp
 types: [text]
 install_script_file: llama.cpp.sh
+update_script_file: llama.cpp.update.sh
 executable: "{{target}}/bin/llama-server"
+version_command: ["{{engine}}", "--version"]
 environment: {}
 command: "{{engine}} --model {{model}} --alias {{model_name}} --metrics --host 127.0.0.1 --port 8000"
 healthcheck:

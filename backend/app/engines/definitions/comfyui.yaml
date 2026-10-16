@@ -5,6 +5,12 @@ types: [image, video]
 install_script_file: image.sh
 update_script_file: image.update.sh
 executable: "{{target}}/bin/comfyui"
+version_command:
+  - "{{target}}/bin/python"
+  - -I
+  - -c
+  - "from pathlib import Path; import runpy, sys; p = Path(sys.argv[1]) / 'comfyui_version.py'; print(runpy.run_path(str(p))['__version__'] if p.is_file() else '')"
+  - "{{target}}/ComfyUI"
 working_directory: "{{target}}"
 environment: {}
 command: "{{engine}} --listen 127.0.0.1 --port 8188 --disable-auto-launch --extra-model-paths-config {{extra_model_paths_config}}"

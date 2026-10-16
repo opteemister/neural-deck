@@ -27,6 +27,35 @@ from ..system import collect_status, collect_system_data
 from .server import _decode_cursor, _encode_cursor, _value
 
 
+CAPABILITY_TYPE_NOTE = (
+    "types описывает основную задачу и результат движка, а не все модальности входа. "
+    "Например, text может принимать изображения или видео у мультимодальной модели, "
+    "но результатом остаётся текст; это не image/video generation."
+)
+
+CAPABILITY_TYPE_LEGEND: dict[str, str] = {
+    "text": "Генерация текста (chat/completions); результат — текст.",
+    "tts": "Синтез речи: текст -> аудио.",
+    "asr": "Распознавание речи: аудио -> текст.",
+    "embeddings": "Векторные представления: вход -> embedding-векторы.",
+    "image": "Генерация или обработка изображений; результат — изображение.",
+    "video": "Генерация или обработка видео; результат — видео.",
+    "decision": "Структурированные решения: вход и вопросы -> ответы решения.",
+}
+
+
+def _capability_metadata(types: Any = None) -> dict[str, Any]:
+    selected = types if isinstance(types, list) else list(CAPABILITY_TYPE_LEGEND)
+    return {
+        "types_note": CAPABILITY_TYPE_NOTE,
+        "type_legend": {
+            capability: CAPABILITY_TYPE_LEGEND[capability]
+            for capability in selected
+            if capability in CAPABILITY_TYPE_LEGEND
+        },
+    }
+
+
 def _dump(value: Any) -> Any:
     return _value(value)
 
@@ -50,7 +79,10 @@ def _instance_summary(value: Any, *, detailed: bool = False) -> dict[str, Any]:
     )
     if detailed:
         fields += ("types", "api_protocol", "api_base_url", "ui_url", "identity_verified")
-    return {key: data.get(key) for key in fields if key in data}
+    result = {key: data.get(key) for key in fields if key in data}
+    if detailed and "types" in result:
+        result.update(_capability_metadata(result["types"]))
+    return result
 
 
 def _operation_summary(value: Any) -> dict[str, Any]:
@@ -243,21 +275,26 @@ def build_operations(app: Any) -> dict[str, Any]:
     async def stop_instance(instance_id: str) -> Any:
         return _operation_summary(await app.state.runtime.process_manager.stop(instance_id))
 
-    async def list_engines() -> list[Any]:
+    async def list_engines() -> dict[str, Any]:
         values = await asyncio.to_thread(app.state.runtime.engine_service.engines)
-        return [
-            {
-                "id": item.id,
-                "display_name": item.display_name,
-                "types": item.types,
-                "installation_kinds": item.installation_kinds,
-                "installation_count": len(item.installations),
-            }
-            for item in values
-        ]
+        types = sorted({capability for item in values for capability in item.types})
+        return {
+            "items": [
+                {
+                    "id": item.id,
+                    "display_name": item.display_name,
+                    "types": item.types,
+                    "installation_kinds": item.installation_kinds,
+                    "installation_count": len(item.installations),
+                }
+                for item in values
+            ],
+            **_capability_metadata(types),
+        }
 
     async def list_engine_definitions() -> dict[str, Any]:
         data = app.state.runtime.engine_service.list_definitions()
+        types = sorted({capability for item in data.items for capability in item.types})
         # Diagnostics have a dedicated paginated tool.  Keeping them out of
         # every definition page avoids duplicating them in a large catalogue.
         return {
@@ -265,13 +302,17 @@ def build_operations(app: Any) -> dict[str, Any]:
                 {"id": item.id, "name": item.name, "types": item.types} for item in data.items
             ],
             "issue_count": len(data.issues),
+            **_capability_metadata(types),
         }
 
     async def list_engine_definition_issues() -> list[Any]:
         return app.state.runtime.engine_service.list_definitions().issues
 
     async def get_engine_definition(engine_id: str) -> Any:
-        return app.state.runtime.engine_service.get_definition(engine_id)
+        data = _dump(app.state.runtime.engine_service.get_definition(engine_id))
+        if isinstance(data, dict):
+            data.update(_capability_metadata(data.get("types")))
+        return data
 
     async def save_engine_definition(mode: str, definition: dict[str, Any]) -> Any:
         try:
@@ -519,14 +560,36 @@ def build_operations(app: Any) -> dict[str, Any]:
         )
         if item is None:
             raise AppError("model_not_found", "Локальная модель не найдена", status_code=404)
+        files = [*item.variants, *item.auxiliary_files]
+        hashes = app.state.runtime.model_catalogue.cached_file_hashes(
+            item.path, [file.path for file in files]
+        )
+
+        def with_hashes(file: Any) -> dict[str, Any]:
+            data = _dump(file)
+            if isinstance(data, dict):
+                data["hashes"] = hashes.get(
+                    str(data.get("path", "")),
+                    {"local": None, "downloaded": None, "remote": None},
+                )
+            return data
+
+        def with_group_hashes(group: Any) -> dict[str, Any]:
+            data = _dump(group)
+            if isinstance(data, dict):
+                data["files"] = [with_hashes(file) for file in group.files]
+            return data
+
         if kind == "groups":
             return [
-                _dump(group) for group in item.groups if group_id is None or group.id == group_id
+                with_group_hashes(group)
+                for group in item.groups
+                if group_id is None or group.id == group_id
             ]
         if kind == "variants":
-            return [_dump(file) for file in item.variants]
+            return [with_hashes(file) for file in item.variants]
         if kind == "auxiliary":
-            return [_dump(group) for group in item.auxiliary_blocks]
+            return [with_group_hashes(group) for group in item.auxiliary_blocks]
         raise AppError(
             "validation_error", "kind должен быть groups, variants или auxiliary", status_code=422
         )
@@ -646,23 +709,7 @@ def build_operations(app: Any) -> dict[str, Any]:
         return _operation_summary(operation)
 
     async def check_model_updates(model_id: str | None) -> Any:
-        async def worker(operation: dict[str, Any]) -> None:
-            items = await app.state.runtime.model_catalogue.check_updates()
-            if model_id:
-                items = [item for item in items if item.id == model_id]
-            operation["result"] = {
-                "checked_count": len(items),
-                "updated_count": sum(
-                    1
-                    for item in items
-                    if item.hf_match.remote_update
-                    and item.hf_match.remote_update.status == "update_available"
-                ),
-            }
-
-        operation = await app.state.runtime.operation_manager.create(
-            "model_updates_check", model_id or "models", worker
-        )
+        operation = await app.state.runtime.model_catalogue.start_update_check(model_id)
         return _operation_summary(operation)
 
     async def list_model_updates(model_id: str | None) -> list[Any]:
@@ -678,6 +725,9 @@ def build_operations(app: Any) -> dict[str, Any]:
                 "remote_revision": item.hf_match.remote_check.current_revision
                 if item.hf_match.remote_check
                 else None,
+                "remote_check": _dump(item.hf_match.remote_check),
+                "local_integrity": _dump(item.hf_match.local_integrity),
+                "changed_paths": _dump(item.hf_match.changed_paths),
             }
             for item in values
         ]
@@ -956,19 +1006,22 @@ def build_operations(app: Any) -> dict[str, Any]:
     async def delete_log_source(source_id: str) -> Any:
         return LogsService(app.state.runtime.paths).delete(source_id)
 
-    async def list_chat_models() -> list[Any]:
+    async def list_chat_models() -> dict[str, Any]:
         data = await app.state.runtime.proxy_service.models()
-        return [
-            {
-                "id": item["id"],
-                "engine_id": item.get("engine_id"),
-                "types": item.get("types", []),
-                "context_length": item.get("context_length"),
-                "reasoning_capabilities": item.get("reasoning_capabilities"),
-            }
-            for item in data.get("data", [])
-            if "text" in item.get("types", [])
-        ]
+        return {
+            "items": [
+                {
+                    "id": item["id"],
+                    "engine_id": item.get("engine_id"),
+                    "types": item.get("types", []),
+                    "context_length": item.get("context_length"),
+                    "reasoning_capabilities": item.get("reasoning_capabilities"),
+                }
+                for item in data.get("data", [])
+                if "text" in item.get("types", [])
+            ],
+            **_capability_metadata(["text"]),
+        }
 
     async def chat(
         model: str,

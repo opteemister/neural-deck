@@ -226,10 +226,23 @@ class ComfyUIEngineAdapter:
             return Verification(False, None, "ComfyUI source, Python или wrapper отсутствует")
         if not os.access(executable, os.X_OK):
             return Verification(False, None, "wrapper ComfyUI недоступен для запуска")
-        ok, version, diagnostic = _run_version(
-            [str(python), "-I", "-c", "from pathlib import Path; print('ComfyUI source')"]
+        python_ok, _python_version, python_diagnostic = _run_version(
+            [str(python), "-I", "-c", "pass"]
         )
-        return Verification(ok, version or "source", diagnostic if not ok else None)
+        if not python_ok:
+            return Verification(False, None, python_diagnostic)
+        version_ok, version, _version_diagnostic = _run_version(
+            [
+                str(python),
+                "-I",
+                "-c",
+                "from pathlib import Path; import runpy, sys; p = Path(sys.argv[1]) / 'comfyui_version.py'; print(runpy.run_path(str(p))['__version__'] if p.is_file() else '')",
+                str(candidate.root_path / "ComfyUI"),
+            ]
+        )
+        # Version reporting is optional and must not turn a usable ComfyUI
+        # installation into a failed one.
+        return Verification(True, version if version_ok else None)
 
 
 ADAPTERS = (

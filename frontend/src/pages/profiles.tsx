@@ -1,5 +1,5 @@
 import { stateLabel } from '@/lib/utils'
-import { FormEvent, ReactNode, useEffect, useMemo, useState } from 'react'
+import { FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useLogsDrawer } from '@/components/logs-drawer'
 import { ExternalLink, FileWarning, FolderOpen, Pencil, Play, Plus, RefreshCw, Save, Square, Trash2, TriangleAlert, WandSparkles } from 'lucide-react'
@@ -169,7 +169,7 @@ function ProfileCard({ profile, summary, summaryLoading, modelsRoot, installatio
   const engineName = installation?.displayName ?? profile.engine.id
 
   const cardSummary = <div className="profile-card-summary-grid">
-    <div className="profile-card-identity min-w-0"><div className="flex flex-wrap items-center gap-x-2 gap-y-1"><h2 className="text-sm font-medium">{profile.name}</h2><span className="text-muted-foreground">—</span><span className="text-sm text-foreground">{profile.model_name}</span>{uiUrl && <a href={uiUrl} target="_blank" rel="noopener noreferrer" title="Открыть UI движка" className="inline-flex items-center gap-1 text-[11px] font-medium text-copper underline-offset-2 hover:underline"><ExternalLink className="size-3" />Открыть UI</a>}</div>{modelPath ? <a href={`/models?local_q=${encodeURIComponent(modelPath)}`} title={modelPath} className="mt-1.5 flex min-w-0 items-center gap-1.5 break-all font-mono text-[11px] text-copper underline-offset-2 hover:underline"><FolderOpen className="size-3.5 shrink-0" />{modelLabel}</a> : <p className="mt-1.5 text-[11px] text-muted-foreground">Модель не задана</p>}</div>
+    <div className="profile-card-identity min-w-0"><div className="flex flex-wrap items-center gap-x-2 gap-y-1"><h2 className="text-sm font-medium">{profile.name}</h2><span className="text-muted-foreground">—</span><span className="text-sm text-foreground">{profile.model_name}</span>{uiUrl && <a href={uiUrl} target="_blank" rel="noopener noreferrer" title="Открыть UI движка" className="inline-flex items-center gap-1 text-[11px] font-medium text-copper underline-offset-2 hover:underline"><ExternalLink className="size-3" />Открыть UI</a>}</div>{modelPath && modelLabel ? <a href={`/models?local_q=${encodeURIComponent(modelPath)}`} title={modelPath} className="mt-1.5 flex min-w-0 overflow-hidden items-center gap-1.5 whitespace-nowrap font-mono text-[11px] text-copper underline-offset-2 hover:underline"><FolderOpen className="size-3.5 shrink-0" /><MiddleTruncatedModelLabel value={modelLabel} /></a> : <p className="mt-1.5 text-[11px] text-muted-foreground">Модель не задана</p>}</div>
     <div className="profile-card-metrics" data-testid="profile-summary-metrics">
       <SummaryCell label="Статус" value={<span className="inline-flex min-w-0 items-center gap-1.5"><RuntimeStatus status={runtime} profileName={profile.name} />{runtime.instance?.model_paths_restart_required && <span className="rounded border border-[#806241] px-1 py-0.5 text-[9px] leading-none text-[#d4a85b]" title="Пути моделей ComfyUI изменились после запуска. Перезапустите экземпляр, чтобы применить их.">Перезапуск ComfyUI</span>}</span>} title={runtime.instance?.model_paths_restart_required ? 'Пути моделей ComfyUI изменились после запуска; требуется перезапуск.' : `Логи профиля «${profile.name}»`} />
       <SummaryCell label="Порт" value={summaryLoading ? '…' : formatPort(summary?.endpoint)} warning={Boolean(summary?.endpoint.conflict)} title={summary?.endpoint.conflict ? `Порт совпадает с: ${summary.endpoint.conflict_with.join(', ')}` : 'Effective port из command или default engine'} />
@@ -243,6 +243,72 @@ function conflictInstance(error: NeuralDeckApiError): Instance | null {
   if (!value || typeof value !== 'object') return null
   const instance = value as Partial<Instance>
   return typeof instance.id === 'string' && typeof instance.profile_name === 'string' && typeof instance.state === 'string' ? value as Instance : null
+}
+
+function MiddleTruncatedModelLabel({ value }: { value: string }) {
+  const labelRef = useRef<HTMLSpanElement>(null)
+  const [displayValue, setDisplayValue] = useState(value)
+
+  useEffect(() => {
+    const element = labelRef.current
+    if (!element) return
+
+    function update() {
+      const label = labelRef.current
+      if (!label) return
+      const availableWidth = label.clientWidth
+      if (!availableWidth) {
+        setDisplayValue(value)
+        return
+      }
+
+      const computedStyle = getComputedStyle(label)
+      const ruler = document.createElement('span')
+      ruler.style.position = 'fixed'
+      ruler.style.left = '-10000px'
+      ruler.style.top = '0'
+      ruler.style.visibility = 'hidden'
+      ruler.style.whiteSpace = 'pre'
+      ruler.style.font = computedStyle.font
+      ruler.style.letterSpacing = computedStyle.letterSpacing
+      ruler.style.wordSpacing = computedStyle.wordSpacing
+      document.body.append(ruler)
+
+      const measure = (text: string) => {
+        ruler.textContent = text
+        return ruler.getBoundingClientRect().width
+      }
+
+      if (measure(value) <= availableWidth) {
+        setDisplayValue(value)
+      } else {
+        const prefix = value.slice(0, 20)
+        let minSuffixLength = 0
+        let maxSuffixLength = value.length - prefix.length
+        while (minSuffixLength < maxSuffixLength) {
+          const suffixLength = Math.ceil((minSuffixLength + maxSuffixLength) / 2)
+          const candidate = `${prefix}...${value.slice(-suffixLength)}`
+          if (measure(candidate) <= availableWidth) minSuffixLength = suffixLength
+          else maxSuffixLength = suffixLength - 1
+        }
+        setDisplayValue(`${prefix}...${minSuffixLength ? value.slice(-minSuffixLength) : ''}`)
+      }
+
+      ruler.remove()
+    }
+
+    update()
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', update)
+      return () => window.removeEventListener('resize', update)
+    }
+
+    const observer = new ResizeObserver(update)
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [value])
+
+  return <span ref={labelRef} className="block min-w-0 flex-1 overflow-hidden whitespace-nowrap">{displayValue}</span>
 }
 
 function relativeModelPath(path: string, modelsRoot?: string): string {

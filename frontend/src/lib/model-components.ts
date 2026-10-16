@@ -15,6 +15,7 @@ export interface ModelComponent {
 }
 
 const weights = /\.(gguf|ggml|mmproj|safetensors|bin|pt|pth|ckpt|onnx|nemo|tflite)$/i
+const auxiliaryPath = /(^|[\\/_.-])(?:mtp|mmproj|projector|projection|vision(?:[-_]?(?:encoder|tower))?|audio(?:[-_]?(?:encoder|tower))?|adapter|d[\s_-]?spark)(?=$|[\\/_.-])/i
 const categories: Record<string, string> = {
   diffusion_models: 'Основная модель', unet: 'Основная модель', transformer: 'Основная модель',
   checkpoints: 'Checkpoint', text_encoders: 'Текстовый энкодер', text_encoder: 'Текстовый энкодер',
@@ -25,6 +26,14 @@ const categories: Record<string, string> = {
 }
 const precisionSuffix = /(?:[_.-])((?:bf16|fp16|fp32|f16|f32|fp8(?:[_-](?:scaled|e4m3fn|e5m2))?|int8(?:[_-]convrot)?|nvfp4(?:[_-]awq)?|w\d+a\d+|q\d+(?:[_-][a-z0-9]+)*|iq\d+(?:[_-][a-z0-9]+)*))$/i
 const shardPattern = /-(\d{5})-of-(\d{5})$/
+
+export function isAuxiliaryModelPath(path: string): boolean {
+  return auxiliaryPath.test(path)
+}
+
+export function isDownloadableModelWeight(path: string): boolean {
+  return weights.test(path) || (/\.gguf_file$/i.test(path) && isAuxiliaryModelPath(path))
+}
 
 export function componentFileSize(files: ComponentFile[]): number | null {
   return files.every((file) => file.size !== null) ? files.reduce((sum, file) => sum + (file.size ?? 0), 0) : null
@@ -58,7 +67,7 @@ export function selectComponentPrecision(components: ModelComponent[], selected:
 export function groupModelComponents(files: ComponentFile[]): ModelComponent[] {
   const result = new Map<string, ModelComponent>()
   for (const file of files) {
-    if (!weights.test(file.path)) continue
+    if (!isDownloadableModelWeight(file.path)) continue
     const parts = file.path.replaceAll('\\', '/').split('/')
     const directory = parts.slice(0, -1).join('/')
     let stem = parts.at(-1)!.replace(/\.[^.]+$/, '')
@@ -71,7 +80,9 @@ export function groupModelComponents(files: ComponentFile[]): ModelComponent[] {
     stem = stem.replace(shardPattern, '')
     const precision = quant ? quant[1].replaceAll('-', '_').toUpperCase() : 'Не указана'
     const role = parts.slice(0, -1).find((part) => categories[part])
-    const category = role ? categories[role] : directory || 'Модель'
+    const category = role
+      ? categories[role]
+      : isAuxiliaryModelPath(file.path) ? 'Вспомогательный блок' : directory || 'Модель'
     const generic = /^(?:model|diffusion_pytorch_model|pytorch_model)$/i.test(stem)
     const name = generic && directory ? directory.split('/').at(-1)! : stem
     // Keep the directory as part of identity: unrelated checkpoints never merge.

@@ -55,7 +55,7 @@ describe('Models workflow', () => {
     expect(await screen.findByText('org/trending')).toBeInTheDocument()
     expect(screen.getByText(/1,2/)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'GGUF' })).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Текст' }))
+    fireEvent.click(screen.getByRole('button', { name: /Текст/ }))
     await waitFor(() => expect(fetchMock.mock.calls.filter(([input]) => String(input).includes('/api/v1/models/hf/trending')).length).toBe(1))
   })
 
@@ -70,9 +70,21 @@ describe('Models workflow', () => {
 
     expect(await screen.findByText('Доступно обновление · 1 файлов')).toBeInTheDocument()
     const hfLink = screen.getByRole('link', { name: 'Открыть модель на Hugging Face' })
-    expect(hfLink.nextElementSibling).toHaveTextContent('Доступно обновление · 1 файлов')
+    expect(hfLink.parentElement).toHaveTextContent('Доступно обновление · 1 файлов')
     expect(screen.queryByText('Сведения об обновлении')).not.toBeInTheDocument()
     expect(screen.queryByText('Проверка HF недоступна')).not.toBeInTheDocument()
     expect(screen.queryByText(/sha256|etag|hash/i)).not.toBeInTheDocument()
+  })
+
+  it('shows remote file differences when the update date cannot be confirmed', async () => {
+    const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/models/local')) return Promise.resolve(new Response(envelope({ items: [{ id: 'local_1', path: '/models/deepseek', kind: 'directory', format: 'gguf', compatibility: 'llama.cpp', size_bytes: 100, hf_match: { status: 'downloaded', repo_id: 'unsloth/DeepSeek-V4-Flash-0731-GGUF', remote_check: { availability: 'success', last_attempted_at: '2026-10-04T10:00:00Z' }, remote_update: { status: 'unknown', changed_files: 2 }, changed_paths: [{ path: 'UD-Q3_K_XL/model-00001-of-00002.gguf', status: 'changed' }, { path: 'UD-Q8_K_XL/model-00001-of-00002.gguf', status: 'removed' }] } }] }), { status: 200 }))
+      return Promise.resolve(new Response(envelope({ items: [] }), { status: 200 }))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    renderPage()
+
+    expect(await screen.findByText('Отличия от HF · 2 файлов · нужна сверка')).toBeInTheDocument()
   })
 })

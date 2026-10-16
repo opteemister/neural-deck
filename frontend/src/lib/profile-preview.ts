@@ -6,7 +6,7 @@ function isSeparator(value: string | undefined): boolean {
   return value === undefined || ' \t\r\n|;&<>()'.includes(value)
 }
 
-function shellQuote(value: string): string {
+export function quoteShellWord(value: string): string {
   // This is the POSIX shlex.quote algorithm used by the backend.
   return /^[A-Za-z0-9_@%+=:,./-]+$/.test(value)
     ? value
@@ -125,11 +125,11 @@ export function previewProfileCommand(command: string, values: { engine: string;
 
   return {
     ok: true,
-    command: command.replace(/\{\{(engine|model|model_draft|model_name|base_directory|port)\}\}/g, (_, key: keyof typeof values) => shellQuote(String(values[key] ?? ''))),
+    command: command.replace(/\{\{(engine|model|model_draft|model_name|base_directory|port)\}\}/g, (_, key: keyof typeof values) => quoteShellWord(String(values[key] ?? ''))),
   }
 }
 
 /** Profile-specific environment shown separately above the launch command. */
 export function previewProfileEnvironment(environment: Record<string, string>): string {
-  return Object.entries(environment).map(([name, value]) => `${name}=${shellQuote(value)}`).join('\n')
+  return Object.entries(environment).map(([name, value]) => `${name}=${quoteShellWord(value)}`).join('\n')
 }

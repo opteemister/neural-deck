@@ -63,6 +63,8 @@ def test_discovery_verifies_each_python_engine_inside_a_venv(
     prepare_data_dirs(paths)
     venv = paths.venvs_dir / "worker"
     (venv / "bin").mkdir(parents=True)
+    (venv / "bin" / "python").write_text("#!/bin/sh\n", encoding="utf-8")
+    (venv / "bin" / "python").chmod(0o755)
     (venv / "bin" / "vllm").write_text("#!/bin/sh\n", encoding="utf-8")
     (venv / "bin" / "vllm").chmod(0o755)
 

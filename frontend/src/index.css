@@ -31,7 +31,7 @@
 }
 
 * { box-sizing: border-box; }
-html, body, #root { min-height: 100%; }
+html, body, #root { height: 100%; overflow: hidden; }
 body { margin: 0; min-width: 320px; background: #1b1c1e; color: #e9e5dc; font-size: 13px; }
 button, input, textarea, select { font: inherit; }
 button, select { cursor: pointer; }

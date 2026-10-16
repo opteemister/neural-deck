@@ -86,6 +86,9 @@ class EngineDefinitionRegistry:
                 )
         return sorted(values.values(), key=lambda item: item.id)
 
+    def list_defaults(self) -> list[EngineDefinition]:
+        return sorted(self._builtins.values(), key=lambda item: item.id)
+
     def get(self, engine_id: str) -> EngineDefinition:
         if engine_id == "image":
             engine_id = "comfyui"
@@ -127,6 +130,24 @@ class EngineDefinitionRegistry:
             raise KeyError(engine_id)
         path.unlink()
         self._fsync_directory(self.custom_dir)
+
+    def reset(self, engine_id: str) -> EngineDefinition:
+        if engine_id == "image":
+            engine_id = "comfyui"
+        try:
+            definition = self._builtins[engine_id]
+        except KeyError as exc:
+            raise KeyError(engine_id) from exc
+
+        path = self._custom_path(engine_id)
+        if path.is_symlink():
+            raise PermissionError("символическую ссылку на пользовательское определение сбросить нельзя")
+        if path.exists():
+            if not path.is_file():
+                raise PermissionError("пользовательское определение должно быть обычным файлом")
+            path.unlink()
+            self._fsync_directory(self.custom_dir)
+        return definition
 
     def custom_path(self, engine_id: str) -> Path:
         return self._custom_path(engine_id)

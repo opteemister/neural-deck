@@ -51,6 +51,13 @@ class ChangedPath(BaseModel):
     remote_file_date: str | None = None
 
 
+class LocalFileDifference(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str
+    reasons: list[Literal["size", "hash"]] = Field(default_factory=list)
+
+
 class HfMatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -60,6 +67,7 @@ class HfMatch(BaseModel):
     scope: Literal["snapshot", "selection"] | None = None
     missing_files: list[str] = Field(default_factory=list)
     unverified_files: list[str] = Field(default_factory=list)
+    local_differences: list[LocalFileDifference] = Field(default_factory=list)
     remote_check: RemoteCheckState | None = None
     remote_update: RemoteUpdateState | None = None
     local_integrity: LocalIntegrityState | None = None

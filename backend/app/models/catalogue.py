@@ -15,7 +15,7 @@ import tempfile
 import threading
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import quote
 
 import httpx
@@ -30,6 +30,7 @@ from ..schemas.models import (
     HfRepoData,
     HfSearchData,
     HfSearchItem,
+    LocalFileDifference,
     LocalModel,
     LocalModelFile,
     LocalModelGroup,
@@ -255,7 +256,7 @@ class ModelCatalogue:
             for path in paths
             if _visible_relative(path, root)
             and path.is_file()
-            and path.suffix.lower() in MODEL_EXTENSIONS
+            and _is_catalogue_model_file(path)
             and not any(parent in model_directory_set for parent in path.parents)
         ]
         # Publish file metadata before any remote lookup or large-file hashing.
@@ -444,7 +445,7 @@ class ModelCatalogue:
         try:
             raw = yaml.safe_load(sidecar.read_text(encoding="utf-8"))
             manifest = _validate_manifest(raw)
-            status, missing_files, unverified_files = _manifest_status(
+            status, local_differences = _manifest_status(
                 path, manifest, verify_hashes=verify_hashes
             )
             tracked = isinstance(manifest.get("tracking_ref"), str) and bool(manifest.get("tracking_ref"))
@@ -461,8 +462,7 @@ class ModelCatalogue:
                 repo_id=manifest["repo_id"],
                 revision=manifest["revision"],
                 scope=manifest["scope"],
-                missing_files=missing_files,
-                unverified_files=unverified_files,
+                local_differences=local_differences,
                 remote_check=remote_check,
                 remote_update=remote_update,
                 local_integrity=manifest.get("local_integrity"),
@@ -770,6 +770,30 @@ class ModelCatalogue:
                 manifest = _read_manifest(item.path)
                 if manifest is None:
                     continue
+                if "tracking_ref" not in manifest:
+                    # Older download manifests predate explicit tracking refs.
+                    # Downloads have always followed the repository's default
+                    # branch, so migrate them to the same `main` ref used by
+                    # current downloads instead of silently skipping updates.
+                    try:
+                        _repo_parts(str(manifest.get("repo_id", "")))
+                    except AppError:
+                        continue
+                    if not _is_commit_sha(manifest.get("revision")):
+                        continue
+                    with _MANIFEST_LOCK:
+                        latest = _read_manifest(item.path) or manifest
+                        if "tracking_ref" not in latest:
+                            latest = {**latest, "tracking_ref": "main"}
+                            sidecar = (
+                                item.path / SIDECAR_DIR
+                                if item.path.is_dir()
+                                else Path(f"{item.path}{SIDECAR_DIR}")
+                            )
+                            _atomic_write_text_sync(
+                                sidecar, yaml.safe_dump(latest, sort_keys=False)
+                            )
+                        manifest = latest
                 tracking_ref = manifest.get("tracking_ref")
                 repo_id = manifest.get("repo_id")
                 if not isinstance(repo_id, str) or not isinstance(tracking_ref, str) or not tracking_ref:
@@ -782,6 +806,119 @@ class ModelCatalogue:
                 lambda: [self._describe(item.path) for item in local_items]
             )
             return self._items
+
+    async def start_update_check(self, model_id: str | None = None) -> dict[str, Any]:
+        """Queue a tracked Hugging Face check and return its operation immediately."""
+
+        async def worker(operation: dict[str, Any]) -> None:
+            before = {
+                item.id: item.hf_match.remote_check.last_attempted_at
+                if item.hf_match.remote_check
+                else None
+                for item in self.items()
+            }
+            items = await self.check_updates()
+            if model_id:
+                items = [item for item in items if item.id == model_id]
+            checked_count = sum(
+                1
+                for item in items
+                if item.hf_match.remote_check
+                and item.hf_match.remote_check.availability in {"success", "unavailable"}
+                and item.hf_match.remote_check.last_attempted_at != before.get(item.id)
+            )
+            operation["result"] = {
+                "checked_count": checked_count,
+                "skipped_count": len(items) - checked_count,
+                "updated_count": sum(
+                    1
+                    for item in items
+                    if item.hf_match.remote_update
+                    and item.hf_match.remote_update.status == "update_available"
+                ),
+            }
+
+        return await self.operations.create(
+            "model_updates_check", model_id or "models", worker
+        )
+
+    def cached_file_hashes(
+        self, path: Path, relative_paths: list[str]
+    ) -> dict[str, dict[str, Any]]:
+        """Return persisted local and Hub hashes without reading model weights."""
+
+        manifest = _read_manifest(path)
+        tracked = manifest is not None
+        if tracked:
+            assert manifest is not None
+            entries = {
+                str(item["path"]): item
+                for item in manifest.get("files", [])
+                if isinstance(item, dict) and isinstance(item.get("path"), str)
+            }
+        else:
+            sidecar = (
+                path / ".neural-deck-hashes.yaml"
+                if path.is_dir()
+                else Path(f"{path}.neural-deck-hashes.yaml")
+            )
+            try:
+                cached = yaml.safe_load(sidecar.read_text(encoding="utf-8"))
+            except (OSError, ValueError, yaml.YAMLError):
+                cached = None
+            raw_entries = cached.get("files") if isinstance(cached, dict) else None
+            entries = raw_entries if isinstance(raw_entries, dict) else {}
+
+        result: dict[str, dict[str, Any]] = {}
+        for raw_relative in relative_paths:
+            try:
+                relative = ensure_safe_relative_path(raw_relative)
+            except ValueError:
+                continue
+            entry = entries.get(relative)
+            if not isinstance(entry, dict):
+                continue
+            local = entry.get("local") if isinstance(entry.get("local"), dict) else entry
+            local_hashes = {
+                key: local.get(key)
+                for key in ("sha256", "md5", "git_blob_sha1", "hash_calculated_at")
+                if isinstance(local.get(key), str)
+            }
+            downloaded_hash = None
+            downloaded_kind = None
+            downloaded_date = None
+            if tracked:
+                downloaded_hash = (
+                    entry.get("downloaded_remote_hash")
+                    or entry.get("sha256")
+                    or entry.get("etag")
+                )
+                downloaded_kind = (
+                    entry.get("downloaded_remote_hash_kind")
+                    or entry.get("hash_kind")
+                    or ("lfs_sha256" if isinstance(entry.get("sha256"), str) else None)
+                )
+                downloaded_date = entry.get("downloaded_file_date") or entry.get("file_date")
+            snapshot = entry.get("remote_snapshot")
+            result[relative] = {
+                "local": local_hashes or None,
+                "downloaded": {
+                    "hash": downloaded_hash if isinstance(downloaded_hash, str) else None,
+                    "kind": downloaded_kind if isinstance(downloaded_kind, str) else None,
+                    "file_date": downloaded_date,
+                }
+                if tracked
+                else None,
+                "remote": {
+                    "revision": snapshot.get("revision"),
+                    "hash": snapshot.get("hash"),
+                    "kind": snapshot.get("hash_kind"),
+                    "file_date": snapshot.get("file_date"),
+                }
+                if isinstance(snapshot, dict)
+                else None,
+            }
+        return result
 
     async def _check_repo_updates(
         self,
@@ -823,14 +960,9 @@ class ModelCatalogue:
             )
             remote_tree: dict[str, dict[str, Any]] = {}
             if need_tree:
-                tree_response = await _hf_get_with_retries(
-                    client,
-                    f"/api/models/{namespace}/{name}/tree/{current_revision}",
-                    params={"recursive": "true", "expand": "true"},
+                payload = await _hf_repo_tree(
+                    client, f"{namespace}/{name}", current_revision
                 )
-                payload = tree_response.json()
-                if not isinstance(payload, list):
-                    raise ValueError("Hugging Face вернул неожиданный список файлов")
                 for raw in payload:
                     if not isinstance(raw, dict) or raw.get("type") not in {None, "file"}:
                         continue
@@ -953,14 +1085,7 @@ class ModelCatalogue:
 
     @staticmethod
     async def _hf_files(client: httpx.AsyncClient, repo_id: str, revision: str) -> list[HfFile]:
-        response = await client.get(
-            f"/api/models/{repo_id}/tree/{revision}",
-            params={"recursive": "true", "expand": "true"},
-        )
-        response.raise_for_status()
-        payload = response.json()
-        if not isinstance(payload, list):
-            raise ValueError("Hugging Face вернул неожиданный список файлов")
+        payload = await _hf_repo_tree(client, repo_id, revision)
         result: list[HfFile] = []
         for item in payload:
             if not isinstance(item, dict):
@@ -1090,7 +1215,7 @@ def _has_model_marker(path: Path) -> bool:
         or "config.json" in names
         or "model_index.json" in names
         or "model.safetensors.index.json" in names
-        or any(child.is_file() and child.suffix.lower() in MODEL_EXTENSIONS for child in children)
+        or any(child.is_file() and _is_catalogue_model_file(child) for child in children)
     )
 
 
@@ -1117,7 +1242,7 @@ def _is_image_model_directory(path: Path) -> bool:
     try:
         return all(
             any(
-                item.is_file() and item.suffix.lower() in MODEL_EXTENSIONS
+                item.is_file() and _is_catalogue_model_file(item)
                 for item in (path / category).rglob("*")
             )
             for category in ("diffusion_models", "text_encoders", "vae")
@@ -1164,7 +1289,11 @@ def _file_description(root: Path, path: Path) -> LocalModelFile:
         size = None
     return LocalModelFile(
         path=path.relative_to(root).as_posix(),
-        format=MODEL_EXTENSIONS.get(path.suffix.lower(), "unknown"),
+        format=(
+            "gguf"
+            if path.suffix.lower() == ".gguf_file" and _is_auxiliary_path(path.as_posix())
+            else MODEL_EXTENSIONS.get(path.suffix.lower(), "unknown")
+        ),
         size_bytes=size,
     )
 
@@ -1173,7 +1302,7 @@ def _contains_model_file(path: Path) -> bool:
     try:
         return any(
             item.is_file()
-            and item.suffix.lower() in MODEL_EXTENSIONS
+            and _is_catalogue_model_file(item)
             and not any(part.startswith(".") for part in item.relative_to(path).parts)
             for item in path.rglob("*")
         )
@@ -1189,6 +1318,15 @@ def _root_group_key(name: str) -> str:
 
 def _is_auxiliary_path(value: str) -> bool:
     return _AUXILIARY_ROLE_RE.search(value) is not None
+
+
+def _is_catalogue_model_file(path: Path | str) -> bool:
+    """Recognize ordinary weights and llama.cpp auxiliary projector files."""
+
+    value = Path(path)
+    return value.suffix.lower() in MODEL_EXTENSIONS or (
+        value.suffix.lower() == ".gguf_file" and _is_auxiliary_path(value.as_posix())
+    )
 
 
 def _group_status(
@@ -1208,11 +1346,13 @@ def _group_status(
             item.relative_to(root).parent != Path(".") for item in files
         )
         component_key = f"{Path(relative).parent.as_posix()}/{_root_group_key(Path(relative).name)}"
-        if is_nested and Path(relative).suffix.lower() in MODEL_EXTENSIONS and component_key == key:
+        if relative == key and _is_catalogue_model_file(relative):
+            expected.append(item)
+        elif is_nested and _is_catalogue_model_file(relative) and component_key == key:
             expected.append(item)
         elif is_nested and relative.startswith(f"{key}/"):
             expected.append(item)
-        elif not is_nested and "/" not in relative and Path(relative).suffix.lower() in MODEL_EXTENSIONS:
+        elif not is_nested and "/" not in relative and _is_catalogue_model_file(relative):
             if _root_group_key(relative) == key:
                 expected.append(item)
     if not expected:
@@ -1274,7 +1414,7 @@ def _reconcile_local_manifest(root: Path, path: Path) -> None:
                 item.relative_to(path).as_posix()
                 for item in path.rglob("*")
                 if item.is_file()
-                and item.suffix.lower() in MODEL_EXTENSIONS
+                and _is_catalogue_model_file(item)
                 and not any(part.startswith(".") for part in item.relative_to(path).parts)
             }
             if local_model_paths and local_model_paths <= expected_paths:
@@ -1289,14 +1429,9 @@ def _reconcile_local_manifest(root: Path, path: Path) -> None:
             revision = metadata.get("sha") if isinstance(metadata, dict) else None
             if not isinstance(revision, str) or not _is_commit_sha(revision):
                 return
-            tree_response = client.get(
-                f"/api/models/{repo_id}/tree/{revision}",
-                params={"recursive": "true"},
+            payload = _hf_repo_tree_sync(
+                client, repo_id, revision, params={"recursive": "true"}
             )
-            tree_response.raise_for_status()
-            payload = tree_response.json()
-        if not isinstance(payload, list):
-            return
         hf_files: list[dict[str, Any]] = []
         for raw in payload:
             if not isinstance(raw, dict) or raw.get("type") not in {None, "file"}:
@@ -1338,7 +1473,7 @@ def _reconcile_local_manifest(root: Path, path: Path) -> None:
             item.relative_to(path).as_posix(): item
             for item in path.rglob("*")
             if item.is_file()
-            and item.suffix.lower() in MODEL_EXTENSIONS
+            and _is_catalogue_model_file(item)
             and not any(part.startswith(".") for part in item.relative_to(path).parts)
         }
         matched_paths = {
@@ -1362,11 +1497,15 @@ def _reconcile_local_manifest(root: Path, path: Path) -> None:
         for item in hf_files:
             relative = str(item["path"])
             candidate = path / relative
-            if relative in selected_paths or not candidate.is_file() or Path(relative).suffix.lower() in MODEL_EXTENSIONS:
+            if relative in selected_paths or not candidate.is_file() or _is_catalogue_model_file(relative):
                 continue
             if candidate.stat().st_size == item["size"]:
                 selected.append(item)
-        all_model_paths = {str(item["path"]) for item in hf_files if Path(str(item["path"])).suffix.lower() in MODEL_EXTENSIONS}
+        all_model_paths = {
+            str(item["path"])
+            for item in hf_files
+            if _is_catalogue_model_file(str(item["path"]))
+        }
         scope = "snapshot" if {str(item["path"]) for item in selected} >= all_model_paths else "selection"
         manifest = {
             "schema_version": 1,
@@ -1499,6 +1638,10 @@ def _refresh_local_hash_cache(path: Path) -> None:
     for raw_item in manifest["files"]:
         item = dict(raw_item)
         candidate = path / item["path"] if path.is_dir() else path
+        if not candidate.is_file():
+            # Do not turn absent siblings into a folder-level validation
+            # failure or prevent the remaining local hashes from advancing.
+            continue
         baseline = item.get("downloaded_remote_hash") or item.get("sha256") or item.get("etag")
         if isinstance(baseline, str):
             item.setdefault("downloaded_remote_hash", baseline)
@@ -1548,7 +1691,10 @@ def _refresh_untracked_hash_cache(path: Path) -> None:
     last_check_ns = _last_hash_check_ns(saved)
     started = utc_now().isoformat()
     candidates = (
-        [item for item in path.rglob("*") if item.is_file() and _visible_relative(item, path)]
+        sorted(
+            (item for item in path.rglob("*") if item.is_file() and _visible_relative(item, path)),
+            key=lambda item: item.relative_to(path).as_posix(),
+        )
         if path.is_dir() else [path]
     )
     for candidate in candidates:
@@ -1677,9 +1823,11 @@ def _apply_remote_snapshot(
                         "remote_file_date": None,
                     }
                 )
-                update_available = update_available or _remote_date_is_newer(
+                newer = _remote_date_is_newer(
                     repo_date, current.get("downloaded_revision_date"),
                 )
+                update_available = update_available or newer
+                unknown = unknown or not newer
                 remote_statuses.append("differs_from_current_remote")
                 continue
 
@@ -1725,10 +1873,12 @@ def _apply_remote_snapshot(
                     if not isinstance(remote_local_hash, str):
                         unknown = True
                     elif not _same_hash(remote_local_hash, remote_kind, remote_hash, remote_kind):
-                        update_available = update_available or _remote_date_is_newer(
+                        newer = _remote_date_is_newer(
                             metadata.get("file_date") or repo_date,
                             item.get("downloaded_file_date") or current.get("downloaded_revision_date"),
                         )
+                        update_available = update_available or newer
+                        unknown = unknown or not newer
                 elif isinstance(remote_local_hash, str) and not _same_hash(
                     remote_local_hash, remote_kind, remote_hash, remote_kind
                 ):
@@ -1754,9 +1904,11 @@ def _apply_remote_snapshot(
                         "remote_file_date": metadata.get("file_date"),
                     }
                 )
-                update_available = update_available or _remote_date_is_newer(
+                newer = _remote_date_is_newer(
                     repo_date, current.get("downloaded_revision_date"),
                 )
+                update_available = update_available or newer
+                unknown = unknown or not newer
 
         if unknown and not update_available:
             remote_update_status = "unknown"
@@ -1886,15 +2038,13 @@ def _cached_hf_tree_metadata(path: Path, revision: str) -> dict[str, dict[str, A
 def _remote_hf_tree_metadata(repo_id: str, revision: str) -> dict[str, dict[str, Any]] | None:
     try:
         with httpx.Client(base_url="https://huggingface.co", timeout=8) as client:
-            response = client.get(
-                f"/api/models/{repo_id}/tree/{revision}",
+            payload = _hf_repo_tree_sync(
+                client,
+                repo_id,
+                revision,
                 params={"recursive": "true", "expand": "true"},
             )
-            response.raise_for_status()
-            payload = response.json()
     except (httpx.HTTPError, ValueError):
-        return None
-    if not isinstance(payload, list):
         return None
     result: dict[str, dict[str, Any]] = {}
     for raw in payload:
@@ -1949,7 +2099,7 @@ async def _hf_get_with_retries(
     client: httpx.AsyncClient,
     url: str,
     *,
-    params: dict[str, str],
+    params: dict[str, str] | None,
 ) -> httpx.Response:
     for attempt in range(3):
         try:
@@ -1973,6 +2123,83 @@ async def _hf_get_with_retries(
     raise RuntimeError("Hugging Face request retry loop did not return")
 
 
+async def _hf_repo_tree(
+    client: httpx.AsyncClient, repo_id: str, revision: str
+) -> list[Any]:
+    """Fetch every page of a recursive, expanded Hugging Face repository tree."""
+
+    page_url = f"/api/models/{repo_id}/tree/{revision}"
+    page_params: dict[str, str] | None = {"recursive": "true", "expand": "true"}
+    files: list[Any] = []
+    seen_pages: set[str] = set()
+
+    while True:
+        response = await _hf_get_with_retries(client, page_url, params=page_params)
+        payload, page_url = _hf_tree_page(response, seen_pages)
+        files.extend(payload)
+        if page_url is None:
+            return files
+        page_params = None
+
+
+def _hf_repo_tree_sync(
+    client: httpx.Client,
+    repo_id: str,
+    revision: str,
+    *,
+    params: dict[str, str],
+) -> list[Any]:
+    """Synchronous counterpart used by best-effort local manifest refreshes."""
+
+    page_url = f"/api/models/{repo_id}/tree/{revision}"
+    page_params: dict[str, str] | None = params
+    files: list[Any] = []
+    seen_pages: set[str] = set()
+
+    while True:
+        response = client.get(page_url, params=page_params)
+        response.raise_for_status()
+        payload, page_url = _hf_tree_page(response, seen_pages)
+        files.extend(payload)
+        if page_url is None:
+            return files
+        page_params = None
+
+
+def _hf_tree_page(
+    response: httpx.Response, seen_pages: set[str]
+) -> tuple[list[Any], str | None]:
+    """Validate one tree page and return its same-origin next link, if any."""
+
+    page_key = str(response.url)
+    if page_key in seen_pages:
+        raise ValueError("Hugging Face вернул повторяющуюся страницу дерева")
+    seen_pages.add(page_key)
+
+    payload = response.json()
+    if not isinstance(payload, list):
+        raise ValueError("Hugging Face вернул неожиданный список файлов")
+
+    next_link = response.links.get("next")
+    next_href = next_link.get("url") if isinstance(next_link, dict) else None
+    if not isinstance(next_href, str) or not next_href:
+        return payload, None
+
+    next_url = httpx.URL(next_href)
+    if not next_url.is_absolute_url:
+        next_url = response.url.join(next_url)
+    if (
+        next_url.scheme != response.url.scheme
+        or next_url.host != response.url.host
+        or next_url.port != response.url.port
+    ):
+        raise ValueError("Hugging Face вернул ссылку пагинации на другой сервер")
+    normalized_next = str(next_url)
+    if normalized_next in seen_pages:
+        raise ValueError("Hugging Face вернул повторяющуюся страницу дерева")
+    return payload, normalized_next
+
+
 def _repo_id_for_path(root: Path, path: Path) -> str | None:
     try:
         parts = path.relative_to(root).parts
@@ -1990,6 +2217,8 @@ def _repo_id_for_path(root: Path, path: Path) -> str | None:
 
 def _hf_group_key(relative: str) -> str:
     path = Path(relative)
+    if path.suffix.lower() == ".gguf_file" and _is_auxiliary_path(relative):
+        return f"aux:{path.as_posix()}"
     return path.parent.as_posix() if path.parent != Path(".") else _root_group_key(path.name)
 
 
@@ -2033,15 +2262,21 @@ def _model_groups(
     for item in files:
         if item.name == SIDECAR_DIR:
             continue
-        if item.suffix.lower() not in MODEL_EXTENSIONS:
+        if not _is_catalogue_model_file(item):
             supporting += 1
             continue
         relative = item.relative_to(path)
-        key = relative.parent.as_posix() if relative.parent != Path(".") else "."
-        if key == ".":
-            key = _root_group_key(item.name)
-        elif image_components:
-            key = f"{key}/{_root_group_key(item.name)}"
+        file_specific_auxiliary = (
+            item.suffix.lower() == ".gguf_file" and _is_auxiliary_path(relative.as_posix())
+        )
+        if file_specific_auxiliary:
+            key = relative.as_posix()
+        else:
+            key = relative.parent.as_posix() if relative.parent != Path(".") else "."
+            if key == ".":
+                key = _root_group_key(item.name)
+            elif image_components:
+                key = f"{key}/{_root_group_key(item.name)}"
         buckets.setdefault(key, []).append(item)
 
     variants: list[LocalModelGroup] = []
@@ -2059,7 +2294,11 @@ def _model_groups(
         group_id = "group_" + hashlib.sha256(f"{path}\0{kind}\0{key}".encode()).hexdigest()[:24]
         group = LocalModelGroup(
             id=group_id,
-            label=key if key != "." else "Модель",
+            label=(
+                Path(key).stem
+                if len(group_files) == 1 and key == group_files[0].relative_to(path).as_posix()
+                else key if key != "." else "Модель"
+            ),
             kind=kind,
             path=physical_path,
             files=relative_files,
@@ -2206,58 +2445,63 @@ def _manifest_status(
     manifest: dict[str, Any],
     *,
     verify_hashes: bool = False,
-) -> tuple[str, list[str], list[str]]:
+) -> tuple[str, list[LocalFileDifference]]:
     if path.is_file() and len(manifest["files"]) != 1:
-        return "unknown", [str(item["path"]) for item in manifest["files"]], []
-    matches = 0
-    unknown_size = False
-    missing_files: list[str] = []
-    unverified_files: list[str] = []
+        return "unknown", []
+    differences: list[LocalFileDifference] = []
     for item in manifest["files"]:
         candidate = path / item["path"] if path.is_dir() else path
         if not candidate.is_file():
-            missing_files.append(str(item["path"]))
+            # This manifest may cover a selection from a larger repository.
+            # Absent files are not reported as a folder-level completeness
+            # error; only comparable content differences are surfaced.
             continue
         try:
             expected_size = item.get("size")
-            if expected_size is None:
-                unknown_size = True
-                continue
-            if candidate.stat().st_size != expected_size:
-                missing_files.append(str(item["path"]))
-                continue
+            reasons: list[Literal["size", "hash"]] = []
+            if expected_size is not None and candidate.stat().st_size != expected_size:
+                reasons.append("size")
             expected_hash = (
                 item.get("downloaded_remote_hash")
                 or item.get("sha256")
                 or item.get("etag")
             )
             if expected_hash:
+                hash_kind = (
+                    item.get("downloaded_remote_hash_kind")
+                    or item.get("hash_kind")
+                    or _hash_kind_from_value(expected_hash, item)
+                )
                 hash_result = _hash_matches(
                     candidate,
                     expected_hash,
-                    hash_kind=(
-                        item.get("downloaded_remote_hash_kind")
-                        or item.get("hash_kind")
-                    ),
+                    hash_kind=hash_kind,
                     verify_hashes=verify_hashes,
                     local=item.get("local") if isinstance(item.get("local"), dict) else None,
                 )
-                if hash_result is None:
-                    unverified_files.append(str(item["path"]))
+                # The downloaded Hub hash is the cached local value until a
+                # later scan detects a newer mtime and stores a local override.
+                # That normal reuse path is not an "unverified" condition.
+                if (
+                    hash_result is None
+                    and not item.get("local_error")
+                    and hash_kind in {"lfs_sha256", "git_blob", "md5"}
+                ):
+                    hash_result = True
                 if hash_result is False:
-                    missing_files.append(str(item["path"]))
-                    continue
+                    reasons.append("hash")
+            if reasons:
+                differences.append(
+                    LocalFileDifference(path=str(item["path"]), reasons=reasons)
+                )
         except OSError:
-            missing_files.append(str(item["path"]))
+            # If the file disappears while scanning, omit it instead of
+            # producing a missing-file validation result.
             continue
-        matches += 1
-    if unknown_size:
-        return "unknown", sorted(set(missing_files)), sorted(set(unverified_files))
-    if matches == len(manifest["files"]):
-        return "downloaded", [], sorted(set(unverified_files))
-    if matches:
-        return "incomplete", sorted(set(missing_files)), sorted(set(unverified_files))
-    return "unknown", sorted(set(missing_files)), sorted(set(unverified_files))
+    differences.sort(key=lambda item: item.path)
+    # This status says that a Hub manifest is linked to the model. It no longer
+    # claims that every file in the repository is present locally.
+    return ("downloaded" if manifest["files"] else "unknown"), differences
 
 
 def _sha256(path: Path) -> str:
@@ -2389,12 +2633,11 @@ async def _atomic_write_text(destination: Path, value: str) -> None:
 
 
 def _cache_match(path: Path) -> HfMatch:
-    """Use a Hub cache snapshot only when its expected file set is proven.
+    """Use an explicit Hub cache manifest to associate a local model with HF.
 
     A ``snapshots/<sha>`` directory and a matching ``refs/*`` file prove only
-    that a revision was selected.  Interrupted downloads have the same shape,
-    so a complete local file inventory is required before returning
-    ``downloaded`` or ``incomplete``.
+    that a revision was selected. The manifest is used for source association
+    and comparing files that exist; absent siblings are not reported.
     """
 
     try:
@@ -2419,14 +2662,13 @@ def _cache_match(path: Path) -> HfMatch:
             manifest = _cache_expected_manifest(repo_cache, snapshot, repo_id, revision)
             if manifest is None:
                 return HfMatch(status="unknown", repo_id=repo_id, revision=revision)
-            status, missing_files, unverified_files = _manifest_status(snapshot, manifest)
+            status, local_differences = _manifest_status(snapshot, manifest)
             return HfMatch(
                 status=status,
                 repo_id=repo_id,
                 revision=revision,
                 scope=manifest["scope"],
-                missing_files=missing_files,
-                unverified_files=unverified_files,
+                local_differences=local_differences,
             )
     except (OSError, RuntimeError, UnicodeError):
         return HfMatch(status="unknown")

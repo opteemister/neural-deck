@@ -140,7 +140,7 @@ export function ChatPage() {
     }
   }
 
-  return <div className="relative flex h-[calc(100dvh-4rem)] min-h-0 flex-col">
+  return <div className="relative flex h-full min-h-0 flex-col">
     {turns.length > 0 && <nav aria-label="Запросы диалога" className="absolute left-1 top-1/2 z-10 flex max-h-[45vh] -translate-y-1/2 flex-col gap-1 overflow-y-auto sm:left-3">
       {turns.map((turn, index) => <button key={turn.id} type="button" aria-label={'Перейти к запросу ' + (index + 1)} aria-current={activeTurn === turn.id ? 'step' : undefined} title={'Запрос ' + (index + 1) + ': ' + turn.prompt.slice(0, 80)} onClick={() => jump(turn.id)} className="group flex h-3 w-5 items-center justify-center rounded focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-copper"><span className={'h-0.5 rounded transition-all group-hover:w-4 group-hover:bg-foreground ' + (activeTurn === turn.id ? 'w-4 bg-copper' : 'w-2 bg-muted-foreground/50')} /></button>)}
     </nav>}

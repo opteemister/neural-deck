@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from urllib.parse import urlsplit
 
@@ -173,6 +173,7 @@ class EngineDefinitionList(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     items: list[EngineDefinition]
+    defaults: list[EngineDefinition] = Field(default_factory=list)
     issues: list[EngineDefinitionIssue] = Field(default_factory=list)
 
 
@@ -304,6 +305,7 @@ class Operation(BaseModel):
     stderr: str = ""
     exit_code: int | None = None
     error: str | None = None
+    result: dict[str, Any] | None = None
     resolved_packages: dict[str, str] | None = None
     checked_at: datetime | None = None
     progress: OperationProgress | None = None

@@ -39,6 +39,7 @@ export interface EngineDefinition {
 
 export interface EngineDefinitionsData {
   items: EngineDefinition[]
+  defaults?: EngineDefinition[]
   issues?: Array<{ file: string; code: string; message: string }>
 }
 
@@ -95,6 +96,7 @@ export interface Operation {
   stderr: string
   exit_code: number | null
   error: string | null
+  result?: Record<string, unknown> | null
   resolved_packages?: Record<string, string> | null
   checked_at?: string | null
   progress?: {
@@ -207,6 +209,10 @@ export interface LocalModelArtifact {
     scope?: 'snapshot' | 'selection' | null
     missing_files?: string[]
     unverified_files?: string[]
+    local_differences?: Array<{
+      path: string
+      reasons: Array<'size' | 'hash'>
+    }>
     remote_check?: {
       availability: 'success' | 'unavailable' | 'not_tracked'
       last_attempted_at?: string | null

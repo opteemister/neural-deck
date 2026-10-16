@@ -154,7 +154,7 @@ save-тулов; создание не перезаписывает сущест
 | `nd_get_status` | нет | `overall: ok\|degraded\|error`, `components[{name,state,message?,checked_at}]` |
 | `nd_get_hardware` | нет | `sampled_at`, `cpu{cores,usage_percent}`, `ram{used_bytes,total_bytes}`, `gpus[{uuid,index,name,memory_used_bytes,memory_total_bytes,usage_percent,temperature_celsius,fan_speed_percent,power_watts,power_limit_watts}]` |
 | `nd_list_instances` | `profile_id?`, `state?`, Page | Page<InstanceSummary> |
-| `nd_get_instance` | `instance_id` | InstanceSummary, `types, api_protocol, api_base_url, ui_url, identity_verified` |
+| `nd_get_instance` | `instance_id` | InstanceSummary, `types`, `types_note`, `type_legend`, `api_protocol, api_base_url, ui_url, identity_verified` |
 | `nd_stop_instance` | `instance_id` | `instance_id,state`; соблюдает существующие проверки идентичности процесса и can_stop |
 
 Телеметрия не включает список instances и историю графиков. Нельзя объявлять
@@ -169,8 +169,8 @@ ID определения, ID установки, версия схемы опр
 
 | Инструмент | Вход | Поля ответа |
 |---|---|---|
-| `nd_list_engines` | Page | Page<{id,display_name,types,installation_kinds,installation_count}> |
-| `nd_list_engine_definitions` | Page | Page<{id,name,types}>, `issue_count` |
+| `nd_list_engines` | Page | Page<{id,display_name,types,installation_kinds,installation_count}>, `types_note`, `type_legend` |
+| `nd_list_engine_definitions` | Page | Page<{id,name,types}>, `issue_count`, `types_note`, `type_legend` |
 | `nd_list_engine_definition_issues` | Page | Page<{file,code,message}> |
 | `nd_get_engine_definition` | `engine_id` | Полный EngineDefinition, описанный ниже |
 | `nd_save_engine_definition` | `mode`, `definition: EngineDefinition` | `engine_id,created,changed_fields[]` |
@@ -347,7 +347,7 @@ URL не строится из произвольного Host. Срок хра�
 
 | Инструмент | Вход | Поля ответа |
 |---|---|---|
-| `nd_list_chat_models` | Page | Page<{id,engine_id?,context_length,reasoning_capabilities}> |
+| `nd_list_chat_models` | Page | Page<{id,engine_id?,types,context_length,reasoning_capabilities}>, `types_note`, `type_legend` |
 | `nd_chat` | `model`, `messages[{role: system\|user\|assistant,content: string}]`, `reasoning_effort=auto`, `max_output_tokens?` | `model,message{role: assistant,content},finish_reason,usage?,timings?` |
 
 В списке — доступные текстовые модели и алиасы текущего proxy registry,

@@ -293,6 +293,13 @@ async def update_engine_definition(
     return success(request, service.update_definition(engine_id, payload))
 
 
+@router.post("/engines/definitions/{engine_id}/reset", response_model=SuccessEnvelope[EngineDefinition])
+async def reset_engine_definition(
+    request: Request, engine_id: str, service: EngineService = Depends(get_engine_service)
+) -> JSONResponse:
+    return success(request, service.reset_definition(engine_id))
+
+
 @router.delete("/engines/definitions/{engine_id}")
 async def delete_engine_definition(
     request: Request, engine_id: str, service: EngineService = Depends(get_engine_service)
@@ -516,6 +523,22 @@ async def check_local_model_updates(
     """Run the same remote check used by the background scheduler."""
 
     return success(request, {"items": await catalogue.check_updates()})
+
+
+@router.post(
+    "/models/local/check-updates/start",
+    response_model=SuccessEnvelope[Operation],
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def start_local_model_update_check(
+    request: Request, catalogue: ModelCatalogue = Depends(get_model_catalogue)
+) -> JSONResponse:
+    operation = await catalogue.start_update_check()
+    return success(
+        request,
+        operation_data(operation),
+        status_code=status.HTTP_202_ACCEPTED,
+    )
 
 
 @router.get("/models/hf/search", response_model=SuccessEnvelope[HfSearchData])

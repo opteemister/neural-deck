@@ -18,6 +18,7 @@ from pydantic import ValidationError
 from ..errors import AppError
 from ..operations import OperationManager, run_command, safe_target_name, utc_now
 from ..paths import DataPaths
+from ..profiles.formatting import substitute_placeholders
 from ..schemas.engines import (
     Engine,
     EngineDefinition,
@@ -28,11 +29,10 @@ from ..schemas.engines import (
     ResolvedEngineProfile,
 )
 from ..schemas.profiles import ProfileData
-from .adapters import ADAPTER_BY_ID
+from .adapters import ADAPTER_BY_ID, Candidate
 from .definition_registry import EngineDefinitionRegistry
 from .discovery import DiscoveryCoordinator, DiscoveryResult, installation_id
 from .installation_templates import installation_template
-from ..profiles.formatting import substitute_placeholders
 
 VERSION_COMMANDS = {"vllm": "vllm", "sglang": "sglang", "freetoken": "ft", "image": "comfyui"}
 
@@ -107,11 +107,17 @@ class EngineService:
                         diagnostic = str(manifest.get("diagnostic") or "Последняя операция завершилась ошибкой")
                     elif not verified:
                         diagnostic = "Исполняемый файл отсутствует или недоступен"
+                    version = manifest.get("version") if manifest else None
+                    if verified and definition.version_command:
+                        detected_version, _version_error = self._probe_definition_version(
+                            definition, root, executable
+                        )
+                        version = detected_version or version
                     kind = "custom"
                     item = Installation(
                         id=registry_key, engine_id=definition.id, kind=kind,
                         root_path=root, executable_path=executable,
-                        version=(manifest.get("version") if manifest else None),
+                        version=version,
                         status=status, verified=verified, diagnostic=diagnostic,
                         registered=True,
                     )
@@ -200,7 +206,11 @@ class EngineService:
 
     def list_definitions(self) -> EngineDefinitionList:
         items = self.definition_registry.list()
-        return EngineDefinitionList(items=items, issues=list(self.definition_registry.issues))
+        return EngineDefinitionList(
+            items=items,
+            defaults=self.definition_registry.list_defaults(),
+            issues=list(self.definition_registry.issues),
+        )
 
     def get_definition(self, engine_id: str) -> EngineDefinition:
         try:
@@ -227,6 +237,20 @@ class EngineService:
             raise AppError("engine_not_found", "Определение движка не найдено", status_code=404) from exc
         except (OSError, ValueError, PermissionError) as exc:
             raise AppError("engine_definition_invalid", str(exc), status_code=422) from exc
+        finally:
+            self._result = None
+
+    def reset_definition(self, engine_id: str) -> EngineDefinition:
+        try:
+            return self.definition_registry.reset(engine_id)
+        except KeyError as exc:
+            raise AppError(
+                "engine_default_not_found",
+                "Для этого движка нет встроенного определения",
+                status_code=404,
+            ) from exc
+        except (OSError, PermissionError, ValueError) as exc:
+            raise AppError("engine_definition_reset_failed", str(exc), status_code=409) from exc
         finally:
             self._result = None
 
@@ -394,21 +418,11 @@ class EngineService:
             raise RuntimeError("Executable отсутствует или не имеет права на запуск")
         version: str | None = None
         if definition.version_command:
-            argv = [
-                part.replace("{{target}}", str(target)).replace("{{engine}}", str(executable))
-                for part in definition.version_command
-            ]
-            try:
-                result = await asyncio.to_thread(
-                    subprocess.run, argv, capture_output=True, text=True,
-                    timeout=30, check=False, cwd=str(target), env=os.environ.copy(),
-                )
-            except (OSError, subprocess.SubprocessError) as exc:
-                raise RuntimeError(f"Проверка версии не выполнена: {exc}") from exc
-            output = (result.stdout or "").strip() or (result.stderr or "").strip()
-            if result.returncode:
-                raise RuntimeError(output or f"version_command завершилась с кодом {result.returncode}")
-            version = output.splitlines()[0][:200] if output else None
+            version, version_error = await asyncio.to_thread(
+                self._probe_definition_version, definition, target, executable
+            )
+            if version_error:
+                raise RuntimeError(f"Проверка версии не выполнена: {version_error}")
         snapshot_path = target / ".neural-deck-definition.yaml"
         self._write_yaml_atomic(snapshot_path, definition.model_dump(mode="json", exclude_none=True))
         self._write_yaml_atomic(
@@ -431,6 +445,33 @@ class EngineService:
         }
         self._save_installation_registry()
         operation["checked_at"] = utc_now()
+
+    @staticmethod
+    def _probe_definition_version(
+        definition: EngineDefinition, target: Path, executable: Path
+    ) -> tuple[str | None, str | None]:
+        if not definition.version_command:
+            return None, None
+        argv = [
+            part.replace("{{target}}", str(target)).replace("{{engine}}", str(executable))
+            for part in definition.version_command
+        ]
+        try:
+            result = subprocess.run(
+                argv,
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+                cwd=str(target),
+                env=os.environ.copy(),
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            return None, str(exc)
+        output = (result.stdout or "").strip() or (result.stderr or "").strip()
+        if result.returncode:
+            return None, output or f"version_command завершилась с кодом {result.returncode}"
+        return (output.splitlines()[0][:200] if output else None), None
 
     def _generic_paths(self, definition: EngineDefinition, request: GenericInstallationCreate) -> tuple[Path, Path]:
         target = request.target_path.expanduser()
@@ -633,6 +674,74 @@ class EngineService:
 
     async def update_installation(self, installation_id: str) -> dict[str, Any]:
         installation = self.get_installation(installation_id)
+        if installation.kind == "binary":
+            definition = self.get_definition(installation.engine_id)
+            if not definition.update_script:
+                raise AppError("unsupported_operation", "В определении нет скрипта обновления")
+            if self.installation_in_use is not None and self.installation_in_use(installation_id):
+                raise AppError(
+                    "installation_in_use",
+                    "Нельзя обновить бинарник, пока он используется",
+                    status_code=409,
+                )
+
+            async def update_binary(operation: dict[str, Any]) -> None:
+                try:
+                    if (
+                        self.installation_in_use is not None
+                        and self.installation_in_use(installation_id)
+                    ):
+                        raise AppError(
+                            "installation_in_use",
+                            "Нельзя обновить бинарник, пока он используется",
+                            status_code=409,
+                        )
+                    script = self._render_definition_script(
+                        definition, definition.update_script or "", installation.root_path,
+                        installation.executable_path,
+                    )
+                    code, _out, _err = await run_command(
+                        ["/bin/bash", "-c", script],
+                        cwd=str(installation.executable_path.parent),
+                        timeout_seconds=14400, env=os.environ.copy(),
+                        on_stdout_line=lambda line: self.operations.append_output(
+                            operation, "stdout", line
+                        ),
+                        on_stderr_line=lambda line: self.operations.append_output(
+                            operation, "stderr", line
+                        ),
+                    )
+                    operation["exit_code"] = code
+                    if code:
+                        raise RuntimeError(f"Команда обновления завершилась с кодом {code}")
+                    adapter = ADAPTER_BY_ID.get(installation.engine_id)
+                    if adapter is None:
+                        raise RuntimeError("Адаптер бинарного движка не найден")
+                    verification = await asyncio.to_thread(
+                        adapter.verify,
+                        Candidate(
+                            engine_id=installation.engine_id, kind="binary",
+                            root_path=installation.root_path,
+                            executable_path=installation.executable_path,
+                            source="update",
+                        ),
+                    )
+                    if not verification.verified:
+                        raise RuntimeError(
+                            verification.diagnostic
+                            or "Проверка бинарника после обновления не прошла"
+                        )
+                    operation["version"] = verification.version
+                    operation["checked_at"] = utc_now()
+                finally:
+                    await self._rescan_after_operation()
+
+            target_id = (
+                f"build:{installation.engine_id}"
+                if installation.engine_id == "llama.cpp"
+                else installation_id
+            )
+            return await self.operations.create("update", target_id, update_binary)
         if installation.kind == "custom":
             definition = self.get_definition(installation.engine_id)
             if not definition.update_script:

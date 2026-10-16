@@ -2,17 +2,84 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+from types import SimpleNamespace
 
+import httpx
 import pytest
 import yaml
 from app.config import Settings
+from app.mcp.operations import build_operations
 from app.models.catalogue import (
     ModelCatalogue,
     _apply_remote_snapshot,
+    _hf_repo_tree_sync,
+    _model_groups,
     _refresh_local_hash_cache,
     _tree_file_metadata,
 )
 from app.paths import build_paths
+
+
+@pytest.mark.asyncio
+async def test_hf_files_collects_all_tree_pages() -> None:
+    requests: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if len(requests) == 1:
+            return httpx.Response(
+                200,
+                json=[{"type": "file", "path": "first.gguf", "size": 1}],
+                headers={
+                    "Link": (
+                        "<https://huggingface.co/api/models/org/model/tree/main"
+                        "?recursive=true&expand=true&cursor=page-2>; rel=\"next\""
+                    )
+                },
+            )
+        return httpx.Response(
+            200,
+            json=[{"type": "file", "path": "second.gguf", "size": 2}],
+        )
+
+    async with httpx.AsyncClient(
+        base_url="https://huggingface.co", transport=httpx.MockTransport(respond)
+    ) as client:
+        files = await ModelCatalogue._hf_files(client, "org/model", "main")
+
+    assert [file.path for file in files] == ["first.gguf", "second.gguf"]
+    assert len(requests) == 2
+    assert requests[1].url.params["cursor"] == "page-2"
+
+
+def test_sync_hf_tree_collects_all_pages() -> None:
+    requests: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        page = 1 if len(requests) == 1 else 2
+        headers = (
+            {
+                "Link": (
+                    "</api/models/org/model/tree/main?recursive=true&cursor=page-2>"
+                    "; rel=\"next\""
+                )
+            }
+            if page == 1
+            else {}
+        )
+        return httpx.Response(200, json=[{"path": f"page-{page}.gguf"}], headers=headers)
+
+    with httpx.Client(
+        base_url="https://huggingface.co", transport=httpx.MockTransport(respond)
+    ) as client:
+        files = _hf_repo_tree_sync(
+            client, "org/model", "main", params={"recursive": "true"}
+        )
+
+    assert [file["path"] for file in files] == ["page-1.gguf", "page-2.gguf"]
+    assert len(requests) == 2
+    assert requests[1].url.params["cursor"] == "page-2"
 
 
 def _sha256(value: bytes) -> str:
@@ -269,6 +336,182 @@ async def test_remote_check_does_not_run_local_hash_scan(tmp_path, monkeypatch):
     assert await catalogue.check_updates() == []
 
 
+def test_llama_cpp_gguf_file_projector_is_one_auxiliary_component(tmp_path: Path) -> None:
+    model = tmp_path / "model"
+    projector = model / "Shard_Rewrite" / "mmproj-BF16.gguf_file"
+    unrelated = model / "Shard_Rewrite" / "metadata.gguf_file"
+    projector.parent.mkdir(parents=True)
+    (model / "model-Q4_K_M.gguf").write_bytes(b"weights")
+    projector.write_bytes(b"projector")
+    unrelated.write_bytes(b"metadata")
+    manifest = {
+        "files": [
+            {"path": projector.relative_to(model).as_posix(), "size": projector.stat().st_size}
+        ]
+    }
+
+    groups, auxiliary, _, flattened_auxiliary, supporting = _model_groups(model, manifest)
+
+    assert len(groups) == 1
+    assert len(auxiliary) == 1
+    assert auxiliary[0].label == "mmproj-BF16"
+    assert auxiliary[0].path is None
+    assert auxiliary[0].status == "complete"
+    assert [file.path for file in flattened_auxiliary] == ["Shard_Rewrite/mmproj-BF16.gguf_file"]
+    assert flattened_auxiliary[0].format == "gguf"
+    assert supporting == 1
+
+
+def test_cached_hashes_keep_untracked_local_digest_separate_from_hub_baseline(
+    tmp_path: Path,
+) -> None:
+    model = tmp_path / "model"
+    model.mkdir()
+    weights = model / "model.gguf"
+    weights.write_bytes(b"weights")
+    _refresh_local_hash_cache(model)
+
+    catalogue = ModelCatalogue(
+        build_paths(
+            Settings(
+                data_root=tmp_path / "data",
+                models_root=tmp_path / "models",
+                host="127.0.0.1",
+                port=3000,
+            )
+        )
+    )
+    hashes = catalogue.cached_file_hashes(model, ["model.gguf"])
+
+    assert hashes["model.gguf"]["local"]["sha256"] == _sha256(b"weights")
+    assert hashes["model.gguf"]["downloaded"] is None
+    assert hashes["model.gguf"]["remote"] is None
+
+
+@pytest.mark.asyncio
+async def test_update_check_migrates_old_download_manifest_to_main(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = build_paths(
+        Settings(
+            data_root=tmp_path / "data",
+            models_root=tmp_path / "models",
+            host="127.0.0.1",
+            port=3000,
+        )
+    )
+    model = paths.models_root / "org" / "model"
+    model.mkdir(parents=True)
+    weights = model / "model.gguf"
+    weights.write_bytes(b"weights")
+    sidecar = model / ".neural-deck-hf.yaml"
+    sidecar.write_text(yaml.safe_dump({
+        "schema_version": 2,
+        "repo_id": "org/model",
+        "revision": "a" * 40,
+        "scope": "selection",
+        "files": [{"path": "model.gguf", "size": weights.stat().st_size}],
+    }))
+    catalogue = ModelCatalogue(paths)
+    catalogue._items = [catalogue._describe(model)]
+    checked: list[tuple[str, str]] = []
+
+    async def record_check(_client, repo_id, tracking_ref, _paths):
+        checked.append((repo_id, tracking_ref))
+
+    monkeypatch.setattr(catalogue, "_check_repo_updates", record_check)
+    await catalogue.check_updates()
+
+    assert checked == [("org/model", "main")]
+    assert yaml.safe_load(sidecar.read_text())["tracking_ref"] == "main"
+
+
+@pytest.mark.asyncio
+async def test_mcp_local_contents_returns_saved_hashes_without_rehashing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = build_paths(
+        Settings(
+            data_root=tmp_path / "data",
+            models_root=tmp_path / "models",
+            host="127.0.0.1",
+            port=3000,
+        )
+    )
+    model = paths.models_root / "org" / "model"
+    projector = model / "Shard_Rewrite" / "mmproj-BF16.gguf_file"
+    projector.parent.mkdir(parents=True)
+    (model / "model-Q4_K_M.gguf").write_bytes(b"weights")
+    projector.write_bytes(b"projector")
+    local_sha = "b" * 64
+    remote_sha = "c" * 64
+    sidecar = model / ".neural-deck-hf.yaml"
+    sidecar.write_text(yaml.safe_dump({
+        "schema_version": 2,
+        "repo_id": "org/model",
+        "tracking_ref": "main",
+        "revision": "a" * 40,
+        "scope": "selection",
+        "files": [
+            {
+                "path": "model-Q4_K_M.gguf",
+                "size": 7,
+                "local": {
+                    "sha256": "d" * 64,
+                    "md5": "e" * 32,
+                    "git_blob_sha1": "f" * 40,
+                },
+            },
+            {
+                "path": "Shard_Rewrite/mmproj-BF16.gguf_file",
+                "size": projector.stat().st_size,
+                "sha256": remote_sha,
+                "downloaded_remote_hash": remote_sha,
+                "downloaded_remote_hash_kind": "lfs_sha256",
+                "downloaded_file_date": "2026-09-06T06:55:24Z",
+                "local": {
+                    "sha256": local_sha,
+                    "md5": "1" * 32,
+                    "git_blob_sha1": "2" * 40,
+                },
+                "remote_snapshot": {
+                    "revision": "3" * 40,
+                    "hash": remote_sha,
+                    "hash_kind": "lfs_sha256",
+                    "file_date": "2026-09-06T06:55:24Z",
+                },
+            },
+        ],
+    }))
+    catalogue = ModelCatalogue(paths)
+    item = catalogue.scan()[0]
+
+    def fail_if_rehashed(_path: Path) -> dict[str, str]:
+        raise AssertionError("MCP must only expose saved hashes")
+
+    monkeypatch.setattr("app.models.catalogue._compute_local_digests", fail_if_rehashed)
+    app = SimpleNamespace(
+        state=SimpleNamespace(runtime=SimpleNamespace(model_catalogue=catalogue))
+    )
+    contents = await build_operations(app)["list_local_model_contents"](
+        item.id, "auxiliary", None
+    )
+
+    hashes = contents[0]["files"][0]["hashes"]
+    assert hashes["local"]["sha256"] == local_sha
+    assert hashes["downloaded"] == {
+        "hash": remote_sha,
+        "kind": "lfs_sha256",
+        "file_date": "2026-09-06T06:55:24Z",
+    }
+    assert hashes["remote"] == {
+        "revision": "3" * 40,
+        "hash": remote_sha,
+        "kind": "lfs_sha256",
+        "file_date": "2026-09-06T06:55:24Z",
+    }
+
+
 async def test_default_scheduler_waits_for_midnight_utc(tmp_path, monkeypatch):
     import asyncio
     import app.models.catalogue as module
@@ -302,6 +545,30 @@ def test_remote_hash_difference_without_newer_date_is_not_an_update(tmp_path, re
     }, "2026-10-04T10:00:00Z")
     manifest = yaml.safe_load((model / ".neural-deck-hf.yaml").read_text())
     assert manifest["remote_update"]["status"] != "update_available"
+    assert manifest["remote_update"]["status"] == "unknown"
+    assert manifest["remote_update"]["changed_files"] == 1
+    assert manifest["changed_paths"][0]["status"] == "changed"
+
+
+def test_removed_remote_file_without_newer_revision_date_is_unknown(tmp_path: Path) -> None:
+    model = tmp_path / "model"
+    _write_manifest(model, b"weights")
+    _refresh_local_hash_cache(model)
+
+    _apply_remote_snapshot(
+        model,
+        {},
+        "main",
+        "b" * 40,
+        "2026-10-01T12:00:00Z",
+        {},
+        "2026-10-04T10:00:00Z",
+    )
+
+    manifest = yaml.safe_load((model / ".neural-deck-hf.yaml").read_text())
+    assert manifest["remote_update"]["status"] == "unknown"
+    assert manifest["remote_update"]["changed_files"] == 1
+    assert manifest["changed_paths"][0]["status"] == "removed"
 
 
 def test_standalone_hf_manifest_hash_cache_is_reused(tmp_path, monkeypatch):

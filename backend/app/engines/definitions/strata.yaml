@@ -5,6 +5,7 @@ types: [text]
 install_script_file: strata.sh
 update_script_file: strata.update.sh
 executable: "{{target}}/setup.sh"
+version_command: [git, describe, --tags, --always, --dirty]
 working_directory: "{{target}}"
 environment: {}
 command: |

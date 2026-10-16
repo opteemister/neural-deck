@@ -1,9 +1,19 @@
 import { describe, expect, it } from 'vitest'
-import { componentDownloadFiles, groupModelComponents, hasImageVideoStructure, selectComponentPrecision } from './model-components'
+import { componentDownloadFiles, groupModelComponents, hasImageVideoStructure, isAuxiliaryModelPath, isDownloadableModelWeight, selectComponentPrecision } from './model-components'
 
 const files = (...paths: string[]) => paths.map((path) => ({ path, size: 10 }))
 
 describe('structural model components', () => {
+  it('recognizes llama.cpp auxiliary projector files with the Hub .gguf_file suffix', () => {
+    const projector = 'Shard_Rewrite/mmproj-BF16.gguf_file'
+    expect(isAuxiliaryModelPath(projector)).toBe(true)
+    expect(isDownloadableModelWeight(projector)).toBe(true)
+    expect(isDownloadableModelWeight('Shard_Rewrite/00001-of-00005.gguf_file')).toBe(false)
+    const [component] = groupModelComponents([{ path: projector, size: 123 }])
+    expect(component.category).toBe('Вспомогательный блок')
+    expect(component.variants[0].precision).toBe('BF16')
+  })
+
   it('applies a common precision only where available and preserves other selections', () => {
     const all = files(
       'diffusion_models/example_bf16.safetensors', 'diffusion_models/example_int8_convrot.safetensors',

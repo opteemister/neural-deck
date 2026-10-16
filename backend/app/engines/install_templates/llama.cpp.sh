@@ -73,12 +73,24 @@ if [ ! -d "$source_dir/.git" ]; then
 else
   git -C "$source_dir" pull --ff-only
 fi
-cmake -S "$source_dir" -B "$source_dir/build" \
+build_dir="$source_dir/build"
+cache_file="$build_dir/CMakeCache.txt"
+if [ -f "$cache_file" ]; then
+  expected_source_dir=$(realpath "$source_dir")
+  expected_build_dir=$(realpath -m "$build_dir")
+  cached_source_dir=$(sed -n 's/^CMAKE_HOME_DIRECTORY:INTERNAL=//p' "$cache_file")
+  cached_build_dir=$(sed -n 's/^CMAKE_CACHEFILE_DIR:INTERNAL=//p' "$cache_file")
+  if [[ "$cached_source_dir" != "$expected_source_dir" || "$cached_build_dir" != "$expected_build_dir" ]]; then
+    echo 'Путь сборки изменился; удаляется устаревший CMake build-кэш.'
+    rm -rf -- "$build_dir"
+  fi
+fi
+cmake -S "$source_dir" -B "$build_dir" \
   -DCMAKE_BUILD_TYPE=Release \
   -DGGML_CUDA=ON \
   -DCMAKE_CUDA_COMPILER="$cuda_compiler" \
   -DCMAKE_CUDA_ARCHITECTURES='86;120' \
   -DBUILD_SHARED_LIBS=OFF \
   -DLLAMA_BUILD_SERVER=ON
-cmake --build "$source_dir/build" --config Release --target llama-server --parallel "$(nproc)"
-install -D -m 0755 "$source_dir/build/bin/llama-server" "$executable"
+cmake --build "$build_dir" --config Release --target llama-server --parallel "$(nproc)"
+install -D -m 0755 "$build_dir/bin/llama-server" "$executable"

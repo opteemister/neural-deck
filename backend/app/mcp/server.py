@@ -435,7 +435,11 @@ def create_mcp_server(
 
     @server.tool(
         name="nd_list_engines",
-        description="Постраничный список обнаруженных движков.",
+        description=(
+            "Постраничный список обнаруженных движков. Поле types означает основную "
+            "задачу и результат; type_legend поясняет значения. Мультимодальный "
+            "text-движок всё равно не является image/video-генератором."
+        ),
         annotations=readonly,
     )
     async def nd_list_engines(page_size: int | None = None, cursor: str | None = None) -> Any:
@@ -445,7 +449,10 @@ def create_mcp_server(
 
     @server.tool(
         name="nd_list_engine_definitions",
-        description="Постраничный список определений движков.",
+        description=(
+            "Постраничный список определений движков. Поле types означает основную "
+            "задачу и результат; type_legend поясняет значения."
+        ),
         annotations=readonly,
     )
     async def nd_list_engine_definitions(
@@ -473,7 +480,7 @@ def create_mcp_server(
 
     @server.tool(
         name="nd_get_engine_definition",
-        description="Полное определение движка.",
+        description="Полное определение движка с пояснением type_legend для поля types.",
         annotations=readonly,
     )
     async def nd_get_engine_definition(engine_id: str) -> Any:
@@ -722,7 +729,10 @@ def create_mcp_server(
 
     @server.tool(
         name="nd_list_local_model_contents",
-        description="Постраничный список файлов локальной модели.",
+        description=(
+            "Постраничный список файлов локальной модели с сохранёнными локальными "
+            "и Hub-хэшами."
+        ),
         annotations=readonly,
     )
     async def nd_list_local_model_contents(
@@ -978,7 +988,10 @@ def create_mcp_server(
 
     @server.tool(
         name="nd_list_chat_models",
-        description="Постраничный список текстовых моделей для чата.",
+        description=(
+            "Постраничный список моделей для текстового чата. Фильтрует types=text; "
+            "type_legend поясняет, что это основной результат модели, а не все модальности входа."
+        ),
         annotations=readonly,
     )
     async def nd_list_chat_models(page_size: int | None = None, cursor: str | None = None) -> Any:

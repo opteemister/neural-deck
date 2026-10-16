@@ -157,7 +157,6 @@ def test_frontend_fallback_serves_assets_and_preserves_api_prefixes(tmp_path: Pa
         assert unknown_api.status_code == 404
         assert unknown_api.json()["error"]["code"] == "not_found"
         assert client.get("/v1/unknown").status_code == 404
-        assert client.get("/mcp").status_code == 404
         assert client.get("/mcp/").headers["content-type"].startswith("application/json")
 
 
@@ -202,6 +201,23 @@ def test_composed_services_and_mcp_mount_are_available_before_spa_fallback(
         )
         assert initialize.status_code == 200
         assert initialize.json()["result"]["serverInfo"]["name"] == "Neural Deck"
+
+        initialize_without_slash = client.post(
+            "/mcp",
+            headers={"accept": "application/json, text/event-stream"},
+            json={
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {},
+                    "clientInfo": {"name": "integration-test", "version": "1"},
+                },
+            },
+        )
+        assert initialize_without_slash.status_code == 200
+        assert initialize_without_slash.json()["result"]["serverInfo"]["name"] == "Neural Deck"
 
 
 @pytest.mark.asyncio

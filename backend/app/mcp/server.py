@@ -1108,7 +1108,27 @@ def mount_mcp(app: Any, dependencies: MCPDependencies) -> Any:
     """Mount the SDK app at ``/mcp`` while retaining its own HTTP lifecycle."""
 
     server = create_mcp_server(dependencies, streamable_http_path="/")
-    app.mount("/mcp", server.streamable_http_app())
+    sdk_app = server.streamable_http_app()
+    app.mount("/mcp", sdk_app)
+
+    class MCPRootAlias:
+        """ASGI route for clients that send the exact mount path without ``/``."""
+
+        async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+            scope = dict(scope)
+            scope["path"] = "/"
+            scope["raw_path"] = b"/"
+            scope["root_path"] = ""
+            await sdk_app(scope, receive, send)
+
+    # Starlette mounts match ``/mcp/`` but not the exact ``/mcp`` path.  Keep
+    # the documented URL usable without relying on POST redirect handling.
+    app.add_route(
+        "/mcp",
+        MCPRootAlias(),
+        methods=["GET", "POST", "DELETE"],
+        include_in_schema=False,
+    )
     app.state.mcp_server = server
     return server
 

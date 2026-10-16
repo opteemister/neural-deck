@@ -7,6 +7,7 @@ from ..schemas.instances import Instance
 
 OPERATIONS = {
     "/v1/chat/completions": ("text", {"openai"}),
+    "/v1/responses": ("text", {"openai"}),
     "/v1/embeddings": ("embeddings", {"openai"}),
     "/v1/embeddings/media": ("embeddings", {"openai"}),
     "/v1/audio/speech": ("tts", {"openai"}),

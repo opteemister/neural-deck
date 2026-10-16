@@ -43,6 +43,7 @@ _HOP_BY_HOP = {
     "host",
 }
 _USAGE_STREAM_OPTION_ENGINES = frozenset({"vllm", "llama.cpp", "sglang", "ninfer", "freetoken"})
+_STREAMING_TEXT_ROUTES = frozenset({"/v1/chat/completions", "/v1/responses"})
 _SSE_USAGE_BUFFER_LIMIT = 2 * 1024 * 1024
 logger = logging.getLogger(__name__)
 _request_tracking: ContextVar[dict[str, Any] | None] = ContextVar("request_tracking", default=None)
@@ -701,7 +702,7 @@ class ProxyService:
                 started=started,
                 input_tokens=None,
                 output_tokens=None,
-                stream=bool(payload.get("stream")) and route == "/v1/chat/completions",
+                stream=bool(payload.get("stream")) and route in _STREAMING_TEXT_ROUTES,
                 error_code=exc.code,
             )
             raise
@@ -793,8 +794,9 @@ class ProxyService:
             if key.lower() not in _HOP_BY_HOP and key.lower() != "authorization"
             and (multipart_files is None or key.lower() != "content-type")
         }
-        stream = bool(upstream_payload.get("stream")) and route == "/v1/chat/completions"
-        if force_usage and stream and registered.engine_id in _USAGE_STREAM_OPTION_ENGINES:
+        stream = bool(upstream_payload.get("stream")) and route in _STREAMING_TEXT_ROUTES
+        if (force_usage and stream and route == "/v1/chat/completions"
+                and registered.engine_id in _USAGE_STREAM_OPTION_ENGINES):
             # All supported OpenAI-compatible engines use this standard option
             # for the terminal usage chunk. Preserve other engine-specific
             # stream options while making usage available to the journal.
@@ -887,6 +889,12 @@ class ProxyService:
                         raise AppError("upstream_contract_unsupported", "Jev вернул неверный JSON",
                                        status_code=502) from exc
                 input_tokens, output_tokens = _extract_usage(body, response.headers.get("content-type"))
+                error_code = None if response.status_code < 400 else "upstream_error"
+                if route == "/v1/responses" and response.status_code < 400:
+                    try:
+                        error_code = _responses_error_code(json.loads(body))
+                    except ValueError:
+                        error_code = "upstream_error"
                 if tracking is not None:
                     tracking.update(
                         _response_metrics(body, streaming=False, engine_id=registered.engine_id)
@@ -901,7 +909,7 @@ class ProxyService:
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
                     stream=False,
-                    error_code=None if response.status_code < 400 else "upstream_error",
+                    error_code=error_code,
                 )
                 if route == "/v1/decisions" and response.status_code < 400:
                     return httpx.Response(response.status_code, content=body,
@@ -1056,24 +1064,43 @@ class ProxyService:
             error_code: str | None = None
             pending = bytearray()
             first_token_ms: float | None = None
+            responses_terminal_seen = False
 
             def observe(chunk: bytes) -> None:
-                nonlocal first_token_ms
+                nonlocal first_token_ms, error_code, responses_terminal_seen
                 pending.extend(chunk)
                 while b"\n" in pending:
                     line, _, tail = pending.partition(b"\n")
                     pending[:] = tail
-                    if first_token_ms is not None or not line.startswith(b"data:"):
+                    if not line.startswith(b"data:"):
                         continue
                     try:
                         event = json.loads(line[5:].strip())
-                        if any(
+                        if not isinstance(event, dict):
+                            continue
+                        event_type = event.get("type")
+                        if route == "/v1/responses":
+                            if event_type in {
+                                "response.completed", "response.failed", "response.incomplete",
+                            }:
+                                responses_terminal_seen = True
+                            event_error = _responses_error_code(event)
+                            if event_error is not None:
+                                error_code = event_error
+                        text_delta = any(
                             any(
                                 choice.get("delta", {}).get(key)
                                 for key in ("content", "reasoning_content", "reasoning")
                             )
                             for choice in event.get("choices", [])
-                        ):
+                        )
+                        responses_delta = route == "/v1/responses" and event_type in {
+                            "response.output_text.delta", "response.reasoning_text.delta",
+                            "response.reasoning_summary_text.delta",
+                            "response.function_call_arguments.delta",
+                            "response.custom_tool_call_input.delta",
+                        } and bool(event.get("delta"))
+                        if first_token_ms is None and (text_delta or responses_delta):
                             first_token_ms = (time.perf_counter() - started) * 1000
                     except (ValueError, TypeError, AttributeError):
                         continue
@@ -1098,6 +1125,9 @@ class ProxyService:
                         if len(usage_buffer) > _SSE_USAGE_BUFFER_LIMIT:
                             del usage_buffer[: len(usage_buffer) - _SSE_USAGE_BUFFER_LIMIT]
                         yield chunk
+                if (route == "/v1/responses" and not responses_terminal_seen
+                        and error_code is None):
+                    error_code = "upstream_incomplete"
             except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError):
                 error_code = "upstream_unavailable"
                 raise
@@ -1274,10 +1304,33 @@ def _extract_sse_usage(body: bytes) -> tuple[int | None, int | None]:
             payload = json.loads(raw)
         except (TypeError, ValueError):
             continue
-        values = _usage_values(payload.get("usage") if isinstance(payload, dict) else None)
+        values = _usage_values(
+            _response_payload(payload).get("usage") if isinstance(payload, dict) else None
+        )
         if values != (None, None):
             input_tokens, output_tokens = values
     return input_tokens, output_tokens
+
+
+def _response_payload(event: dict[str, Any]) -> dict[str, Any]:
+    """Responses SSE wraps response metadata and usage in a response object."""
+    response = event.get("response")
+    event_type = event.get("type")
+    if isinstance(event_type, str) and event_type.startswith("response.") and isinstance(response, dict):
+        return response
+    return event
+
+
+def _responses_error_code(payload: Any) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    event_type = payload.get("type")
+    status = _response_payload(payload).get("status")
+    if event_type in {"error", "response.failed"} or status == "failed":
+        return "upstream_error"
+    if event_type == "response.incomplete" or status == "incomplete":
+        return "upstream_incomplete"
+    return None
 
 
 def _usage_values(usage: Any) -> tuple[int | None, int | None]:
@@ -1368,6 +1421,7 @@ def _response_metrics(body: bytes, *, streaming: bool, engine_id: str) -> dict[s
     for event in events:
         if not isinstance(event, dict):
             continue
+        event = _response_payload(event)
         usage = event.get("usage")
         if isinstance(usage, dict):
             prompt, _ = _usage_values(usage)

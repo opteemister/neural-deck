@@ -145,6 +145,15 @@ async def chat_completions(
     return await _forward(request, "/v1/chat/completions", payload, service)
 
 
+@router.post("/responses")
+async def responses(
+    request: Request,
+    payload: dict[str, Any],
+    service: ProxyService = Depends(get_proxy_service),  # noqa: B008
+) -> Response:
+    return await _forward(request, "/v1/responses", payload, service)
+
+
 @router.post("/embeddings")
 async def embeddings(
     request: Request,
@@ -254,6 +263,7 @@ internal_router.add_api_route(
     response_model_exclude_none=True,
 )
 internal_router.add_api_route("/chat/completions", chat_completions, methods=["POST"])
+internal_router.add_api_route("/responses", responses, methods=["POST"])
 internal_router.add_api_route("/images/generations", images, methods=["POST"])
 internal_router.add_api_route("/audio/speech", speech, methods=["POST"])
 internal_router.add_api_route("/audio/transcriptions", transcriptions, methods=["POST"])

@@ -224,9 +224,8 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
                 (time.perf_counter() - started_at) * 1000,
             )
             raise
-        if response.status_code >= 400:
-            log_method = logger.error if response.status_code >= 500 else logger.warning
-            log_method(
+        if response.status_code >= 500:
+            logger.error(
                 "HTTP %s %s status=%s request_id=%s duration_ms=%.1f",
                 request.method,
                 request.url.path,

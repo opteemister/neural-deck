@@ -72,9 +72,24 @@ http://<host>:<PORT>/mcp
 
 Для подготовки модели агент обычно вызывает `nd_search_hub_models`,
 `nd_get_hub_model`, `nd_list_hub_model_contents`, `nd_download_model`, затем
-опрашивает `nd_get_operation`. После этого используются `nd_list_engines`,
-`nd_list_installations`, `nd_validate_profile`, `nd_preview_profile`,
-`nd_save_profile`, `nd_get_hardware`, `nd_list_instances` и `nd_start_profile`.
+опрашивает `nd_get_operation`. После этого он выбирает существующий
+`engine definition` через `nd_list_engine_definitions` и конкретную
+`installation` через `nd_list_installations`.
+
+`nd_install_engine` создаёт новую installation под существующим definition.
+Для другой версии или ветки уже известного движка создаётся новая installation
+с тем же `engine_id`; новое definition нужно только для другого шаблона движка,
+команды или capability. `nd_save_engine_definition` не устанавливает движок.
+После выбора installation используются `nd_validate_profile`,
+`nd_preview_profile`, `nd_save_profile`, `nd_get_hardware`, `nd_list_instances`
+и `nd_start_profile`.
+
+Короткое правило workflow:
+
+1. `engine definition` — шаблон движка: типы, install/run-команды и API/UI.
+2. `installation` — конкретная установленная версия/ветка этого definition.
+3. `profile` — конфигурация запуска конкретной модели на выбранной installation
+   с GPU, environment, портом и автозапуском.
 
 Проверить работу поднятой модели можно через `nd_list_chat_models` и `nd_chat`.
 История передаётся агентом в `messages`; сервер не хранит отдельный chat_id.

@@ -488,7 +488,10 @@ def create_mcp_server(
 
     @server.tool(
         name="nd_save_engine_definition",
-        description="Создать или обновить YAML-определение движка.",
+        description=(
+            "Создать или обновить YAML engine definition: типы, install/run-команды и "
+            "API/UI. Не устанавливает движок, не создаёт installation и не запускает профиль."
+        ),
         annotations=mutation,
     )
     async def nd_save_engine_definition(
@@ -502,7 +505,10 @@ def create_mcp_server(
 
     @server.tool(
         name="nd_delete_engine_definition",
-        description="Удалить пользовательское определение движка.",
+        description=(
+            "Удалить пользовательское engine definition. Это операция над шаблоном "
+            "движка, а не удаление конкретной installation или profile."
+        ),
         annotations=destructive,
     )
     async def nd_delete_engine_definition(engine_id: str) -> Any:
@@ -510,7 +516,10 @@ def create_mcp_server(
 
     @server.tool(
         name="nd_list_installations",
-        description="Постраничный список установок движков.",
+        description=(
+            "Постраничный список конкретных installations: каталог, executable, версия "
+            "и статус. Installation создаётся под существующим engine definition."
+        ),
         annotations=readonly,
     )
     async def nd_list_installations(
@@ -525,7 +534,12 @@ def create_mcp_server(
 
     @server.tool(
         name="nd_install_engine",
-        description="Установка движка с operation_id.",
+        description=(
+            "Создаёт новую installation по существующему engine definition и возвращает "
+            "operation_id. Не создаёт и не изменяет engine definition и не создаёт profile. "
+            "Для другой версии или ветки уже известного движка создавайте новую installation "
+            "под тем же definition."
+        ),
         annotations=mutation,
     )
     async def nd_install_engine(
@@ -540,7 +554,10 @@ def create_mcp_server(
 
     @server.tool(
         name="nd_update_installation",
-        description="Обновить установку движка.",
+        description=(
+            "Обновить конкретную существующую installation по её installation_id. "
+            "Не создаёт новое engine definition и не меняет profile."
+        ),
         annotations=mutation,
     )
     async def nd_update_installation(
@@ -552,7 +569,10 @@ def create_mcp_server(
 
     @server.tool(
         name="nd_run_engine_maintenance",
-        description="Выполнить maintenance-команду установки.",
+        description=(
+            "Выполнить maintenance-команду внутри существующей installation. "
+            "Не создаёт engine definition, installation или profile."
+        ),
         annotations=mutation,
     )
     async def nd_run_engine_maintenance(
@@ -567,14 +587,22 @@ def create_mcp_server(
 
     @server.tool(
         name="nd_delete_installation",
-        description="Удалить регистрацию установки движка.",
+        description=(
+            "Удалить регистрацию конкретной installation по installation_id. "
+            "Engine definition и profile сами по себе не удаляются."
+        ),
         annotations=destructive,
     )
     async def nd_delete_installation(installation_id: str) -> Any:
         return await invoke(_operation(dependencies, "delete_installation"), installation_id)
 
     @server.tool(
-        name="nd_scan_engines", description="Просканировать доступные движки.", annotations=mutation
+        name="nd_scan_engines",
+        description=(
+            "Просканировать доступные engine definitions и installations. "
+            "Сканирование не устанавливает движки и не создаёт definitions."
+        ),
+        annotations=mutation,
     )
     async def nd_scan_engines() -> Any:
         return await invoke(_operation(dependencies, "scan_engines"))

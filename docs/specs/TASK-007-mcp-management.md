@@ -172,15 +172,15 @@ ID определения, ID установки, версия схемы опр
 | `nd_list_engines` | Page | Page<{id,display_name,types,installation_kinds,installation_count}>, `types_note`, `type_legend` |
 | `nd_list_engine_definitions` | Page | Page<{id,name,types}>, `issue_count`, `types_note`, `type_legend` |
 | `nd_list_engine_definition_issues` | Page | Page<{file,code,message}> |
-| `nd_get_engine_definition` | `engine_id` | Полный EngineDefinition, описанный ниже |
-| `nd_save_engine_definition` | `mode`, `definition: EngineDefinition` | `engine_id,created,changed_fields[]` |
-| `nd_delete_engine_definition` | `engine_id` | `engine_id,deleted`; существующие ограничения зависимостей не обходятся |
-| `nd_list_installations` | `engine_id?`, Page | Page<{id,engine_id,kind,version,status,verified,root_path,executable_path,diagnostic?}> |
-| `nd_install_engine` | `engine_id`, `installation: InstallationCreate`, `expected_version?` | `operation_id,state` |
-| `nd_update_installation` | `installation_id` | `operation_id,state` |
-| `nd_run_engine_maintenance` | `installation_id`, `command`, `expected_version?` | `operation_id,state` |
-| `nd_delete_installation` | `installation_id` | `installation_id,deleted`; та же семантика файлов и зависимостей, что у UI |
-| `nd_scan_engines` | нет | `operation_id,state`; повторный поиск установок как в UI |
+| `nd_get_engine_definition` | `engine_id` | Полный EngineDefinition, `types_note`, `type_legend`, описанный ниже |
+| `nd_save_engine_definition` | `mode`, `definition: EngineDefinition` | `engine_id,created,changed_fields[]`; меняет только definition, не создаёт installation |
+| `nd_delete_engine_definition` | `engine_id` | `engine_id,deleted`; операция над definition, существующие ограничения зависимостей не обходятся |
+| `nd_list_installations` | `engine_id?`, Page | Page<{id,engine_id,kind,version,status,verified,root_path,executable_path,diagnostic?}>; конкретные installations под definitions |
+| `nd_install_engine` | `engine_id`, `installation: InstallationCreate`, `expected_version?` | `operation_id,state`; создаёт новую installation под существующим definition |
+| `nd_update_installation` | `installation_id` | `operation_id,state`; обновляет существующую installation, не definition |
+| `nd_run_engine_maintenance` | `installation_id`, `command`, `expected_version?` | `operation_id,state`; команда внутри существующей installation |
+| `nd_delete_installation` | `installation_id` | `installation_id,deleted`; удаляет регистрацию installation, definition и profile не выбираются этим инструментом |
+| `nd_scan_engines` | нет | `operation_id,state`; сканирует definitions/installations, не устанавливает движки |
 
 `EngineDefinition` использует существующий строгий контракт:
 `version,id,name,types,executable,command`, необязательные

@@ -45,6 +45,7 @@ from .image.router import internal_router as internal_image_router
 from .image.router import native_router as native_image_router
 from .image.router import router as image_router
 from .image.service import ImageGenerationService
+from .mcp.operations import build_operations
 from .mcp.server import MCPDependencies, mcp_lifespan, mount_mcp
 from .metrics.service import MetricsService
 from .models.catalogue import ModelCatalogue
@@ -92,9 +93,7 @@ async def _backfill_profile_ids(
     profile_repository.ensure_ids()
     profiles = profile_repository.list().items
     identities = {
-        profile.name: profile.profile_id
-        for profile in profiles
-        if profile.profile_id is not None
+        profile.name: profile.profile_id for profile in profiles if profile.profile_id is not None
     }
     if not identities:
         return
@@ -113,7 +112,9 @@ async def _backfill_profile_ids(
                 await session.execute(
                     text(
                         "SELECT name FROM sqlite_master "
-                        "WHERE type = 'table' AND name IN (" + ",".join(f"'{table}'" for table in tables) + ")"
+                        "WHERE type = 'table' AND name IN ("
+                        + ",".join(f"'{table}'" for table in tables)
+                        + ")"
                     )
                 )
             ).scalars()
@@ -393,7 +394,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             prometheus_token=settings.prometheus_token,
             neural_deck_id=identity_path.read_text().strip(),
         )
-        statistics_service = StatisticsService(journal_service, profile_service, metrics_service.storage)
+        statistics_service = StatisticsService(
+            journal_service, profile_service, metrics_service.storage
+        )
         runtime = AppContainer(
             settings=settings,
             paths=paths,
@@ -483,6 +486,8 @@ def _mcp_dependencies(app: FastAPI) -> MCPDependencies:
             payload, request_id=f"mcp_{uuid4().hex}"
         )
 
+    operations = build_operations(app)
+
     return MCPDependencies(
         get_system_state=get_system_state,
         list_models=list_models,
@@ -490,6 +495,7 @@ def _mcp_dependencies(app: FastAPI) -> MCPDependencies:
         start_profile=start_profile,
         stop_instance=stop_instance,
         generate_image=generate_image,
+        operations=operations,
     )
 
 

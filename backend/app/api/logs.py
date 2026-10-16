@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import re
+import time
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
 
 from ..logs import LogsService
@@ -29,8 +30,13 @@ async def list_logs(request: Request, paths: DataPaths = Depends(get_paths)) -> 
 
 @router.get("/{source_id:path}/download")
 async def download_log(
-    source_id: str, latest: bool = Query(default=False), paths: DataPaths = Depends(get_paths)
+    source_id: str,
+    latest: bool = Query(default=False),
+    expires: int | None = Query(default=None, ge=1),
+    paths: DataPaths = Depends(get_paths),
 ) -> PlainTextResponse:
+    if expires is not None and time.time() >= expires:
+        raise HTTPException(status_code=410, detail="Срок действия выгрузки истёк")
     source, body = _service(paths).download(source_id, latest=latest)
     safe_name = re.sub(r"[^A-Za-z0-9._-]+", "-", source.label).strip("-") or "log"
     filename = f"{safe_name}.log"

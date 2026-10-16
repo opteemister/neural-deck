@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { openAiEndpoint } from '@/lib/openai-endpoint'
+import { mcpEndpoint, openAiEndpoint } from '@/lib/openai-endpoint'
 
 afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); vi.resetModules() })
 
@@ -46,5 +46,12 @@ describe('OpenAI endpoint', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: { code: 'machine_ip_unavailable', message: 'IP недоступен' } }), { status: 503 })))
     const { getOpenAiEndpoint } = await import('@/lib/api')
     await expect(getOpenAiEndpoint()).rejects.toMatchObject({ code: 'machine_ip_unavailable' })
+  })
+})
+
+describe('MCP endpoint', () => {
+  it('uses the browser origin and keeps one canonical path', () => {
+    expect(mcpEndpoint('https://deck.example.com/')).toBe('https://deck.example.com/mcp')
+    expect(mcpEndpoint('https://deck.example.com')).toBe('https://deck.example.com/mcp')
   })
 })

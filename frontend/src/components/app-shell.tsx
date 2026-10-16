@@ -6,6 +6,7 @@ import { LogsDrawerProvider, useLogsDrawer } from '@/components/logs-drawer'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { api, getOpenAiEndpoint, queryKeys } from '@/lib/api'
+import { mcpEndpoint } from '@/lib/openai-endpoint'
 
 const navGroups = [
   { label: 'Neural Deck', items: [
@@ -27,20 +28,38 @@ function Navigation({ onNavigate }: { onNavigate?: () => void }) {
   return <nav className="flex flex-1 flex-col gap-6" aria-label="Основная навигация">{navGroups.map((group) => <div key={group.label}><p className="mb-2 px-3 text-[11px] text-muted-foreground">{group.label}</p><div className="space-y-0.5">{group.items.map(({ to, label, icon: Icon, end }) => <NavLink key={to} to={to} end={end} onClick={onNavigate} className={({ isActive }) => cn('flex min-h-10 items-center gap-3 rounded-md px-3 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground', isActive && 'bg-card text-foreground')}><Icon className="size-4 shrink-0" aria-hidden="true" />{label}{label === 'Benchmarks' && <span className="ml-auto text-[10px] text-muted-foreground">позже</span>}</NavLink>)}</div></div>)}</nav>
 }
 
-function ApiEndpoint() {
+function EndpointButton({
+  label,
+  endpoint,
+  copied,
+  onCopy,
+  status,
+}: {
+  label: string
+  endpoint: string
+  copied: boolean
+  onCopy: () => void
+  status?: { label: string; className: string }
+}) {
+  return <button type="button" className="flex min-w-0 max-w-full items-center gap-1.5 rounded-md px-2 py-1 font-mono text-[11px] leading-none text-muted-foreground transition-colors hover:bg-accent hover:text-foreground" onClick={onCopy} title={`Скопировать адрес ${label}`}><span className="shrink-0 font-sans text-[10px] uppercase tracking-[0.08em] text-muted-foreground">{label}</span>{status && <span className={`flex size-3.5 shrink-0 items-center justify-center`} aria-label={status.label}><span className={`size-1.5 rounded-full ${status.className}`} /></span>}<span className="min-w-0 truncate" title={endpoint}>{endpoint || '—'}</span><span className="flex size-3.5 shrink-0 items-center justify-center">{copied ? <Check className="size-3.5 text-copper" /> : <Copy className="size-3.5" />}</span></button>
+}
+
+function ApiEndpoints() {
   const [copied, setCopied] = useState(false)
+  const [copiedMcp, setCopiedMcp] = useState(false)
   const health = useQuery({ queryKey: queryKeys.health, queryFn: api.getHealth, refetchInterval: 15_000 })
   const endpointQuery = useQuery({ queryKey: ['openai-endpoint'], queryFn: getOpenAiEndpoint })
   const endpoint = endpointQuery.data ?? ''
+  const mcp = typeof window === 'undefined' ? '/mcp' : mcpEndpoint(window.location.origin)
 
-  async function copyEndpoint() {
-    await navigator.clipboard.writeText(endpoint)
-    setCopied(true)
-    window.setTimeout(() => setCopied(false), 1500)
+  async function copyEndpoint(value: string, setCopiedState: (value: boolean) => void) {
+    await navigator.clipboard.writeText(value)
+    setCopiedState(true)
+    window.setTimeout(() => setCopiedState(false), 1500)
   }
 
   const dotClass = health.isLoading ? 'bg-muted-foreground' : health.isError || health.data?.status !== 'ok' ? 'bg-[#d09b87]' : 'bg-[#9ab77b]'
-  return <button type="button" className="hidden min-w-0 items-center gap-2 rounded-md px-2 py-1 font-mono text-[11px] leading-none text-muted-foreground transition-colors hover:bg-accent hover:text-foreground sm:flex" onClick={() => void copyEndpoint()} title="Скопировать адрес OpenAI API"><span className="flex size-3.5 shrink-0 items-center justify-center" aria-label={health.data?.status === 'ok' ? 'OpenAI API доступен' : 'OpenAI API недоступен'}><span className={`size-1.5 rounded-full ${dotClass}`} /></span><span className="truncate">{endpoint}</span><span className="flex size-3.5 shrink-0 items-center justify-center">{copied ? <Check className="size-3.5 text-copper" /> : <Copy className="size-3.5" />}</span></button>
+  return <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1"><EndpointButton label="OpenAI API" endpoint={endpoint} copied={copied} onCopy={() => void copyEndpoint(endpoint, setCopied)} status={{ label: health.data?.status === 'ok' ? 'OpenAI API доступен' : 'OpenAI API недоступен', className: dotClass }} /><EndpointButton label="MCP" endpoint={mcp} copied={copiedMcp} onCopy={() => void copyEndpoint(mcp, setCopiedMcp)} /></div>
 }
 
 function ServiceUptime() {
@@ -80,7 +99,7 @@ function ShellContent() {
   }, [collapsed])
   const isChat = useLocation().pathname === '/chat'
   return <div className="min-h-screen bg-background text-foreground">
-    <header className="sticky top-0 z-40 flex h-16 items-center gap-4 border-b border-border bg-secondary px-4 sm:px-6"><Button variant="ghost" size="icon" className="app-shell-desktop-navigation-toggle" aria-label={collapsed ? 'Развернуть меню' : 'Свернуть меню'} title={collapsed ? 'Развернуть меню' : 'Свернуть меню'} aria-expanded={!collapsed} onClick={() => setCollapsed((current) => !current)}><Menu className="size-5" /></Button><Button variant="ghost" size="icon" className="app-shell-mobile-navigation-toggle" aria-label="Открыть навигацию" aria-expanded={mobileOpen} onClick={() => setMobileOpen(true)}><Menu className="size-5" /></Button><NavLink to="/" className="flex shrink-0 items-center gap-2.5 text-lg font-semibold tracking-tight"><img src="/neural-deck.svg" alt="" width={32} height={32} className="size-8 shrink-0" /><span>Neural Deck</span></NavLink><ApiEndpoint /><div className="ml-auto flex items-center gap-2"><button type="button" onClick={() => openLogs()} className="rounded-md px-3 py-2 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">Логи</button></div></header>
+    <header className="sticky top-0 z-40 flex min-h-16 flex-wrap items-center gap-4 border-b border-border bg-secondary px-4 py-2 sm:px-6"><Button variant="ghost" size="icon" className="app-shell-desktop-navigation-toggle" aria-label={collapsed ? 'Развернуть меню' : 'Свернуть меню'} title={collapsed ? 'Развернуть меню' : 'Свернуть меню'} aria-expanded={!collapsed} onClick={() => setCollapsed((current) => !current)}><Menu className="size-5" /></Button><Button variant="ghost" size="icon" className="app-shell-mobile-navigation-toggle" aria-label="Открыть навигацию" aria-expanded={mobileOpen} onClick={() => setMobileOpen(true)}><Menu className="size-5" /></Button><NavLink to="/" className="flex shrink-0 items-center gap-2.5 text-lg font-semibold tracking-tight"><img src="/neural-deck.svg" alt="" width={32} height={32} className="size-8 shrink-0" /><span>Neural Deck</span></NavLink><div className="order-last min-w-0 basis-full sm:order-none sm:flex-1"><ApiEndpoints /></div><div className="ml-auto flex shrink-0 items-center gap-2"><button type="button" onClick={() => openLogs()} className="rounded-md px-3 py-2 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">Логи</button></div></header>
     <div className="flex min-h-[calc(100vh-4rem)]">
       {!collapsed && <aside className="app-shell-desktop-navigation w-56 shrink-0 flex-col border-r border-border bg-secondary px-3 py-6">
         <Navigation />

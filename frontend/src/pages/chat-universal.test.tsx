@@ -68,7 +68,7 @@ describe('universal chat composer', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Выбрать модель' }))
     fireEvent.click(screen.getByRole('radio', { name: 'image-model' }))
-    await screen.findByText('image-model')
+    expect(screen.getByRole('button', { name: 'Выбрать модель' })).toHaveTextContent('image-model')
     expect(screen.queryByText('Авто')).not.toBeInTheDocument()
 
     fireEvent.change(screen.getByLabelText('Сообщение'), { target: { value: 'Закат над морем' } })

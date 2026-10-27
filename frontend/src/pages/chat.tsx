@@ -256,38 +256,39 @@ export function ChatPage() {
     {hasTurns && <nav aria-label="Запросы диалога" className="absolute left-1 top-1/2 z-10 flex max-h-[45vh] -translate-y-1/2 flex-col gap-1 overflow-y-auto sm:left-3">
       {turns.map((turn, index) => <button key={turn.id} type="button" aria-label={'Перейти к запросу ' + (index + 1)} aria-current={activeTurn === turn.id ? 'step' : undefined} title={'Запрос ' + (index + 1) + ': ' + turn.prompt.slice(0, 80)} onClick={() => jump(turn.id)} className="group flex h-3 w-5 items-center justify-center rounded-full focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-copper"><span className={'h-0.5 rounded-full transition-all group-hover:w-4 group-hover:bg-foreground ' + (activeTurn === turn.id ? 'w-4 bg-copper' : 'w-2 bg-muted-foreground/50')} /></button>)}
     </nav>}
-    <div ref={scrollRef} onScroll={onScroll} className={hasTurns ? 'min-h-0 flex-1 overflow-y-auto overscroll-contain px-7 sm:px-12' : 'hidden'} aria-label="Диалог">
+    <div ref={scrollRef} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-7 sm:px-12" aria-label="Диалог">
       <div className="mx-auto w-full max-w-3xl pb-10 pt-8 sm:pt-12">
+        {!hasTurns && <div className="flex min-h-[45vh] items-center justify-center text-sm text-muted-foreground">С чего начнём?</div>}
         {turns.map((turn, index) => <section key={turn.id} data-turn={turn.id} className="mb-12 scroll-mt-8" aria-label={'Запрос ' + (index + 1)}>
           <div className="mb-7 flex justify-end"><div className="max-w-[90%] rounded-3xl bg-card px-5 py-3 text-sm leading-6"><div className="whitespace-pre-wrap break-words">{turn.prompt}</div>{turn.attachments && turn.attachments.length > 0 && <div className="mt-3 flex flex-wrap gap-2">{turn.attachments.map((attachment) => attachment.previewUrl && attachment.type.startsWith('image/') ? <img key={attachment.name + attachment.previewUrl} src={attachment.previewUrl} alt={attachment.name} className="max-h-32 max-w-44 rounded-2xl object-cover" /> : <span key={attachment.name} className="rounded-full bg-background/60 px-3 py-1 text-xs text-muted-foreground">{attachment.name}</span>)}</div>}</div></div>
           {turn.reasoning && <details className="mb-5 text-muted-foreground"><summary className="cursor-pointer text-xs hover:text-foreground">Рассуждение{turn.state === 'streaming' && !turn.answer ? '…' : ''}</summary><div className="mt-3 border-l border-border pl-4"><ChatMarkdown source={turn.reasoning} /></div></details>}
           <div className="min-h-6">{turn.answer ? <ChatMarkdown source={turn.answer} /> : turn.result ? <ChatMediaResult result={turn.result} onError={(error) => notifyError('Не удалось скачать файл', error instanceof Error ? error.message : undefined)} /> : turn.state === 'streaming' ? <span className="inline-flex items-center gap-2 text-xs text-muted-foreground"><LoaderCircle className="size-3.5 animate-spin" />{turn.operation === 'video' ? 'Создаём видео…' : turn.operation === 'ocr' ? 'Читаем документ…' : turn.operation === 'image-generation' ? 'Создаём изображение…' : turn.operation === 'image-edit' || turn.operation === 'image-variations' ? 'Изменяем изображение…' : turn.reasoning ? 'Думаю…' : 'Готовлю ответ…'}</span> : null}</div>
           {turn.error && <p role="alert" className="mt-3 text-xs text-[#d0a390]">{turn.error}</p>}
-          {turn.state !== 'streaming' && <div className="mt-3 flex flex-wrap items-center gap-3">{turn.answer && <CopyAnswer content={turn.answer} />}{(turn.operation === 'text' || turn.operation === 'vision') && <details className="text-muted-foreground"><summary className="cursor-pointer text-[11px] hover:text-foreground">Статистика</summary><div className="pt-2"><ResponseStats turn={turn} /></div></details>}</div>}
+          {turn.state !== 'streaming' && <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-1">{turn.answer && <CopyAnswer content={turn.answer} />}<ResponseStats turn={turn} /></div>}
         </section>)}
       </div>
     </div>
-    <div className={hasTurns ? 'relative shrink-0 px-4 pb-5 pt-2 sm:px-12 sm:pb-6' : 'flex min-h-0 flex-1 flex-col justify-center px-4 pb-24 sm:px-12'}>
+    <div className="relative shrink-0 px-4 pb-3 pt-2 sm:px-12 sm:pb-4">
       {hasTurns && !atBottom && <div className="absolute -top-12 left-1/2 -translate-x-1/2"><Button variant="secondary" shape="pill" size="icon" aria-label="К последнему ответу" title="К последнему ответу" onClick={() => { followRef.current = true; scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' }) }}><ArrowDown className="size-4" /></Button></div>}
       <div className="mx-auto w-full max-w-3xl">
-        {!hasTurns && <h1 className="mb-7 text-center text-2xl font-medium tracking-tight text-foreground sm:text-[28px]">Чем могу помочь?</h1>}
         <form onSubmit={(event) => void submit(event)} onDragOver={(event) => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); setDragging(true) } }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false) }} onDrop={(event) => { event.preventDefault(); setDragging(false); addAttachments(Array.from(event.dataTransfer.files)) }} className={`relative rounded-[28px] border bg-card px-3 pb-2.5 pt-3 shadow-[0_8px_32px_rgba(0,0,0,0.08)] transition-colors sm:px-4 ${dragging ? 'border-copper' : 'border-border/60 focus-within:border-muted-foreground/50'}`}>
           <ChatAttachments attachments={attachments} disabled={busy} imageRoles={modelType === 'image'} onRemove={removeAttachment} />
           <textarea ref={inputRef} value={draft} onChange={(event) => setDraft(event.target.value)} onPaste={(event) => { const files = Array.from(event.clipboardData.files); if (files.length) { event.preventDefault(); addAttachments(files) } }} aria-label="Сообщение" placeholder={dragging ? 'Отпустите файлы здесь' : placeholder} rows={2} className="block max-h-[200px] min-h-[54px] w-full resize-none border-0 bg-transparent px-2 py-2 text-[15px] leading-6 text-foreground outline-none placeholder:text-muted-foreground/80" onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.form?.requestSubmit() } }} />
           <div className="mt-2 flex min-w-0 items-center justify-between gap-2">
-            <div className="flex min-w-0 items-center gap-1">
-              <ChatAttachButton disabled={busy} onAdd={addAttachments} />
+            <ChatAttachButton disabled={busy} onAdd={addAttachments} />
+            <div className="flex min-w-0 items-center gap-2">
               <ChatOptions models={allModels} model={activeModel} reasoning={activeReasoning} disabled={busy} loading={models.isFetching} error={models.isError} onOpen={() => void models.refetch()} onModel={changeModel} onReasoning={setReasoning} />
-            </div>
-            <div className="flex shrink-0 items-center gap-3">
-              {modelType === 'text' && usedContext !== undefined && <span className="hidden items-center gap-2 text-[10px] tabular-nums text-muted-foreground sm:inline-flex" aria-label="Контекст диалога" title="Использованный контекст последнего ответа">
-                {contextPercent !== undefined && <span className="h-1 w-8 overflow-hidden rounded-full bg-border"><span className="block h-full bg-copper" style={{ width: contextPercent + '%' }} /></span>}
-                Контекст {number(usedContext)}{capacity ? ' / ' + number(capacity) : ' токенов'}
-              </span>}
               {busy ? <Button size="icon" shape="pill" variant="ghost" className="!h-11 !w-11 !min-h-11 !bg-foreground !text-background" aria-label="Остановить генерацию" title="Остановить генерацию" onClick={() => controllerRef.current?.abort()}><Square className="size-4 fill-current" /></Button> : <Button type="submit" size="icon" shape="pill" variant="ghost" className="!h-11 !w-11 !min-h-11 !bg-foreground !text-background disabled:!bg-muted-foreground/15 disabled:!text-muted-foreground/60" aria-label="Отправить" title="Отправить · Enter" disabled={!canSubmit}><ArrowUp className="size-5" strokeWidth={2} /></Button>}
             </div>
           </div>
         </form>
+        <div className="mt-2 flex flex-wrap items-center justify-between gap-2 px-1 text-[11px] text-muted-foreground">
+          <span>Enter — отправить · Shift+Enter — новая строка</span>
+          <span className="inline-flex items-center gap-2 tabular-nums" aria-label="Контекст диалога" title="Последний известный контекст с учётом ответа. Во время генерации сохраняется последнее измерение; число обновляется из usage движка. Прочерк означает, что измерения ещё нет.">
+            {contextPercent !== undefined && <span className="h-1 w-12 overflow-hidden rounded-full bg-border"><span className="block h-full bg-copper" style={{ width: contextPercent + '%' }} /></span>}
+            Контекст {number(usedContext)}{capacity ? ' / ' + number(capacity) : ' токенов'}
+          </span>
+        </div>
       </div>
     </div>
   </div>

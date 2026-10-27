@@ -19,6 +19,28 @@ function streamResponse(text: string): Response {
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
 describe('ChatPage', () => {
+  it('keeps the model menu open to select reasoning and sends the chosen effort', async () => {
+    vi.spyOn(api, 'getOpenAiModels').mockResolvedValue({ items: [
+      { id: 'image-model', object: 'model', types: ['image'] },
+      { id: 'thinking-model', object: 'model', types: ['text'], reasoning_capabilities: { efforts: ['low', 'high', 'xhigh'], effort_parameter: 'reasoning_effort', can_disable_thinking: true } },
+    ] })
+    const stream = vi.spyOn(api, 'streamChat').mockImplementation(async (_request, onChunk) => { onChunk({ done: false, content: 'Готово' }) })
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<QueryClientProvider client={client}><MemoryRouter initialEntries={['/chat?model=image-model']}><ChatPage /></MemoryRouter></QueryClientProvider>)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Выбрать модель' })).toHaveTextContent('image-model'))
+    fireEvent.click(screen.getByRole('button', { name: 'Выбрать модель' }))
+    fireEvent.click(await screen.findByRole('radio', { name: 'thinking-model' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'XHigh' }))
+    expect(screen.getByRole('radio', { name: 'XHigh' })).toBeChecked()
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.getByRole('button', { name: 'Выбрать модель' })).toHaveTextContent('XHigh')
+    fireEvent.change(screen.getByLabelText('Сообщение'), { target: { value: 'Подумай' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Отправить' }))
+    await screen.findByText('Готово')
+    expect(stream.mock.calls[0][0]).toMatchObject({ model: 'thinking-model', reasoning_effort: 'xhigh' })
+    client.clear()
+  })
+
   it('sends vision content parts through the existing text stream', async () => {
     const getModels = vi.spyOn(api, 'getOpenAiModels').mockResolvedValue({ items: [{ id: 'vision-model', object: 'model', types: ['text'] }] })
     const stream = vi.spyOn(api, 'streamChat').mockImplementation(async (_request, onChunk) => { onChunk({ done: false, content: 'На изображении есть дом.' }) })
@@ -55,7 +77,10 @@ describe('ChatPage', () => {
     render(<QueryClientProvider client={client}><MemoryRouter initialEntries={['/chat?model=local-model']}><ChatPage /></MemoryRouter></QueryClientProvider>)
     await waitFor(() => expect(screen.getByRole('button', { name: 'Отправить' })).toBeDisabled())
     expect(getModels).toHaveBeenCalledWith(true)
-    expect(screen.queryByLabelText('Контекст диалога')).not.toBeInTheDocument()
+    const initialContext = screen.getByLabelText('Контекст диалога')
+    expect(initialContext).toHaveTextContent('Контекст —')
+    expect(initialContext.closest('form')).toBeNull()
+    expect(screen.getByText('Enter — отправить · Shift+Enter — новая строка')).toBeInTheDocument()
     const send = async (text: string) => {
       fireEvent.change(screen.getByLabelText('Сообщение'), { target: { value: text } })
       await waitFor(() => expect(screen.getByRole('button', { name: 'Отправить' })).toBeEnabled())

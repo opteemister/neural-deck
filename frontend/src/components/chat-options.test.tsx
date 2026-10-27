@@ -22,39 +22,45 @@ function renderOptions(model = 'image-model') {
 }
 
 describe('ChatOptions', () => {
-  it('lists every chat capability in understandable groups without replacing a media model', () => {
+  it('keeps all models in the existing flat picker without search or replacing a media model', () => {
     const { onModel } = renderOptions()
     expect(onModel).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: 'Выбрать модель' }))
 
-    expect(screen.getByRole('heading', { name: 'Текст' })).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'Изображения' })).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'Видео' })).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'Документы' })).toBeInTheDocument()
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading')).not.toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: 'text-model' })).toBeInTheDocument()
     expect(screen.getByRole('radio', { name: 'image-model' })).toBeChecked()
     expect(screen.getByRole('radio', { name: 'video-model' })).toBeInTheDocument()
     expect(screen.getByRole('radio', { name: 'ocr-model' })).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('radio', { name: 'video-model' }))
     expect(onModel).toHaveBeenCalledWith('video-model')
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
   })
 
-  it('searches models and hides reasoning for media models', () => {
+  it('does not offer text reasoning settings for media models', () => {
     renderOptions()
     fireEvent.click(screen.getByRole('button', { name: 'Выбрать модель' }))
-    fireEvent.change(screen.getByLabelText('Поиск модели'), { target: { value: 'video' } })
-    expect(screen.getByRole('radio', { name: 'video-model' })).toBeInTheDocument()
-    expect(screen.queryByRole('radio', { name: 'image-model' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('radio', { name: 'text-model' })).not.toBeInTheDocument()
-    expect(screen.queryByText('Рассуждение')).not.toBeInTheDocument()
+    expect(screen.queryByText('Reasoning')).not.toBeInTheDocument()
     expect(screen.queryByText('Авто')).not.toBeInTheDocument()
   })
 
-  it('shows reasoning only when the selected text model has real controls', () => {
-    renderOptions('text-model')
+  it('preserves effort, automatic and off selection in the same model menu', () => {
+    const { onReasoning } = renderOptions('text-model')
     fireEvent.click(screen.getByRole('button', { name: 'Выбрать модель' }))
-    expect(screen.getByText('Рассуждение')).toBeInTheDocument()
-    expect(screen.getByRole('radio', { name: 'XHigh' })).toBeInTheDocument()
+    expect(screen.getByText('Reasoning')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('radio', { name: 'XHigh' }))
+    expect(onReasoning).toHaveBeenLastCalledWith('xhigh')
+    fireEvent.click(screen.getByRole('radio', { name: 'Выкл.' }))
+    expect(onReasoning).toHaveBeenLastCalledWith('off')
     expect(screen.getByRole('radio', { name: 'Авто' })).toBeInTheDocument()
+  })
+
+  it('keeps the existing automatic reasoning control for text models without advertised effort levels', () => {
+    render(<ChatOptions models={[{ id: 'plain-text', object: 'model', types: ['text'] }]} model="plain-text" reasoning="auto" onModel={vi.fn()} onReasoning={vi.fn()} disabled={false} loading={false} error={false} onOpen={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Выбрать модель' }))
+    expect(screen.getByText('Reasoning')).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: 'Авто' })).toBeChecked()
   })
 })

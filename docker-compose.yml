@@ -6,7 +6,6 @@ services:
       context: .
       dockerfile: docker/Dockerfile
       args:
-        VLLM_VERSION: "0.11.2"
         LLAMA_CPP_VERSION: "b5046"
     working_dir: /workspace
     env_file:

@@ -1,19 +1,34 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  classifyAttachment,
+  classifyAttachments,
   createImageMultipart,
   createOcr,
   createVideo,
   downloadAsset,
+  chatModelType,
+  fileToDataUrl,
   imageAssetSource,
+  prepareUserContent,
   resolveVideoResult,
+  resolveChatOperation,
   waitForVideo,
 } from '@/lib/chat-media'
+import type { OpenAiModel } from '@/types/api'
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
 function stubObjectUrls(value: string) {
   Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: vi.fn(() => value) })
   Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() })
+}
+
+function attachment(name: string, type = '', contents = 'body') {
+  return { id: name, file: new File([contents], name, { type }), previewUrl: '' }
+}
+
+function model(types?: OpenAiModel['types'], capabilities?: OpenAiModel['capabilities']): OpenAiModel {
+  return { id: 'model', object: 'model', types, capabilities }
 }
 
 describe('chat media client', () => {
@@ -92,5 +107,65 @@ describe('chat media client', () => {
     await downloadAsset({ b64_json: 'abc', mime_type: 'image/png' }, 'result.png')
     expect(fetchMock).toHaveBeenCalledWith('data:image/png;base64,abc')
     expect(click).toHaveBeenCalledOnce()
+  })
+
+  it('resolves text and vision from model type and image attachments', () => {
+    expect(resolveChatOperation(model(['text']), [])).toBe('text')
+    expect(resolveChatOperation(model(), [attachment('photo.png', 'image/png')])).toBe('vision')
+    expect(resolveChatOperation(model(['text']), [attachment('photo.png', 'image/png')])).toBe('vision')
+    expect(chatModelType(model(['text', 'embeddings']))).toBe('text')
+    expect(chatModelType({ id: 'legacy-text', object: 'model' })).toBe('text')
+    expect(chatModelType(model(['image', 'video']))).toBe('image')
+    expect(chatModelType(model(['embeddings']))).toBeNull()
+  })
+
+  it('resolves image generation, edits and capability-gated variations', () => {
+    const image = attachment('source.png', 'image/png')
+    expect(resolveChatOperation(model(['image']), [], '')).toBe('image-generation')
+    expect(resolveChatOperation(model(['image']), [image], 'make it warm')).toBe('image-edit')
+    expect(resolveChatOperation(model(['image'], { operations: ['variations'] }), [image], '  ')).toBe('image-variations')
+    expect(() => resolveChatOperation(model(['image']), [image], '')).toThrow('Добавьте описание изменений')
+  })
+
+  it('rejects unknown-only model types instead of guessing an API', () => {
+    expect(resolveChatOperation(model(['text', 'image']), [])).toBe('text')
+    expect(() => resolveChatOperation(model(['embeddings']), [])).toThrow(/не поддерживает операции/i)
+    expect(resolveChatOperation(model(['video']), [attachment('reference.jpg', 'image/jpeg')])).toBe('video')
+    expect(resolveChatOperation(model(['ocr']), [attachment('scan.pdf', 'application/pdf')])).toBe('ocr')
+  })
+
+  it('classifies MIME and extension fallbacks without dropping binary files', () => {
+    expect(classifyAttachment(attachment('photo.JPG'))).toBe('image')
+    expect(classifyAttachment(attachment('notes.LOG', ''))).toBe('text')
+    expect(classifyAttachment(attachment('document.PDF', 'application/octet-stream'))).toBe('document')
+    expect(classifyAttachment(attachment('archive.zip', 'application/octet-stream'))).toBe('binary')
+    expect(classifyAttachments([attachment('photo.png', 'image/png'), attachment('notes.md', 'text/markdown')])).toMatchObject({ image: [expect.anything()], text: [expect.anything()] })
+  })
+
+  it('prepares text files and images as standard user content parts', async () => {
+    const notes = attachment('notes.txt', 'text/plain', 'hello')
+    const result = await prepareUserContent('Опиши вложения', [notes, attachment('photo.png', 'image/png', 'image')])
+    expect(result).toEqual([
+      { type: 'text', text: 'Опиши вложения' },
+      { type: 'text', text: '[Файл: notes.txt]\nhello' },
+      { type: 'image_url', image_url: { url: expect.stringMatching(/^data:image\/png;base64,/) } },
+    ])
+  })
+
+  it('keeps vision image data URLs valid when the browser supplies no MIME type', async () => {
+    const result = await prepareUserContent('Опиши изображение', [attachment('photo.jpeg', '', 'image')])
+    expect(result).toEqual([
+      { type: 'text', text: 'Опиши изображение' },
+      { type: 'image_url', image_url: { url: expect.stringMatching(/^data:image\/jpeg;base64,/) } },
+    ])
+  })
+
+  it('uses the known PDF extension for document data URLs when MIME is empty', async () => {
+    await expect(fileToDataUrl(new File(['pdf'], 'scan.pdf'))).resolves.toMatch(/^data:application\/pdf;base64,/)
+  })
+
+  it('explains that documents need a document-capable model and keeps binary errors visible', async () => {
+    await expect(prepareUserContent('', [attachment('scan.pdf', 'application/pdf')])).rejects.toThrow('выберите модель для документов')
+    await expect(prepareUserContent('', [attachment('archive.zip', 'application/zip')])).rejects.toThrow('нельзя отправить')
   })
 })

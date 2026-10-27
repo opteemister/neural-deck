@@ -6,7 +6,7 @@ import { ChatMarkdown } from '@/components/chat-markdown'
 import { downloadAsset, imageAssetSource, type ImageAsset, type MediaResult, type VideoResult } from '@/lib/chat-media'
 
 function DownloadButton({ asset, filename, onError, overlay = false }: { asset: ImageAsset | VideoResult; filename: string; onError?: (error: unknown) => void; overlay?: boolean }) {
-  return <Button type="button" size={overlay ? 'icon-sm' : 'sm'} iconOnly={overlay} variant="secondary" aria-label={overlay ? 'Скачать изображение' : undefined} title={overlay ? 'Скачать изображение' : undefined} onClick={() => { void downloadAsset(asset, filename).catch((error) => onError?.(error)) }}><Download className="size-3.5" />{!overlay && 'Скачать'}</Button>
+  return <Button type="button" shape="pill" size={overlay ? 'icon-sm' : 'sm'} iconOnly={overlay} variant="secondary" aria-label={overlay ? 'Скачать изображение' : undefined} title={overlay ? 'Скачать изображение' : undefined} onClick={() => { void downloadAsset(asset, filename).catch((error) => onError?.(error)) }}><Download className="size-3.5" />{!overlay && 'Скачать'}</Button>
 }
 
 function ImageResult({ assets, onError }: { assets: ImageAsset[]; onError?: (error: unknown) => void }) {
@@ -24,7 +24,7 @@ function ImageResult({ assets, onError }: { assets: ImageAsset[]; onError?: (err
       {assets.map((asset, index) => {
         const source = imageAssetSource(asset)
         if (!source) return null
-        return <figure key={`${source}-${index}`} className="relative overflow-hidden rounded-md border border-border bg-muted">
+        return <figure key={`${source}-${index}`} className="relative overflow-hidden rounded-2xl border border-border/60 bg-card">
           <button type="button" className="block w-full cursor-zoom-in focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-copper" aria-label={`Открыть изображение ${index + 1}`} onClick={() => setOpened(source)}><img src={source} alt={`Результат ${index + 1}`} className="max-h-[28rem] w-full object-contain" /></button>
           <div className="absolute bottom-2 right-2"><DownloadButton asset={asset} filename={`neural-deck-image-${index + 1}.png`} onError={onError} overlay /></div>
         </figure>
@@ -37,7 +37,7 @@ function ImageResult({ assets, onError }: { assets: ImageAsset[]; onError?: (err
 }
 
 function VideoResult({ result, onError }: { result: VideoResult; onError?: (error: unknown) => void }) {
-  return <div className="overflow-hidden rounded-md border border-border bg-muted">
+  return <div className="overflow-hidden rounded-2xl border border-border/60 bg-card">
     <video src={result.url} controls playsInline className="max-h-[32rem] w-full" aria-label="Результат видео" />
     <div className="flex justify-end border-t border-border p-2"><DownloadButton asset={result} filename="neural-deck-video.mp4" onError={onError} /></div>
   </div>
@@ -45,8 +45,8 @@ function VideoResult({ result, onError }: { result: VideoResult; onError?: (erro
 
 function OcrResult({ markdown }: { markdown: string }) {
   const [copied, setCopied] = useState(false)
-  return <div className="rounded-md border border-border bg-muted p-3">
-    <div className="mb-2 flex items-center justify-end"><Button type="button" size="sm" variant="secondary" onClick={() => { void navigator.clipboard.writeText(markdown).then(() => setCopied(true)).catch(() => setCopied(false)) }}>{copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}{copied ? 'Скопировано' : 'Копировать Markdown'}</Button></div>
+  return <div className="rounded-2xl border border-border/60 bg-card p-3">
+    <div className="mb-2 flex items-center justify-end"><Button type="button" shape="pill" size="sm" variant="secondary" onClick={() => { void navigator.clipboard.writeText(markdown).then(() => setCopied(true)).catch(() => setCopied(false)) }}>{copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}{copied ? 'Скопировано' : 'Копировать Markdown'}</Button></div>
     <ChatMarkdown source={markdown || 'OCR не вернул текст.'} />
   </div>
 }

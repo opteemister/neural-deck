@@ -20,13 +20,13 @@ afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
 describe('ChatPage', () => {
   it('sends vision content parts through the existing text stream', async () => {
-    vi.spyOn(api, 'getOpenAiModels').mockResolvedValue({ items: [{ id: 'vision-model', object: 'model', types: ['text'] }] })
+    const getModels = vi.spyOn(api, 'getOpenAiModels').mockResolvedValue({ items: [{ id: 'vision-model', object: 'model', types: ['text'] }] })
     const stream = vi.spyOn(api, 'streamChat').mockImplementation(async (_request, onChunk) => { onChunk({ done: false, content: 'На изображении есть дом.' }) })
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     const view = render(<QueryClientProvider client={client}><MemoryRouter initialEntries={['/chat?model=vision-model']}><ChatPage /></MemoryRouter></QueryClientProvider>)
     await screen.findByLabelText('Сообщение')
-    fireEvent.click(screen.getByRole('button', { name: 'Операция чата' }))
-    fireEvent.click(screen.getByRole('option', { name: 'Vision' }))
+    expect(getModels).toHaveBeenCalledWith(true)
+    expect(screen.queryByRole('button', { name: 'Операция чата' })).not.toBeInTheDocument()
     const fileInput = view.container.querySelector('input[type="file"]') as HTMLInputElement
     const image = new File(['pixels'], 'house.png', { type: 'image/png' })
     Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: vi.fn(() => 'blob:house') })
@@ -44,7 +44,7 @@ describe('ChatPage', () => {
   })
 
   it('keeps the last measured context visible during later requests and updates it from usage', async () => {
-    vi.spyOn(api, 'getOpenAiModels').mockResolvedValue({ items: [{ id: 'local-model', object: 'model', context_length: 4096 }] })
+    const getModels = vi.spyOn(api, 'getOpenAiModels').mockResolvedValue({ items: [{ id: 'local-model', object: 'model', types: ['text'], context_length: 4096 }] })
     let emit: Parameters<typeof api.streamChat>[1] | undefined
     let finish: (() => void) | undefined
     vi.spyOn(api, 'streamChat').mockImplementation(async (_request, onChunk) => {
@@ -54,16 +54,16 @@ describe('ChatPage', () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     render(<QueryClientProvider client={client}><MemoryRouter initialEntries={['/chat?model=local-model']}><ChatPage /></MemoryRouter></QueryClientProvider>)
     await waitFor(() => expect(screen.getByRole('button', { name: 'Отправить' })).toBeDisabled())
-    const context = screen.getByLabelText('Контекст диалога')
-    expect(context).toHaveTextContent('Контекст —')
+    expect(getModels).toHaveBeenCalledWith(true)
+    expect(screen.queryByLabelText('Контекст диалога')).not.toBeInTheDocument()
     const send = async (text: string) => {
       fireEvent.change(screen.getByLabelText('Сообщение'), { target: { value: text } })
       await waitFor(() => expect(screen.getByRole('button', { name: 'Отправить' })).toBeEnabled())
       fireEvent.click(screen.getByRole('button', { name: 'Отправить' }))
     }
     await send('Первый запрос')
-    expect(context).toHaveTextContent('Контекст —')
     await act(async () => { emit?.({ done: false, content: 'Ответ', usage: { total_tokens: 120 } }); finish?.() })
+    const context = await screen.findByLabelText('Контекст диалога')
     expect(context).toHaveTextContent('Контекст 120')
     await send('Второй запрос')
     expect(context).toHaveTextContent('Контекст 120')
@@ -80,7 +80,7 @@ describe('ChatPage', () => {
   it('uses a registered model and renders an SSE assistant response', async () => {
     const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) => {
       const url = String(input)
-      if (url.endsWith('/api/proxy/models')) return new Response(JSON.stringify({ object: 'list', data: [{ id: 'local-model', object: 'model' }] }), { status: 200 })
+      if (url.includes('/api/proxy/models?all_types=true')) return new Response(JSON.stringify({ object: 'list', data: [{ id: 'local-model', object: 'model', types: ['text'] }] }), { status: 200 })
       if (url.endsWith('/api/proxy/chat/completions')) return streamResponse('готово')
       return new Response(JSON.stringify({ error: { code: 'not_found', message: 'not found', details: {}, request_id: 'req', retryable: false } }), { status: 404 })
     })

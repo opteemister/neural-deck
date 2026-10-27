@@ -20,7 +20,7 @@ function stubObjectUrls() {
 
 describe('chat provider flows', () => {
   it('keeps multimodal history when switching back to text streaming', async () => {
-    vi.spyOn(api, 'getOpenAiModels').mockResolvedValue({ items: [{ id: 'vision-model', object: 'model', types: ['text'] }] })
+    const getModels = vi.spyOn(api, 'getOpenAiModels').mockResolvedValue({ items: [{ id: 'vision-model', object: 'model', types: ['text'] }] })
     const requests: Array<{ messages: Array<{ role: string; content: unknown }> }> = []
     let call = 0
     vi.spyOn(api, 'streamChat').mockImplementation(async (request, onChunk) => {
@@ -30,14 +30,14 @@ describe('chat provider flows', () => {
     stubObjectUrls()
     const view = renderChat('/chat?model=vision-model&operation=vision')
     const textbox = await screen.findByLabelText('Сообщение')
+    expect(getModels).toHaveBeenCalledWith(true)
+    expect(screen.queryByRole('button', { name: 'Операция чата' })).not.toBeInTheDocument()
     const image = new File(['pixels'], 'house.png', { type: 'image/png' })
     fireEvent.change(view.container.querySelector('input[type="file"]')!, { target: { files: [image] } })
     fireEvent.change(textbox, { target: { value: 'Что на картинке?' } })
     fireEvent.click(screen.getByRole('button', { name: 'Отправить' }))
     await screen.findByText('vision answer')
 
-    fireEvent.click(screen.getByRole('button', { name: 'Операция чата' }))
-    fireEvent.click(screen.getByRole('option', { name: 'Текст' }))
     fireEvent.change(screen.getByLabelText('Сообщение'), { target: { value: 'Продолжи ответ' } })
     fireEvent.click(screen.getByRole('button', { name: 'Отправить' }))
     await screen.findByText('text answer')
@@ -54,23 +54,25 @@ describe('chat provider flows', () => {
   })
 
   it('uses the first attached image as source and the second as mask in edit mode', async () => {
-    vi.spyOn(api, 'getOpenAiModels').mockResolvedValue({ items: [] })
+    const getModels = vi.spyOn(api, 'getOpenAiModels').mockResolvedValue({ items: [{ id: 'image-model', object: 'model', types: ['image'] }] })
     const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) => {
       const url = String(input)
-      if (url.includes('/api/proxy/models?all_types=true')) return Promise.resolve(new Response(JSON.stringify({ data: [{ id: 'image-model', object: 'model', types: ['image'] }] }), { status: 200 }))
       if (url.endsWith('/api/proxy/images/edits')) return Promise.resolve(new Response(JSON.stringify({ data: [{ b64_json: 'abc' }] }), { status: 200 }))
       return Promise.resolve(new Response(JSON.stringify({ error: { message: 'unexpected' } }), { status: 404 }))
     })
     vi.stubGlobal('fetch', fetchMock)
     stubObjectUrls()
     const view = renderChat('/chat?model=image-model&operation=image-edit')
+    await screen.findByText('image-model')
+    expect(getModels).toHaveBeenCalledWith(true)
     const image = new File(['image'], 'source.png', { type: 'image/png' })
     const mask = new File(['mask'], 'mask.png', { type: 'image/png' })
     const input = view.container.querySelector('input[type="file"]')!
     fireEvent.change(input, { target: { files: [image, mask] } })
-    expect(screen.getByText('Источник')).toBeInTheDocument()
+    expect(screen.getByText('Изображение')).toBeInTheDocument()
     expect(screen.getByText('Маска')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Удалить source.png' }))
+    expect(screen.queryByText('Изображение')).not.toBeInTheDocument()
     expect(screen.queryByText('Маска')).not.toBeInTheDocument()
     fireEvent.change(input, { target: { files: [image, mask] } })
     fireEvent.change(screen.getByLabelText('Сообщение'), { target: { value: 'Измени фон' } })

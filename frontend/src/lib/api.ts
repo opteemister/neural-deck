@@ -316,8 +316,8 @@ export const api = {
     if (filters.profile_id) query.set('profile_id', filters.profile_id)
     return request<StatisticsData>(`/api/v1/statistics?${query}`)
   },
-  getOpenAiModels: async (): Promise<OpenAiModelsData> => {
-    const response = await openAiRequest<{ data: OpenAiModel[] }>('/models')
+  getOpenAiModels: async (allTypes = false): Promise<OpenAiModelsData> => {
+    const response = await openAiRequest<{ data: OpenAiModel[] }>(allTypes ? '/models?all_types=true' : '/models')
     return { items: response.data }
   },
   completeChat: (body: { model: string; messages: Array<{ role: 'user' | 'assistant'; content: string }>; stream?: boolean }) => openAiRequest<import('@/types/api').ChatCompletionResponse>('/chat/completions', { method: 'POST', body: JSON.stringify(body) }),

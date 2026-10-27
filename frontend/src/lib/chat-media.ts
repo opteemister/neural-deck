@@ -20,6 +20,174 @@ export type ChatAttachment = {
   previewUrl: string
 }
 
+export type ChatAttachmentKind = 'image' | 'document' | 'text' | 'binary'
+
+const IMAGE_EXTENSIONS = new Set(['avif', 'bmp', 'gif', 'jpeg', 'jpg', 'png', 'webp'])
+const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
+  avif: 'image/avif',
+  bmp: 'image/bmp',
+  gif: 'image/gif',
+  jpeg: 'image/jpeg',
+  jpg: 'image/jpeg',
+  png: 'image/png',
+  webp: 'image/webp',
+}
+const TEXT_EXTENSIONS = new Set([
+  'cfg', 'conf', 'css', 'csv', 'env', 'html', 'htm', 'ini', 'java', 'js', 'json',
+  'jsx', 'log', 'md', 'markdown', 'py', 'rs', 'sh', 'sql', 'toml', 'ts', 'tsx',
+  'txt', 'tsv', 'xml', 'yaml', 'yml',
+])
+const DOCUMENT_EXTENSIONS = new Set(['doc', 'docx', 'odt', 'pdf', 'ppt', 'pptx', 'rtf', 'xls', 'xlsx'])
+const DOCUMENT_MIME_TYPES = new Set([
+  'application/msword', 'application/pdf', 'application/rtf', 'application/vnd.ms-excel',
+  'application/vnd.ms-powerpoint', 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.oasis.opendocument.text', 'application/vnd.oasis.opendocument.spreadsheet',
+  'application/vnd.oasis.opendocument.presentation',
+])
+
+function attachmentFile(attachment: ChatAttachment | File): File {
+  return 'file' in attachment ? attachment.file : attachment
+}
+
+function fileExtension(file: File): string {
+  const name = file.name.replace(/\\/g, '/').split('/').pop() ?? file.name
+  const dot = name.lastIndexOf('.')
+  return dot < 0 ? '' : name.slice(dot + 1).toLowerCase()
+}
+
+/** Classify an attachment from MIME, with a known filename extension fallback for generic MIME. */
+export function classifyAttachment(attachment: ChatAttachment | File): ChatAttachmentKind {
+  const file = attachmentFile(attachment)
+  const mime = file.type.toLowerCase().split(';', 1)[0]
+  const extension = fileExtension(file)
+  if (mime.startsWith('image/') || (!mime || mime === 'application/octet-stream' || mime === 'binary/octet-stream') && IMAGE_EXTENSIONS.has(extension)) return 'image'
+  if (DOCUMENT_MIME_TYPES.has(mime) || DOCUMENT_EXTENSIONS.has(extension)) return 'document'
+  if (mime.startsWith('text/') || [
+    'application/json', 'application/javascript', 'application/ld+json', 'application/xml',
+  ].includes(mime) || (!mime || mime === 'application/octet-stream' || mime === 'binary/octet-stream') && TEXT_EXTENSIONS.has(extension)) return 'text'
+  return 'binary'
+}
+
+export function classifyAttachments(attachments: ChatAttachment[]): Record<ChatAttachmentKind, ChatAttachment[]> {
+  const result: Record<ChatAttachmentKind, ChatAttachment[]> = {
+    image: [], document: [], text: [], binary: [],
+  }
+  for (const attachment of attachments) result[classifyAttachment(attachment)].push(attachment)
+  return result
+}
+
+export function isImageAttachment(attachment: ChatAttachment | File): boolean {
+  return classifyAttachment(attachment) === 'image'
+}
+
+export function isDocumentAttachment(attachment: ChatAttachment | File): boolean {
+  return classifyAttachment(attachment) === 'document'
+}
+
+export function isPlainTextAttachment(attachment: ChatAttachment | File): boolean {
+  return classifyAttachment(attachment) === 'text'
+}
+
+const CHAT_MODEL_TYPES = new Set(['text', 'image', 'video', 'ocr'])
+export type ChatModelType = 'text' | 'image' | 'video' | 'ocr'
+
+/** Pick the first chat-compatible output type from declared model metadata. */
+export function chatModelType(model: OpenAiModel | undefined): ChatModelType | null {
+  if (!model?.types?.length) return 'text'
+  const declared = new Set(model?.types ?? [])
+  if (declared.has('text')) return 'text'
+  if (declared.has('image')) return 'image'
+  if (declared.has('video')) return 'video'
+  if (declared.has('ocr')) return 'ocr'
+  return null
+}
+
+function modelCapabilitiesOperations(model: OpenAiModel | undefined): string[] {
+  const operations = model?.capabilities?.operations
+  return Array.isArray(operations)
+    ? operations.filter((operation): operation is string => typeof operation === 'string')
+    : []
+}
+
+/** Resolve a chat operation from the model's advertised type and attachments only. */
+export function resolveChatOperation(model: OpenAiModel | undefined, attachments: ChatAttachment[], prompt = ''): ChatOperation {
+  const images = attachments.filter((attachment) => isImageAttachment(attachment))
+  const nonImages = attachments.filter((attachment) => !isImageAttachment(attachment))
+  const modelTypes = [...new Set(model?.types ?? [])]
+  const modelType = chatModelType(model)
+
+  if (modelTypes.length > 0 && !modelType) {
+    const unsupported = modelTypes.filter((type) => !CHAT_MODEL_TYPES.has(type))
+    throw new ChatMediaError(unsupported.length > 0
+      ? 'Выбранная модель не поддерживает операции, доступные во встроенном чате.'
+      : 'Не удалось определить операцию выбранной модели для этого чата.')
+  }
+
+  if (!modelType || modelType === 'text') return images.length > 0 ? 'vision' : 'text'
+  if (modelType === 'image') {
+    if (nonImages.length > 0) throw new ChatMediaError(nonImages.some(isDocumentAttachment) ? 'Для этого вложения выберите модель для документов.' : 'К этому запросу можно прикрепить только изображения.')
+    if (images.length === 0) return 'image-generation'
+    if (!prompt.trim()) {
+      if (modelCapabilitiesOperations(model).includes('variations')) return 'image-variations'
+      throw new ChatMediaError('Добавьте описание изменений, чтобы обработать изображение.')
+    }
+    return 'image-edit'
+  }
+  if (modelType === 'video') {
+    if (nonImages.length > 0) throw new ChatMediaError('Для создания видео можно прикрепить исходное изображение.')
+    return 'video'
+  }
+  return 'ocr'
+}
+
+export type PreparedUserContent = string | VisionContentPart[]
+
+async function readTextFile(file: File): Promise<string> {
+  const text = (file as File & { text?: () => Promise<string> }).text
+  if (typeof text === 'function') return text.call(file)
+  return await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result ?? ''))
+    reader.onerror = () => reject(reader.error ?? new Error('Не удалось прочитать файл'))
+    reader.readAsText(file)
+  })
+}
+
+/** Prepare text/vision content without silently dropping files unsupported by a text model. */
+export async function prepareUserContent(prompt: string, attachments: ChatAttachment[]): Promise<PreparedUserContent> {
+  const parts: VisionContentPart[] = []
+  if (prompt.trim()) parts.push({ type: 'text', text: prompt })
+
+  for (const attachment of attachments) {
+    const file = attachment.file
+    const kind = classifyAttachment(file)
+    if (kind === 'image') {
+      parts.push({ type: 'image_url', image_url: { url: await fileToDataUrl(file) } })
+      continue
+    }
+    if (kind === 'text') {
+      let text: string
+      try {
+        text = await readTextFile(file)
+      } catch {
+        throw new ChatMediaError(`Не удалось прочитать файл ${file.name}`)
+      }
+      parts.push({ type: 'text', text: `[Файл: ${file.name}]\n${text}` })
+      continue
+    }
+    if (kind === 'document') {
+      throw new ChatMediaError(`Файл ${file.name} — документ; выберите модель для документов.`)
+    }
+    throw new ChatMediaError(`Файл ${file.name} нельзя отправить в этом чате.`)
+  }
+
+  if (parts.length === 0) return ''
+  if (parts.length === 1 && parts[0].type === 'text') return parts[0].text
+  return parts
+}
+
 export type ImageAsset = {
   url?: string | null
   b64_json?: string | null
@@ -201,9 +369,22 @@ export async function createOcr(fields: { model: string; documentUrl: string }, 
 }
 
 export function fileToDataUrl(file: File): Promise<string> {
+  const rawMime = file.type.toLowerCase().split(';', 1)[0]
+  const genericMime = !rawMime || rawMime === 'application/octet-stream' || rawMime === 'binary/octet-stream'
+  const extension = fileExtension(file)
+  const fallbackMime = IMAGE_MIME_BY_EXTENSION[extension] ?? (extension === 'pdf' ? 'application/pdf' : undefined)
+  const mime = genericMime ? fallbackMime ?? rawMime : rawMime
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
-    reader.onload = () => resolve(String(reader.result))
+    reader.onload = () => {
+      const source = String(reader.result)
+      if (!mime || !fallbackMime || !genericMime) {
+        resolve(source)
+        return
+      }
+      const separator = source.indexOf(',')
+      resolve(separator < 0 ? source : `data:${mime};base64,${source.slice(separator + 1)}`)
+    }
     reader.onerror = () => reject(reader.error ?? new Error('Не удалось прочитать файл'))
     reader.readAsDataURL(file)
   })

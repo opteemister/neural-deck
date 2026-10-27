@@ -72,6 +72,7 @@ async function comfyRequest<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const comfyApi = {
+  getStatus: (source: string) => comfyRequest<{ available: boolean }>(`/api/v1/proxy/comfyui/sources/${encodeURIComponent(source)}/status`),
   getConfig: () => comfyRequest<ComfyConfig>('/api/v1/proxy/comfyui'),
   putConfig: (config: ComfyConfig) => comfyRequest<ComfyConfig>('/api/v1/proxy/comfyui', {
     method: 'PUT', body: JSON.stringify(config),

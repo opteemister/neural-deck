@@ -130,6 +130,67 @@ def test_route_repository_validates_and_persists_comfyui(tmp_path: Path) -> None
     }
 
 
+def test_virtual_local_source_is_visible_without_being_persisted(tmp_path: Path) -> None:
+    repository = RouteConfigRepository(tmp_path)
+    service = ComfyProviderService(repository)
+    assert service.get_settings()["sources"]["local"] == {"base_url": "http://127.0.0.1:8188"}
+    assert repository.load_comfyui()["sources"] == {}
+
+    repository.save_comfyui(
+        {
+            "sources": {
+                "local": {"base_url": "http://custom.test:8188", "user_context": "deck"}
+            },
+            "models": {},
+        }
+    )
+    assert service.get_settings()["sources"]["local"] == {
+        "base_url": "http://custom.test:8188",
+        "user_context": "deck",
+    }
+
+
+@pytest.mark.asyncio
+async def test_source_status_checks_system_stats_and_unknown_source_is_404() -> None:
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if request.url.path == "/system_stats":
+            return httpx.Response(200, json={"devices": []})
+        if request.url.path.startswith("/userdata/"):
+            return httpx.Response(
+                200,
+                json={"1": {"class_type": "CLIPTextEncode", "inputs": {"text": "default"}}},
+            )
+        raise AssertionError(request.url)
+
+    service = ComfyProviderService(
+        {
+            "sources": {},
+            "models": {
+                "image": {
+                    "source": "local",
+                    "type": "image",
+                    "workflows": {"generate": "workflows/generate.json"},
+                }
+            },
+        },
+        client_factory=lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    status = await service.source_status("local")
+    assert status["available"] is True
+    assert status["status"] == "ready"
+    assert status["base_url"] == "http://127.0.0.1:8188"
+    graph = await service.provider.load_graph("image", "generate")
+    assert graph["1"]["class_type"] == "CLIPTextEncode"
+    assert calls == ["/system_stats", "/userdata/workflows/generate.json"]
+    with pytest.raises(AppError) as error:
+        await service.source_status("missing")
+    assert error.value.status_code == 404
+    await service.close()
+
+
 @pytest.mark.asyncio
 async def test_userdata_file_rejects_paths_outside_workflows() -> None:
     called = False
@@ -218,6 +279,162 @@ async def test_graph_is_patched_in_memory_and_unsupported_field_is_400() -> None
         provider.patch_graph(graph, model, "generate", {"prompt": "fox", "quality": "high"})
     assert getattr(error.value, "status_code", None) == 400
     assert getattr(error.value, "details", {}).get("field") == "quality"
+
+
+def test_unique_standard_nodes_are_inferred_without_graph_search_heuristics() -> None:
+    provider = ComfyUIProvider(
+        {
+            "sources": {"main": {"base_url": "http://comfy.test:8188"}},
+            "models": {
+                "image": {
+                    "source": "main",
+                    "type": "image",
+                    "workflows": {"edit_masked": "workflows/edit.json"},
+                }
+            },
+        }
+    )
+    graph = {
+        "1": {"class_type": "CLIPTextEncode", "inputs": {"text": "default"}},
+        "2": {"class_type": "LoadImage", "inputs": {"image": "input.png"}},
+        "3": {"class_type": "LoadImageMask", "inputs": {"image": "mask.png"}},
+        "4": {
+            "class_type": "EmptyLatentImage",
+            "inputs": {"width": 512, "height": 512, "batch_size": 1},
+        },
+    }
+    patched = provider.patch_graph(
+        graph,
+        provider._model("image"),
+        "edit_masked",
+        {"prompt": "new", "image": b"ignored", "mask": b"ignored", "size": "768x640", "n": 2},
+        uploaded_inputs={"image": "source.png", "mask": "mask-upload.png"},
+        provided_fields={"prompt", "image", "mask", "size", "n"},
+    )
+    assert patched["1"]["inputs"]["text"] == "new"
+    assert patched["2"]["inputs"]["image"] == "source.png"
+    assert patched["3"]["inputs"]["image"] == "mask-upload.png"
+    assert patched["4"]["inputs"] == {"width": 768, "height": 640, "batch_size": 2}
+
+
+def test_ambiguous_inferred_prompt_requires_explicit_legacy_binding() -> None:
+    provider = ComfyUIProvider(
+        {
+            "sources": {"main": {"base_url": "http://comfy.test:8188"}},
+            "models": {
+                "image": {
+                    "source": "main",
+                    "type": "image",
+                    "workflows": {"generate": "workflows/generate.json"},
+                }
+            },
+        }
+    )
+    graph = {
+        "1": {"class_type": "CLIPTextEncode", "inputs": {"text": "positive"}},
+        "2": {"class_type": "CLIPTextEncode", "inputs": {"text": "negative"}},
+    }
+    with pytest.raises(AppError) as error:
+        provider.patch_graph(
+            graph,
+            provider._model("image"),
+            "generate",
+            {"prompt": "new"},
+            provided_fields={"prompt"},
+        )
+    assert error.value.code == "comfyui_binding_ambiguous"
+    assert error.value.details["field"] == "prompt"
+
+
+def test_prompt_inference_selects_positive_encoder_only_when_graph_marks_role() -> None:
+    provider = ComfyUIProvider(
+        {
+            "sources": {"main": {"base_url": "http://comfy.test:8188"}},
+            "models": {
+                "image": {
+                    "source": "main",
+                    "type": "image",
+                    "workflows": {"generate": "workflows/generate.json"},
+                }
+            },
+        }
+    )
+    graph = {
+        "1": {"class_type": "CLIPTextEncode", "inputs": {"text": "positive"}},
+        "2": {"class_type": "CLIPTextEncode", "inputs": {"text": "negative"}},
+        "3": {
+            "class_type": "KSampler",
+            "inputs": {"positive": ["1", 0], "negative": ["2", 0]},
+        },
+    }
+    patched = provider.patch_graph(
+        graph,
+        provider._model("image"),
+        "generate",
+        {"prompt": "new"},
+        provided_fields={"prompt"},
+    )
+    assert patched["1"]["inputs"]["text"] == "new"
+    assert patched["2"]["inputs"]["text"] == "negative"
+
+
+def test_prompt_does_not_fallback_to_negative_encoder_when_positive_is_custom() -> None:
+    provider = ComfyUIProvider(
+        {
+            "sources": {"main": {"base_url": "http://comfy.test:8188"}},
+            "models": {
+                "image": {
+                    "source": "main",
+                    "type": "image",
+                    "workflows": {"generate": "workflows/generate.json"},
+                }
+            },
+        }
+    )
+    graph = {
+        "1": {"class_type": "CLIPTextEncode", "inputs": {"text": "negative"}},
+        "2": {
+            "class_type": "KSampler",
+            "inputs": {"positive": ["custom-conditioner", 0], "negative": ["1", 0]},
+        },
+    }
+    with pytest.raises(AppError) as error:
+        provider.patch_graph(
+            graph,
+            provider._model("image"),
+            "generate",
+            {"prompt": "must not overwrite negative"},
+            provided_fields={"prompt"},
+        )
+    assert error.value.code == "comfyui_parameter_unsupported"
+    assert error.value.details["field"] == "prompt"
+
+
+def test_seconds_duration_input_is_not_auto_inferred() -> None:
+    provider = ComfyUIProvider(
+        {
+            "sources": {"main": {"base_url": "http://comfy.test:8188"}},
+            "models": {
+                "video": {
+                    "source": "main",
+                    "type": "video",
+                    "workflows": {"generate": "workflows/video.json"},
+                }
+            },
+        }
+    )
+    graph = {"7": {"class_type": "CustomVideoNode", "inputs": {"duration": 12}}}
+    with pytest.raises(AppError) as error:
+        provider.patch_graph(
+            graph,
+            provider._model("video"),
+            "generate",
+            {"seconds": "8"},
+            provided_fields={"seconds"},
+        )
+    assert error.value.code == "comfyui_parameter_unsupported"
+    assert error.value.details["field"] == "seconds"
+    assert graph["7"]["inputs"]["duration"] == 12
 
 
 @pytest.mark.asyncio

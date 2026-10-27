@@ -21,6 +21,8 @@ from ..schemas.profiles import ProfileData
 
 ALIAS_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 ROUTE_CONFIG_FILENAME = "proxy-routes.yaml"
+COMFYUI_DEFAULT_SOURCE = "local"
+COMFYUI_DEFAULT_BASE_URL = "http://127.0.0.1:8188"
 
 
 @dataclass(frozen=True, slots=True)
@@ -300,7 +302,7 @@ class RouteConfigRepository:
                     f"comfyui.models.{alias}.source должен быть именем source",
                     status_code=422,
                 )
-            if source_name not in sources:
+            if source_name not in sources and source_name != COMFYUI_DEFAULT_SOURCE:
                 raise AppError(
                     "route_config_invalid",
                     f"comfyui.models.{alias}.source не найден: {source_name}",

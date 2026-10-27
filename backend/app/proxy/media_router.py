@@ -179,6 +179,14 @@ async def workflows(request: Request, source: str, runtime: RuntimeDep) -> JSONR
     return success(request, await _service(runtime).workflows(source))
 
 
+@management_router.get("/comfyui/sources/{source}/status")
+async def source_status(request: Request, source: str, runtime: RuntimeDep) -> Any:
+    async def check() -> JSONResponse:
+        return success(request, await _service(runtime).source_status(source))
+
+    return await _wire(check)
+
+
 @router.post("/images/generations", response_model=None, responses=IMAGE_RESPONSES)
 async def image_generation(request: Request, payload: ImageRequest, runtime: RuntimeDep) -> Any:
     async def run() -> Any:

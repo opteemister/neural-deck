@@ -1,238 +1,164 @@
-import { useEffect, useMemo, useState } from 'react'
-import { Plus, Trash2 } from 'lucide-react'
+import { useState, type FormEvent } from 'react'
+import { Pencil, Plus, Trash2 } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Dialog } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
-import {
-  COMFY_BINDING_FIELDS,
-  comfyApi,
-  type ComfyBinding,
-  type ComfyBindingField,
-  type ComfyConfig,
-  type ComfyMediaType,
-  type ComfyModel,
-  type ComfyOperation,
-  type ComfySource,
-  type WorkflowItem,
-} from '@/lib/comfy-api'
+import { comfyApi, type ComfyConfig, type ComfyMediaType, type ComfyModel, type ComfyOperation, type ComfySource } from '@/lib/comfy-api'
 
 const aliasPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
-const operationLabels: Record<ComfyOperation, string> = {
-  generate: 'Generate',
-  edit: 'Edit',
-  edit_masked: 'Edit masked',
-  variations: 'Variations',
-}
-const bindingLabels: Record<ComfyBindingField, string> = {
-  prompt: 'prompt', image: 'image', mask: 'mask', 'size.width': 'size.width',
-  'size.height': 'size.height', n: 'n', quality: 'quality', background: 'background',
-  output_format: 'output_format', output_compression: 'output_compression', seconds: 'seconds',
-  reference: 'reference',
-}
-
+const operationLabels: Record<ComfyOperation, string> = { generate: 'Generate', edit: 'Edit', edit_masked: 'Mask', variations: 'Variations' }
 type Notice = (tone: 'success' | 'error', message: string) => void
+type SourceDraft = { original?: string; name: string; url: string; port: string }
+type AliasDraft = { original?: string; name: string; model: ComfyModel }
 
-export function ProxyComfyConfig({ config, mediaType, onChange, notify }: {
-  config: ComfyConfig
-  mediaType: ComfyMediaType
-  onChange: (next: ComfyConfig) => void
-  notify: Notice
+function useConnection(source: string) {
+  return useQuery({ queryKey: ['proxy-comfy-status', source], queryFn: () => comfyApi.getStatus(source), retry: false, staleTime: 10_000, refetchInterval: 15_000 })
+}
+
+export function ProxyComfyConfig({ config, mediaType, onSave, notify }: {
+  config: ComfyConfig; mediaType: ComfyMediaType; onSave: (next: ComfyConfig) => Promise<unknown>; notify: Notice
 }) {
-  const [sourceName, setSourceName] = useState('')
-  const [sourceUrl, setSourceUrl] = useState('')
-  const [sourceContext, setSourceContext] = useState('')
-  const [aliasName, setAliasName] = useState('')
-  const [aliasSource, setAliasSource] = useState('')
+  const [sourceDraft, setSourceDraft] = useState<SourceDraft | null>(null)
+  const [aliasDraft, setAliasDraft] = useState<AliasDraft | null>(null)
+  const [saving, setSaving] = useState(false)
+  const operations: ComfyOperation[] = mediaType === 'image' ? ['generate', 'edit', 'edit_masked', 'variations'] : ['generate', 'edit']
+  const sources = Object.entries(config.sources).sort(([left], [right]) => Number(right === 'local') - Number(left === 'local'))
+  const aliases = Object.entries(config.models).filter(([, model]) => model.type === mediaType)
 
-  const sourceEntries = Object.entries(config.sources)
-  const modelEntries = Object.entries(config.models).filter(([, model]) => model.type === mediaType)
-  const operations: ComfyOperation[] = mediaType === 'image'
-    ? ['generate', 'edit', 'edit_masked', 'variations']
-    : ['generate', 'edit']
-
-  function addSource() {
-    const name = sourceName.trim()
-    const baseUrl = sourceUrl.trim()
-    if (!name || !baseUrl) return notify('error', 'Укажите имя и URL источника ComfyUI.')
-    if (!aliasPattern.test(name) || name in config.sources) return notify('error', 'Имя источника должно быть уникальным ASCII-идентификатором.')
-    const source: ComfySource = { base_url: baseUrl }
-    if (sourceContext.trim()) source.user_context = sourceContext.trim()
-    onChange({ ...config, sources: { ...config.sources, [name]: source } })
-    setSourceName(''); setSourceUrl(''); setSourceContext('')
+  async function persist(next: ComfyConfig) {
+    setSaving(true)
+    try { await onSave(next); return true }
+    catch (error) { notify('error', error instanceof Error ? error.message : 'Не удалось сохранить изменения.'); return false }
+    finally { setSaving(false) }
   }
 
-  function updateSource(name: string, source: ComfySource) {
-    onChange({ ...config, sources: { ...config.sources, [name]: source } })
+  function editSource(name: string, source: ComfySource) {
+    const url = new URL(source.base_url)
+    const port = url.port || (url.protocol === 'https:' ? '443' : '80')
+    url.port = ''
+    setSourceDraft({ original: name, name, url: url.toString().replace(/\/$/, ''), port })
   }
 
-  function renameSource(current: string, nextName: string) {
-    const next = nextName.trim()
-    if (!next || next === current) return
-    if (!aliasPattern.test(next) || next in config.sources) return notify('error', 'Имя источника должно быть уникальным ASCII-идентификатором.')
+  async function saveSource(event: FormEvent) {
+    event.preventDefault()
+    if (!sourceDraft || saving) return
+    const { original, name: rawName, url: rawUrl, port } = sourceDraft
+    const name = rawName.trim()
+    if (!aliasPattern.test(name)) return notify('error', 'Укажите имя: буквы, цифры, точка, дефис или подчёркивание.')
+    if (name !== original && name in config.sources) return notify('error', 'Подключение с таким именем уже существует.')
+    let url: URL
+    try {
+      url = new URL(rawUrl.trim())
+      if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error()
+      if (!/^\d+$/.test(port) || Number(port) < 1 || Number(port) > 65535) throw new Error()
+      url.port = port
+    } catch { return notify('error', 'Укажите HTTP/HTTPS URL и порт от 1 до 65535.') }
     const nextSources = { ...config.sources }
-    nextSources[next] = nextSources[current]
-    delete nextSources[current]
-    const nextModels = Object.fromEntries(Object.entries(config.models).map(([alias, model]) => [
-      alias, model.source === current ? { ...model, source: next } : model,
-    ]))
-    onChange({ sources: nextSources, models: nextModels })
+    const previous = original ? config.sources[original] : undefined
+    if (original) delete nextSources[original]
+    nextSources[name] = { ...previous, base_url: url.toString().replace(/\/$/, '') }
+    const models = Object.fromEntries(Object.entries(config.models).map(([alias, model]) => [alias, original && model.source === original ? { ...model, source: name } : model]))
+    if (await persist({ sources: nextSources, models })) setSourceDraft(null)
   }
 
-  function removeSource(name: string) {
-    if (Object.values(config.models).some((model) => model.source === name)) return notify('error', 'Сначала перенесите или удалите алиасы этого источника.')
+  async function removeSource(name: string) {
+    if (Object.values(config.models).some((model) => model.source === name)) return notify('error', 'Подключение используется алиасом. Сначала выберите для него другое подключение.')
     const nextSources = { ...config.sources }
     delete nextSources[name]
-    onChange({ ...config, sources: nextSources })
+    await persist({ ...config, sources: nextSources })
   }
 
-  function addModel() {
-    const name = aliasName.trim()
-    if (!aliasPattern.test(name)) return notify('error', 'Алиас должен содержать 1–128 ASCII-символов.')
-    if (config.models[name]) return notify('error', 'Такой ComfyUI-алиас уже существует.')
-    if (!aliasSource || !config.sources[aliasSource]) return notify('error', 'Выберите источник для алиаса.')
-    const model: ComfyModel = { source: aliasSource, type: mediaType, workflows: {} }
-    onChange({ ...config, models: { ...config.models, [name]: model } })
-    setAliasName('')
-  }
-
-  function updateModel(alias: string, patch: Partial<ComfyModel>) {
-    onChange({ ...config, models: { ...config.models, [alias]: { ...config.models[alias], ...patch } } })
-  }
-
-  function renameModel(current: string, nextName: string) {
-    const next = nextName.trim()
-    if (!next || next === current) return
-    if (!aliasPattern.test(next)) return notify('error', 'Алиас должен содержать 1–128 ASCII-символов.')
-    if (config.models[next]) return notify('error', 'Такой ComfyUI-алиас уже существует.')
-    const models = { ...config.models, [next]: config.models[current] }
-    delete models[current]
-    onChange({ ...config, models })
-  }
-
-  function removeModel(alias: string) {
+  async function saveAlias(event: FormEvent) {
+    event.preventDefault()
+    if (!aliasDraft || saving) return
+    const name = aliasDraft.name.trim()
+    if (!aliasPattern.test(name)) return notify('error', 'Укажите алиас: буквы, цифры, точка, дефис или подчёркивание.')
+    if (name !== aliasDraft.original && name in config.models) return notify('error', 'Такой алиас уже существует.')
+    if (!config.sources[aliasDraft.model.source]) return notify('error', 'Выберите подключение.')
     const models = { ...config.models }
-    delete models[alias]
-    onChange({ ...config, models })
+    if (aliasDraft.original) delete models[aliasDraft.original]
+    models[name] = aliasDraft.model
+    if (await persist({ ...config, models })) setAliasDraft(null)
   }
 
-  return <div className="space-y-4">
-    <Card>
-      <CardHeader><CardTitle>Источники ComfyUI</CardTitle></CardHeader>
-      <CardContent className="space-y-3">
-        {sourceEntries.length === 0 && <p className="text-xs text-muted-foreground">Источники ещё не настроены. URL не подставляется автоматически.</p>}
-        {sourceEntries.map(([name, source]) => <SourceRow key={name} name={name} source={source} onChange={(next) => updateSource(name, next)} onRename={(next) => renameSource(name, next)} onDelete={() => removeSource(name)} />)}
-        <div className="rounded-md border border-dashed border-border p-3">
-          <p className="mb-2 text-xs font-medium text-foreground">Добавить источник</p>
-          <div className="grid gap-2 md:grid-cols-3">
-            <Input aria-label="Новое имя источника" value={sourceName} onChange={(event) => setSourceName(event.target.value)} placeholder="local-comfy" />
-            <Input aria-label="URL нового источника" value={sourceUrl} onChange={(event) => setSourceUrl(event.target.value)} placeholder="http://127.0.0.1:8188" />
-            <Input aria-label="Контекст нового источника" value={sourceContext} onChange={(event) => setSourceContext(event.target.value)} placeholder="user context (необязательно)" />
-          </div>
-          <Button className="mt-2" variant="secondary" size="sm" onClick={addSource}><Plus className="size-3.5" />Добавить источник</Button>
+  function setWorkflow(operation: ComfyOperation, path: string) {
+    if (!aliasDraft) return
+    const model = aliasDraft.model
+    const workflows = { ...model.workflows }
+    const bindings = { ...model.bindings }
+    if (path) workflows[operation] = path
+    else delete workflows[operation]
+    // Explicit legacy bindings belong to the original saved graph.
+    const original = aliasDraft.original ? config.models[aliasDraft.original] : undefined
+    if (original?.source === model.source && original.workflows[operation] === path && original.bindings?.[operation]) bindings[operation] = original.bindings[operation]
+    else if (path !== model.workflows[operation]) delete bindings[operation]
+    setAliasDraft({ ...aliasDraft, model: { ...model, workflows, ...(model.bindings ? { bindings } : {}) } })
+  }
+
+  return <div className="space-y-6">
+    <section aria-label="Подключения ComfyUI" className="border-b border-border pb-4">
+      <div className="mb-2 flex items-center justify-between gap-3"><h2 className="text-sm font-medium">ComfyUI</h2><Button variant="ghost" size="sm" disabled={saving} aria-label="Добавить подключение" onClick={() => setSourceDraft({ name: '', url: 'http://', port: '8188' })}><Plus className="size-3.5" />Подключение</Button></div>
+      <div className="divide-y divide-border">{sources.map(([name, source]) => <ConnectionRow key={name} name={name} source={source} disabled={saving} onEdit={() => editSource(name, source)} onDelete={() => void removeSource(name)} />)}</div>
+    </section>
+    <section aria-label={mediaType === 'image' ? 'Алиасы изображений' : 'Алиасы видео'}>
+      <div className="mb-3 flex items-center justify-between gap-3"><h2 className="text-sm font-medium">Алиасы</h2><Button variant="primary" size="sm" disabled={saving || !sources.length} onClick={() => setAliasDraft({ name: '', model: { source: sources[0]?.[0] ?? '', type: mediaType, workflows: {} } })}><Plus className="size-3.5" />Новый алиас</Button></div>
+      {!aliases.length && <p className="py-6 text-center text-xs text-muted-foreground">Алиасов пока нет</p>}
+      <div className="space-y-3">{aliases.map(([alias, model]) => <AliasRow key={alias} alias={alias} model={model} operations={operations} disabled={saving} onEdit={() => setAliasDraft({ original: alias, name: alias, model: { ...model, workflows: { ...model.workflows } } })} onDelete={() => { const models = { ...config.models }; delete models[alias]; void persist({ ...config, models }) }} />)}</div>
+    </section>
+    <Dialog open={sourceDraft !== null} title={sourceDraft?.original ? 'Изменить подключение' : 'Новое подключение'} dismissible={!saving} onOpenChange={(open) => { if (!open && !saving) setSourceDraft(null) }}>
+      {sourceDraft && <form className="space-y-4 p-4" onSubmit={(event) => void saveSource(event)}>
+        <label className="block space-y-1.5 text-xs">Имя<Input autoFocus value={sourceDraft.name} disabled={saving} onChange={(event) => setSourceDraft({ ...sourceDraft, name: event.target.value })} placeholder="studio" /></label>
+        <div className="grid grid-cols-[minmax(0,1fr)_6rem] gap-3">
+          <label className="block space-y-1.5 text-xs">URL<Input value={sourceDraft.url} disabled={saving} onChange={(event) => setSourceDraft({ ...sourceDraft, url: event.target.value })} placeholder="http://192.168.1.10" /></label>
+          <label className="block space-y-1.5 text-xs">Порт<Input inputMode="numeric" value={sourceDraft.port} disabled={saving} onChange={(event) => setSourceDraft({ ...sourceDraft, port: event.target.value })} /></label>
         </div>
-      </CardContent>
-    </Card>
-
-    <Card>
-      <CardHeader><CardTitle>{mediaType === 'image' ? 'Модели изображений' : 'Модели видео'}</CardTitle></CardHeader>
-      <CardContent className="space-y-3">
-        {modelEntries.length === 0 && <p className="text-xs text-muted-foreground">Алиасы {mediaType === 'image' ? 'изображений' : 'видео'} ещё не настроены.</p>}
-        {modelEntries.map(([alias, model]) => <ComfyAliasCard key={alias} alias={alias} model={model} sources={config.sources} operations={operations} onChange={(patch) => updateModel(alias, patch)} onRename={(next) => renameModel(alias, next)} onDelete={() => removeModel(alias)} />)}
-        <div className="rounded-md border border-dashed border-border p-3">
-          <p className="mb-2 text-xs font-medium text-foreground">Добавить алиас</p>
-          <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
-            <Input aria-label="Новый ComfyUI-алиас" value={aliasName} onChange={(event) => setAliasName(event.target.value)} placeholder="image-model" />
-            <Select aria-label="Источник нового алиаса" value={aliasSource} onChange={(event) => setAliasSource((event.target as HTMLSelectElement).value)}>
-              <option value="">Выберите источник</option>
-              {sourceEntries.map(([name]) => <option key={name} value={name}>{name}</option>)}
-            </Select>
-            <Button variant="secondary" onClick={addModel} disabled={sourceEntries.length === 0}><Plus className="size-3.5" />Добавить</Button>
-          </div>
-        </div>
-      </CardContent>
-    </Card>
+        <div className="flex justify-end gap-2 pt-2"><Button variant="ghost" disabled={saving} onClick={() => setSourceDraft(null)}>Отмена</Button><Button type="submit" variant="primary" disabled={saving}>{saving ? 'Сохраняем…' : sourceDraft.original ? 'Сохранить' : 'Добавить подключение'}</Button></div>
+      </form>}
+    </Dialog>
+    <Dialog open={aliasDraft !== null} title={(aliasDraft?.original ? 'Изменить алиас ' : 'Новый алиас ') + (mediaType === 'image' ? 'изображения' : 'видео')} dismissible={!saving} onOpenChange={(open) => { if (!open && !saving) setAliasDraft(null) }}>
+      {aliasDraft && <form className="space-y-4 p-4" onSubmit={(event) => void saveAlias(event)}>
+        <label className="block space-y-1.5 text-xs">Алиас<Input autoFocus value={aliasDraft.name} disabled={saving} onChange={(event) => setAliasDraft({ ...aliasDraft, name: event.target.value })} placeholder={mediaType === 'image' ? 'qwen-image-turbo' : 'wan-video'} /></label>
+        <label className="block space-y-1.5 text-xs">Подключение<Select aria-label="Подключение" value={aliasDraft.model.source} disabled={saving} onChange={(event) => setAliasDraft({ ...aliasDraft, model: { ...aliasDraft.model, source: event.target.value } })}>
+          {!config.sources[aliasDraft.model.source] && <option value={aliasDraft.model.source}>{aliasDraft.model.source || 'Выберите подключение'}</option>}
+          {sources.map(([name]) => <option key={name} value={name}>{name}</option>)}
+        </Select></label>
+        <WorkflowFields source={aliasDraft.model.source} model={aliasDraft.model} operations={operations} disabled={saving} onChange={setWorkflow} />
+        <div className="flex justify-end gap-2 pt-2"><Button variant="ghost" disabled={saving} onClick={() => setAliasDraft(null)}>Отмена</Button><Button type="submit" variant="primary" disabled={saving}>{saving ? 'Сохраняем…' : 'Сохранить'}</Button></div>
+      </form>}
+    </Dialog>
   </div>
 }
 
-function SourceRow({ name, source, onChange, onRename, onDelete }: { name: string; source: ComfySource; onChange: (source: ComfySource) => void; onRename: (name: string) => void; onDelete: () => void }) {
-  const [draftName, setDraftName] = useState(name)
-  useEffect(() => setDraftName(name), [name])
-  return <div className="rounded-md border border-border bg-secondary/30 p-3">
-    <div className="grid gap-2 md:grid-cols-[minmax(8rem,0.45fr)_minmax(0,1fr)_minmax(0,1fr)_auto]">
-      <Input aria-label={`Имя источника ${name}`} value={draftName} onChange={(event) => setDraftName(event.target.value)} onBlur={() => onRename(draftName)} />
-      <Input aria-label={`URL источника ${name}`} value={source.base_url} onChange={(event) => onChange({ ...source, base_url: event.target.value })} placeholder="http://127.0.0.1:8188" />
-      <Input aria-label={`Контекст источника ${name}`} value={source.user_context ?? ''} onChange={(event) => onChange({ ...source, user_context: event.target.value || undefined })} placeholder="user context (необязательно)" />
-      <Button variant="danger" size="icon-sm" iconOnly aria-label={`Удалить источник ${name}`} title="Удалить источник" onClick={onDelete}><Trash2 className="size-3.5" /></Button>
-    </div>
+function ConnectionRow({ name, source, disabled, onEdit, onDelete }: { name: string; source: ComfySource; disabled: boolean; onEdit: () => void; onDelete: () => void }) {
+  const status = useConnection(name)
+  const available = status.data?.available === true && !status.isError
+  const isLocal = name === 'local' && source.base_url.replace(/\/$/, '') === 'http://127.0.0.1:8188'
+  return <div className="flex min-w-0 flex-wrap items-center gap-2 py-2.5">
+    <span className={`size-2 shrink-0 rounded-full ${available ? 'bg-[#6f9a72]' : 'bg-[#c9974f]'}`} />
+    <span className="text-xs font-medium">{name}</span><span className="text-[11px] text-muted-foreground">{status.isPending ? 'Проверяем…' : available ? 'Подключено' : 'Не подключено'}</span>
+    <span className="min-w-0 truncate font-mono text-[10px] text-muted-foreground" title={source.base_url}>{isLocal ? ':8188' : source.base_url}</span>
+    {!isLocal && <div className="ml-auto flex gap-1"><Button variant="ghost" size="icon-sm" iconOnly disabled={disabled} aria-label={`Изменить подключение ${name}`} title="Изменить подключение" onClick={onEdit}><Pencil className="size-3.5" /></Button><Button variant="ghost" size="icon-sm" iconOnly disabled={disabled} aria-label={`Удалить подключение ${name}`} title="Удалить подключение" onClick={onDelete}><Trash2 className="size-3.5" /></Button></div>}
   </div>
 }
 
-function ComfyAliasCard({ alias, model, sources, operations, onChange, onRename, onDelete }: { alias: string; model: ComfyModel; sources: Record<string, ComfySource>; operations: ComfyOperation[]; onChange: (patch: Partial<ComfyModel>) => void; onRename: (name: string) => void; onDelete: () => void }) {
-  const [draftAlias, setDraftAlias] = useState(alias)
-  useEffect(() => setDraftAlias(alias), [alias])
-  const sourceMissing = !sources[model.source]
-  return <div className="rounded-md border border-border bg-secondary/30 p-3">
-    <div className="flex flex-wrap items-center gap-2">
-      <Input className="max-w-64" aria-label={`Имя ComfyUI-алиаса ${alias}`} value={draftAlias} onChange={(event) => setDraftAlias(event.target.value)} onBlur={() => onRename(draftAlias)} />
-      <Select className="min-w-48" aria-label={`Источник алиаса ${alias}`} value={model.source} onChange={(event) => onChange({ source: (event.target as HTMLSelectElement).value })}>
-        {sourceMissing && <option value={model.source}>{model.source} (отсутствует)</option>}
-        {Object.keys(sources).map((name) => <option key={name} value={name}>{name}</option>)}
-      </Select>
-      {sourceMissing && <Badge className="border-[#72544a] text-[#d0a390]">источник не найден</Badge>}
-      <Button className="ml-auto" variant="danger" size="icon-sm" iconOnly aria-label={`Удалить ComfyUI-алиас ${alias}`} title="Удалить алиас" onClick={onDelete}><Trash2 className="size-3.5" /></Button>
-    </div>
-    <div className="mt-3 grid gap-3 lg:grid-cols-2">
-      {operations.map((operation) => <WorkflowField key={operation} source={model.source} operation={operation} value={model.workflows[operation] as string | undefined} onChange={(value) => onChange({ workflows: { ...model.workflows, [operation]: value || undefined } })} />)}
-    </div>
-    <div className="mt-3 space-y-2">
-      {operations.map((operation) => <BindingDetails key={operation} operation={operation} bindings={model.bindings?.[operation]} onChange={(bindings) => onChange({ bindings: { ...model.bindings, [operation]: bindings } })} />)}
-    </div>
+function AliasRow({ alias, model, operations, disabled, onEdit, onDelete }: { alias: string; model: ComfyModel; operations: ComfyOperation[]; disabled: boolean; onEdit: () => void; onDelete: () => void }) {
+  const status = useConnection(model.source)
+  const available = status.data?.available === true && !status.isError
+  return <div className="rounded-md border border-border">
+    <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2.5"><h3 className="min-w-0 break-words font-mono text-xs">{alias}</h3><Badge className={available ? 'border-[#596c4b] text-[#b2c995]' : 'border-[#72544a] text-[#d0a390]'}>{available ? 'подключено' : 'не подключено'}</Badge><span className="text-[11px] text-muted-foreground">{model.source}</span><div className="ml-auto flex gap-1"><Button variant="ghost" size="icon-sm" iconOnly disabled={disabled} aria-label={`Изменить алиас ${alias}`} title="Изменить алиас" onClick={onEdit}><Pencil className="size-3.5" /></Button><Button variant="ghost" size="icon-sm" iconOnly disabled={disabled} aria-label={`Удалить алиас ${alias}`} title="Удалить алиас" onClick={onDelete}><Trash2 className="size-3.5" /></Button></div></div>
+    <div className="flex flex-wrap gap-x-4 gap-y-1 px-3 py-3 text-[11px] text-muted-foreground">{operations.filter((operation) => model.workflows[operation]).map((operation) => <span key={operation}>{operationLabels[operation]}</span>)}{!operations.some((operation) => model.workflows[operation]) && <span>Workflow не выбран</span>}</div>
   </div>
 }
 
-function WorkflowField({ source, operation, value, onChange }: { source: string; operation: ComfyOperation; value?: string; onChange: (value: string) => void }) {
-  const [search, setSearch] = useState('')
+function WorkflowFields({ source, model, operations, disabled, onChange }: { source: string; model: ComfyModel; operations: ComfyOperation[]; disabled: boolean; onChange: (operation: ComfyOperation, path: string) => void }) {
   const workflows = useQuery({ queryKey: ['proxy-comfy-workflows', source], queryFn: () => comfyApi.getWorkflows(source), enabled: Boolean(source), staleTime: 0, refetchOnMount: 'always', retry: false })
-  const paths = useMemo(() => {
-    const values = workflows.data?.items.map(workflowPath) ?? []
-    if (value && !values.includes(value)) values.unshift(value)
-    const needle = search.trim().toLocaleLowerCase()
-    return values.filter((path, index) => values.indexOf(path) === index && (!needle || path.toLocaleLowerCase().includes(needle)))
-  }, [search, value, workflows.data?.items])
-  const available = workflows.data?.available && !workflows.isError
-  const cached = workflows.data?.cached || workflows.isError && workflows.data
-  const status = available ? 'API доступен' : cached ? 'API недоступен · кэш' : workflows.data || workflows.isError ? 'API недоступен' : undefined
-  return <div className="space-y-1.5">
-    <div className="flex items-center gap-2"><label className="text-xs text-foreground">{operationLabels[operation]}</label>{status && <Badge className={available ? 'border-[#596c4b] text-[#b2c995]' : 'border-[#72544a] text-[#d0a390]'}>{status}</Badge>}</div>
-    <Input aria-label={`Поиск workflow ${operation}`} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Поиск workflow по имени" />
-    <Select aria-label={`Workflow ${operation}`} value={value ?? ''} onChange={(event) => onChange((event.target as HTMLSelectElement).value)} disabled={!source}>
-      <option value="">Не выбран</option>
-      {paths.map((path) => <option key={path} value={path}>{path}</option>)}
-    </Select>
-    {workflows.isError && <p className="text-[11px] text-muted-foreground">Список недоступен; сохранённый путь остаётся доступен для выбора.</p>}
-  </div>
-}
-
-function workflowPath(item: WorkflowItem): string {
-  return typeof item === 'string' ? item : item.path ?? item.name ?? ''
-}
-
-function BindingDetails({ operation, bindings, onChange }: { operation: ComfyOperation; bindings?: Partial<Record<ComfyBindingField, ComfyBinding>>; onChange: (bindings: Partial<Record<ComfyBindingField, ComfyBinding>>) => void }) {
-  function setBinding(field: ComfyBindingField, key: keyof ComfyBinding, value: string) {
-    const current = bindings?.[field] ?? { node: '', input: '' }
-    const next = { ...current, [key]: value }
-    const nextBindings = { ...bindings }
-    if (!next.node && !next.input) delete nextBindings[field]
-    else nextBindings[field] = next
-    onChange(nextBindings)
-  }
-  return <details className="rounded-md border border-border px-3 py-2">
-    <summary className="cursor-pointer text-xs text-foreground">Входы API · {operationLabels[operation]}</summary>
-    <div className="mt-2 space-y-2">
-      {COMFY_BINDING_FIELDS.map((field) => <div key={field} className="grid grid-cols-[minmax(5rem,0.45fr)_minmax(0,1fr)_minmax(0,1fr)] items-center gap-2"><span className="font-mono text-[10px] text-muted-foreground">{bindingLabels[field]}</span><Input aria-label={`${operation} ${field} node`} value={bindings?.[field]?.node ?? ''} onChange={(event) => setBinding(field, 'node', event.target.value)} placeholder="node" /><Input aria-label={`${operation} ${field} input`} value={bindings?.[field]?.input ?? ''} onChange={(event) => setBinding(field, 'input', event.target.value)} placeholder="input" /></div>)}
-    </div>
-  </details>
+  const catalog = workflows.data?.items.map((item) => typeof item === 'string' ? item : item.path ?? item.name ?? '').filter(Boolean) ?? []
+  return <div className="space-y-3">{operations.map((operation) => {
+    const value = typeof model.workflows[operation] === 'string' ? model.workflows[operation] : ''
+    const paths = [...new Set([...(value ? [value] : []), ...catalog])]
+    return <label key={operation} className="block space-y-1.5 text-xs">{operationLabels[operation]}<Select aria-label={`Workflow ${operation}`} value={value} disabled={disabled || !source} onChange={(event) => onChange(operation, event.target.value)}><option value="">Не выбран</option>{paths.map((path) => <option key={path} value={path}>{path.replace(/^workflows\//, '')}</option>)}</Select></label>
+  })}</div>
 }

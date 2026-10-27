@@ -29,9 +29,26 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ..errors import AppError
-from .routes import RouteConfigRepository
+from .routes import (
+    COMFYUI_DEFAULT_BASE_URL,
+    COMFYUI_DEFAULT_SOURCE,
+    RouteConfigRepository,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _with_default_source(section: Mapping[str, Any]) -> dict[str, Any]:
+    """Expose the backend-local source without persisting or overwriting config."""
+
+    result = dict(section)
+    configured = section.get("sources", {})
+    sources = dict(configured) if isinstance(configured, Mapping) else {}
+    sources.setdefault(COMFYUI_DEFAULT_SOURCE, {"base_url": COMFYUI_DEFAULT_BASE_URL})
+    result["sources"] = sources
+    if not isinstance(result.get("models"), Mapping):
+        result["models"] = {}
+    return result
 
 
 class ComfyUIUnavailable(AppError):
@@ -233,6 +250,9 @@ class ComfyUIClient:
 
     async def queue(self) -> Any:
         return await self.json_request("GET", "/queue")
+
+    async def system_stats(self) -> Any:
+        return await self.json_request("GET", "/system_stats")
 
     async def view(self, output: Mapping[str, str]) -> tuple[bytes, str]:
         response = await self.request(
@@ -731,7 +751,7 @@ class ComfyUIProvider:
             raw = self.config
         if isinstance(raw, Mapping) and "comfyui" in raw:
             raw = raw["comfyui"]
-        return raw if isinstance(raw, Mapping) else {"sources": {}, "models": {}}
+        return _with_default_source(raw) if isinstance(raw, Mapping) else _with_default_source({})
 
     def _model(self, alias: str) -> Mapping[str, Any]:
         models = self._section().get("models", {})
@@ -791,6 +811,44 @@ class ComfyUIProvider:
             timeout=self.catalog_timeout,
         )
         return await self.catalog.list_workflows_with_status(source, client, user_context=context)
+
+    async def source_status(self, source: str) -> dict[str, Any]:
+        base_url, context = self._source(source)
+        client = ComfyUIClient(
+            base_url,
+            user_context=context,
+            client_factory=self.client_factory,
+            timeout=self.catalog_timeout,
+        )
+        checked_at = time.time()
+        try:
+            await client.system_stats()
+        except ComfyUIUnavailable:
+            return {
+                "source": source,
+                "base_url": base_url,
+                "available": False,
+                "status": "unavailable",
+                "message": "ComfyUI недоступен",
+                "checked_at": checked_at,
+            }
+        except AppError as exc:
+            return {
+                "source": source,
+                "base_url": base_url,
+                "available": False,
+                "status": "error",
+                "message": exc.message,
+                "checked_at": checked_at,
+            }
+        return {
+            "source": source,
+            "base_url": base_url,
+            "available": True,
+            "status": "ready",
+            "message": "ComfyUI доступен",
+            "checked_at": checked_at,
+        }
 
     async def load_graph(self, alias: str, operation: str) -> dict[str, Any]:
         client, _source, model = self._client_for_model(alias)
@@ -886,6 +944,152 @@ class ComfyUIProvider:
         ):
             return {"node": str(value["node"]), "input": value["input"]}
         return None
+
+    @staticmethod
+    def _unique_inferred_binding(
+        graph: Mapping[str, Any],
+        field: str,
+        predicate: Any,
+    ) -> dict[str, str] | None:
+        candidates: list[dict[str, str]] = []
+        for raw_node_id, raw_node in graph.items():
+            if not isinstance(raw_node, Mapping) or not isinstance(raw_node.get("inputs"), Mapping):
+                continue
+            node_id = str(raw_node_id)
+            input_name = predicate(raw_node)
+            if isinstance(input_name, str):
+                candidates.append({"node": node_id, "input": input_name})
+        if len(candidates) > 1:
+            raise AppError(
+                "comfyui_binding_ambiguous",
+                f"Невозможно однозначно определить binding для {field}",
+                status_code=400,
+                details={"field": field, "candidates": [item["node"] for item in candidates]},
+            )
+        return candidates[0] if candidates else None
+
+    @classmethod
+    def _infer_bindings(
+        cls,
+        graph: Mapping[str, Any],
+        explicit: Mapping[str, Any],
+        fields: set[str],
+    ) -> dict[str, Any]:
+        inferred: dict[str, Any] = {}
+        canonical_fields = {
+            "reference" if field == "input_reference" else field for field in fields
+        }
+
+        def missing(field: str) -> bool:
+            if field != "size":
+                return cls._binding_for(explicit, field) is None
+            return not any(
+                cls._binding_for(explicit, "size", suffix) is not None
+                for suffix in (None, "width", "height")
+            )
+
+        if "prompt" in canonical_fields and missing("prompt"):
+            prompt_types = {
+                "CLIPTextEncode",
+                "CLIPTextEncodeSDXL",
+                "CLIPTextEncodeSDXLRefiner",
+            }
+            prompt_candidates = {
+                str(node_id): node
+                for node_id, node in graph.items()
+                if isinstance(node, Mapping)
+                and isinstance(node.get("inputs"), Mapping)
+                and node.get("class_type") in prompt_types
+                and "text" in node["inputs"]
+            }
+            positive_ids: set[str] = set()
+            negative_ids: set[str] = set()
+            for node in graph.values():
+                if not isinstance(node, Mapping) or not isinstance(node.get("inputs"), Mapping):
+                    continue
+                for role, ids in (("positive", positive_ids), ("negative", negative_ids)):
+                    link = node["inputs"].get(role)
+                    if (
+                        isinstance(link, (list, tuple))
+                        and link
+                        and str(link[0]) in prompt_candidates
+                    ):
+                        ids.add(str(link[0]))
+            prompt_binding: dict[str, str] | None
+            if len(positive_ids) == 1:
+                prompt_binding = {"node": next(iter(positive_ids)), "input": "text"}
+            elif len(positive_ids) > 1:
+                raise AppError(
+                    "comfyui_binding_ambiguous",
+                    "Невозможно однозначно определить binding для prompt",
+                    status_code=400,
+                    details={"field": "prompt", "candidates": sorted(positive_ids)},
+                )
+            elif negative_ids:
+                # A negative encoder is never a safe prompt fallback.  The
+                # positive conditioner may be a custom node that we do not
+                # understand, so leave the parameter explicitly unsupported.
+                prompt_binding = None
+            else:
+                prompt_binding = cls._unique_inferred_binding(
+                    graph,
+                    "prompt",
+                    lambda node: "text"
+                    if node.get("class_type") in prompt_types and "text" in node["inputs"]
+                    else None,
+                )
+            if prompt_binding is not None:
+                inferred["prompt"] = prompt_binding
+
+        def load_image_input(node: Mapping[str, Any]) -> str | None:
+            if node.get("class_type") == "LoadImage" and "image" in node["inputs"]:
+                return "image"
+            return None
+
+        if "image" in canonical_fields and missing("image"):
+            image_binding = cls._unique_inferred_binding(graph, "image", load_image_input)
+            if image_binding is not None:
+                inferred["image"] = image_binding
+        if "reference" in canonical_fields and missing("reference"):
+            reference_binding = cls._unique_inferred_binding(graph, "reference", load_image_input)
+            if reference_binding is not None:
+                inferred["reference"] = reference_binding
+
+        if "mask" in canonical_fields and missing("mask"):
+            mask_binding = cls._unique_inferred_binding(
+                graph,
+                "mask",
+                lambda node: (
+                    "image"
+                    if node.get("class_type") == "LoadImageMask" and "image" in node["inputs"]
+                    else None
+                ),
+            )
+            if mask_binding is not None:
+                inferred["mask"] = mask_binding
+
+        latent_types = {
+            "EmptyLatentImage",
+            "EmptySD3LatentImage",
+            "EmptyLatentVideo",
+            "EmptyMochiLatentVideo",
+        }
+
+        def latent_input(name: str) -> Any:
+            return lambda node: (
+                name if node.get("class_type") in latent_types and name in node["inputs"] else None
+            )
+
+        if "size" in canonical_fields and missing("size"):
+            width = cls._unique_inferred_binding(graph, "size.width", latent_input("width"))
+            height = cls._unique_inferred_binding(graph, "size.height", latent_input("height"))
+            if width is not None and height is not None and width["node"] == height["node"]:
+                inferred["size"] = {"width": width, "height": height}
+        if "n" in canonical_fields and missing("n"):
+            n_binding = cls._unique_inferred_binding(graph, "n", latent_input("batch_size"))
+            if n_binding is not None:
+                inferred["n"] = n_binding
+        return inferred
 
     @staticmethod
     def _set(graph: dict[str, Any], binding: Mapping[str, str], value: Any, field: str) -> None:
@@ -996,9 +1200,11 @@ class ComfyUIProvider:
         provided_fields: set[str] | None = None,
     ) -> dict[str, Any]:
         result = copy.deepcopy(dict(graph))
-        bindings = self._bindings(model, operation)
+        bindings = dict(self._bindings(model, operation))
         uploaded = uploaded_inputs or {}
         fields = provided_fields if provided_fields is not None else set(params)
+        for field, binding in self._infer_bindings(result, bindings, fields).items():
+            bindings.setdefault(field, binding)
         for field in sorted(fields):
             if field in {"model", "response_format"}:
                 continue
@@ -1417,15 +1623,19 @@ class ComfyProviderService:
         if isinstance(self.repository, RouteConfigRepository) or hasattr(
             self.repository, "load_comfyui"
         ):
-            return dict(repository.load_comfyui())
+            return _with_default_source(repository.load_comfyui())
         if hasattr(self.repository, "load"):
             loaded = repository.load()
             if isinstance(loaded, Mapping) and isinstance(loaded.get("comfyui"), Mapping):
-                return dict(loaded["comfyui"])
+                return _with_default_source(loaded["comfyui"])
         if isinstance(self.repository, Mapping):
             section = self.repository.get("comfyui", self.repository)
-            return dict(section) if isinstance(section, Mapping) else {"sources": {}, "models": {}}
-        return {"sources": {}, "models": {}}
+            return (
+                _with_default_source(section)
+                if isinstance(section, Mapping)
+                else _with_default_source({})
+            )
+        return _with_default_source({})
 
     def save_settings(self, value: Mapping[str, Any]) -> dict[str, Any]:
         repository = cast(Any, self.repository)
@@ -1449,7 +1659,7 @@ class ComfyProviderService:
             # A plain mapping is useful in unit tests and embedded integrations;
             # mutate only its comfyui section and leave other providers untouched.
             self.repository["comfyui"] = dict(value)
-            return dict(value)
+            return _with_default_source(value)
         raise AppError(
             "comfyui_config_readonly",
             "ComfyUI конфигурация доступна только для чтения",
@@ -1467,6 +1677,9 @@ class ComfyProviderService:
             "cached": bool(after) and not available,
             "updated_at": read_at,
         }
+
+    async def source_status(self, source: str) -> dict[str, Any]:
+        return await self.provider.source_status(source)
 
     async def generate_image(
         self, request: Mapping[str, Any], *, request_id: str | None = None, url_prefix: str = "/v1"

@@ -49,6 +49,14 @@ class FakeComfy:
         }
         self.video_calls: list[dict[str, Any]] = []
         self.video_status_result: dict[str, Any] = {"id": "video_1", "status": "queued"}
+        self.source_status_result: dict[str, Any] = {
+            "source": "local",
+            "base_url": "http://127.0.0.1:8188",
+            "available": True,
+            "status": "ready",
+            "message": "ComfyUI доступен",
+            "checked_at": 1.0,
+        }
 
     def get_settings(self) -> dict[str, Any]:
         return copy.deepcopy(self.settings)
@@ -61,6 +69,10 @@ class FakeComfy:
     async def workflows(self, source: str) -> dict[str, Any]:
         self.workflow_source = source
         return copy.deepcopy(self.workflow_result)
+
+    async def source_status(self, source: str) -> dict[str, Any]:
+        self.source_status_source = source
+        return copy.deepcopy(self.source_status_result)
 
     async def create_video(self, payload: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
         self.video_calls.append({"payload": payload, **kwargs})
@@ -195,6 +207,16 @@ def test_workflow_endpoint_exposes_cached_offline_catalog() -> None:
     response = TestClient(app).get("/api/v1/proxy/comfyui/sources/local/workflows")
     assert response.status_code == 200
     assert response.json()["data"] == comfy.workflow_result
+
+
+def test_status_endpoint_returns_enveloped_backend_health() -> None:
+    comfy = FakeComfy({"sources": {}, "models": {}})
+    app = _management_app(_runtime(comfy))
+    response = TestClient(app).get("/api/v1/proxy/comfyui/sources/local/status")
+    assert response.status_code == 200
+    assert response.json()["data"]["available"] is True
+    assert response.json()["data"]["status"] == "ready"
+    assert comfy.source_status_source == "local"
 
 
 def test_models_do_not_advertise_unavailable_comfy_alias_and_internal_filter_is_preserved() -> None:

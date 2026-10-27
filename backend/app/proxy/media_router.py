@@ -179,6 +179,14 @@ async def workflows(request: Request, source: str, runtime: RuntimeDep) -> JSONR
     return success(request, await _service(runtime).workflows(source))
 
 
+@management_router.get("/comfyui/sources/{source}/workflows/validate")
+async def validate_workflow(request: Request, source: str, path: str, runtime: RuntimeDep) -> Any:
+    async def check() -> JSONResponse:
+        return success(request, await _service(runtime).validate_workflow(source, path))
+
+    return await _wire(check)
+
+
 @management_router.get("/comfyui/sources/{source}/status")
 async def source_status(request: Request, source: str, runtime: RuntimeDep) -> Any:
     async def check() -> JSONResponse:

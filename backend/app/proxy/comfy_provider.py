@@ -36,6 +36,9 @@ from .routes import (
 )
 
 logger = logging.getLogger(__name__)
+COMFYUI_WORKFLOW_EXPORT_MESSAGE = (
+    "Этот workflow сохранён для редактора ComfyUI. Выберите его API-экспорт."
+)
 
 
 def _with_default_source(section: Mapping[str, Any]) -> dict[str, Any]:
@@ -173,9 +176,10 @@ class ComfyUIClient:
             "GET", "/userdata", params={"dir": "workflows", "recurse": "true"}
         )
 
-    async def userdata_file(self, path: str) -> Any:
-        # ComfyUI's userdata endpoint accepts nested relative names.  quote()
-        # protects a filename while retaining its directory separators.
+    @staticmethod
+    def normalise_workflow_path(path: str) -> str:
+        """Return the only userdata path shape accepted by this provider."""
+
         normalized = path.strip("/").replace("\\", "/")
         if not normalized.startswith("workflows/") or ".." in normalized.split("/"):
             raise AppError(
@@ -183,6 +187,12 @@ class ComfyUIClient:
                 "Разрешено читать только файлы из каталога workflows",
                 status_code=400,
             )
+        return normalized
+
+    async def userdata_file(self, path: str) -> Any:
+        # ComfyUI's userdata endpoint accepts nested relative names.  quote()
+        # protects a filename while retaining its directory separators.
+        normalized = self.normalise_workflow_path(path)
         encoded = quote(normalized, safe="")
         return await self.json_request("GET", f"/userdata/{encoded}")
 
@@ -850,6 +860,62 @@ class ComfyUIProvider:
             "checked_at": checked_at,
         }
 
+    @staticmethod
+    def _is_api_graph(payload: Any) -> bool:
+        return (
+            isinstance(payload, Mapping)
+            and bool(payload)
+            and all(
+                isinstance(node, Mapping)
+                and isinstance(node.get("class_type"), str)
+                and isinstance(node.get("inputs"), Mapping)
+                for node in payload.values()
+            )
+        )
+
+    @classmethod
+    def _api_graph_payload(cls, payload: Any) -> Mapping[str, Any] | None:
+        if not isinstance(payload, Mapping):
+            return None
+        if cls._is_api_graph(payload):
+            return payload
+        # A few integrations wrap an API export in an explicit ``prompt``
+        # object.  Accept that shape only when the wrapped object itself is a
+        # valid API graph; never convert UI ``nodes``/``links`` data.
+        wrapped = payload.get("prompt")
+        return wrapped if cls._is_api_graph(wrapped) else None
+
+    async def validate_workflow(self, source: str, path: str) -> dict[str, Any]:
+        base_url, context = self._source(source)
+        client = ComfyUIClient(
+            base_url,
+            user_context=context,
+            client_factory=self.client_factory,
+            timeout=self.catalog_timeout,
+        )
+        normalized = client.normalise_workflow_path(path)
+        try:
+            payload = await client.userdata_file(normalized)
+        except ComfyUIUnavailable:
+            return {
+                "path": normalized,
+                "usable": None,
+                "message": "ComfyUI недоступен; workflow не проверен",
+            }
+        except AppError as exc:
+            return {
+                "path": normalized,
+                "usable": False,
+                "message": f"Не удалось прочитать workflow: {exc.message}",
+            }
+        if self._api_graph_payload(payload) is None:
+            return {
+                "path": normalized,
+                "usable": False,
+                "message": COMFYUI_WORKFLOW_EXPORT_MESSAGE,
+            }
+        return {"path": normalized, "usable": True}
+
     async def load_graph(self, alias: str, operation: str) -> dict[str, Any]:
         client, _source, model = self._client_for_model(alias)
         workflows = model.get("workflows")
@@ -864,29 +930,12 @@ class ComfyUIProvider:
         if not path.startswith("workflows/"):
             path = f"workflows/{path}"
         payload = await client.userdata_file(path)
-        if not isinstance(payload, Mapping):
+        graph_payload = self._api_graph_payload(payload)
+        if graph_payload is None:
             raise AppError(
-                "comfyui_workflow_invalid",
-                "Workflow должен быть API-format объектом",
-                status_code=502,
+                "comfyui_workflow_invalid", COMFYUI_WORKFLOW_EXPORT_MESSAGE, status_code=502
             )
-        # Some installations return a JSON document wrapper.  Accept only an
-        # explicit graph key; never infer nodes from arbitrary UI-format data.
-        if isinstance(payload.get("prompt"), Mapping) and not any(
-            isinstance(value, Mapping) and "class_type" in value for value in payload.values()
-        ):
-            payload = payload["prompt"]
-        graph = copy.deepcopy(dict(payload))
-        if not graph or not all(
-            isinstance(node, Mapping)
-            and isinstance(node.get("class_type"), str)
-            and isinstance(node.get("inputs"), Mapping)
-            for node in graph.values()
-        ):
-            raise AppError(
-                "comfyui_workflow_invalid", "Workflow должен быть API-format graph", status_code=502
-            )
-        return graph
+        return copy.deepcopy(dict(graph_payload))
 
     @staticmethod
     def _decode_input(value: Any, field: str) -> bytes:
@@ -968,6 +1017,80 @@ class ComfyUIProvider:
             )
         return candidates[0] if candidates else None
 
+    @staticmethod
+    def _qwen_prompt_binding(
+        graph: Mapping[str, Any], node_id: str, encoder: Mapping[str, Any]
+    ) -> dict[str, str] | None:
+        """Resolve the known Qwen edit prompt route without generic traversal.
+
+        The exported Qwen graph uses ``TextEncodeQwenImage21.prompt`` ->
+        ``PreviewAny.source`` -> ``ComfySwitchNode``.  The false branch is a
+        literal default prompt; the true branch is the known ``TextGenerate``
+        node.  Only these exact node types and inputs are accepted.
+        """
+
+        encoder_inputs = encoder.get("inputs")
+        if not isinstance(encoder_inputs, Mapping) or "prompt" not in encoder_inputs:
+            return None
+
+        def linked_node_id(value: Any) -> str | None:
+            if isinstance(value, (list, tuple)) and value and isinstance(value[0], (str, int)):
+                return str(value[0])
+            return None
+
+        def switch_binding(switch_id: str, switch: Mapping[str, Any]) -> dict[str, str] | None:
+            switch_inputs = switch.get("inputs")
+            if not isinstance(switch_inputs, Mapping):
+                return None
+            enabled = switch_inputs.get("switch")
+            if not isinstance(enabled, bool):
+                return None
+            if not enabled:
+                return (
+                    {"node": switch_id, "input": "on_false"}
+                    if isinstance(switch_inputs.get("on_false"), str)
+                    else None
+                )
+            true_id = linked_node_id(switch_inputs.get("on_true"))
+            true_node = graph.get(true_id) if true_id is not None else None
+            true_inputs = true_node.get("inputs") if isinstance(true_node, Mapping) else None
+            if (
+                isinstance(true_node, Mapping)
+                and true_node.get("class_type") == "TextGenerate"
+                and isinstance(true_inputs, Mapping)
+                and "prompt" in true_inputs
+                and true_id is not None
+            ):
+                return {"node": true_id, "input": "prompt"}
+            return None
+
+        prompt = encoder_inputs["prompt"]
+        if isinstance(prompt, str):
+            return {"node": node_id, "input": "prompt"}
+        switch_id = linked_node_id(prompt)
+        switch = graph.get(switch_id) if switch_id is not None else None
+        if (
+            switch_id is not None
+            and isinstance(switch, Mapping)
+            and switch.get("class_type") == "ComfySwitchNode"
+        ):
+            return switch_binding(switch_id, switch)
+        if isinstance(switch, Mapping) and switch.get("class_type") == "PreviewAny":
+            preview_inputs = switch.get("inputs")
+            upstream_id = (
+                linked_node_id(preview_inputs.get("source"))
+                if isinstance(preview_inputs, Mapping)
+                else None
+            )
+            upstream = graph.get(upstream_id) if upstream_id is not None else None
+            if (
+                upstream_id is not None
+                and isinstance(upstream, Mapping)
+                and upstream.get("class_type") == "ComfySwitchNode"
+            ):
+                return switch_binding(upstream_id, upstream)
+        return None
+
     @classmethod
     def _infer_bindings(
         cls,
@@ -989,57 +1112,79 @@ class ComfyUIProvider:
             )
 
         if "prompt" in canonical_fields and missing("prompt"):
-            prompt_types = {
-                "CLIPTextEncode",
-                "CLIPTextEncodeSDXL",
-                "CLIPTextEncodeSDXLRefiner",
-            }
-            prompt_candidates = {
+            qwen_types = {"TextEncodeQwenImage21"}
+            qwen_candidates = {
                 str(node_id): node
                 for node_id, node in graph.items()
-                if isinstance(node, Mapping)
-                and isinstance(node.get("inputs"), Mapping)
-                and node.get("class_type") in prompt_types
-                and "text" in node["inputs"]
+                if isinstance(node, Mapping) and node.get("class_type") in qwen_types
             }
-            positive_ids: set[str] = set()
-            negative_ids: set[str] = set()
-            for node in graph.values():
-                if not isinstance(node, Mapping) or not isinstance(node.get("inputs"), Mapping):
-                    continue
-                for role, ids in (("positive", positive_ids), ("negative", negative_ids)):
-                    link = node["inputs"].get(role)
-                    if (
-                        isinstance(link, (list, tuple))
-                        and link
-                        and str(link[0]) in prompt_candidates
-                    ):
-                        ids.add(str(link[0]))
-            prompt_binding: dict[str, str] | None
-            if len(positive_ids) == 1:
-                prompt_binding = {"node": next(iter(positive_ids)), "input": "text"}
-            elif len(positive_ids) > 1:
+            if len(qwen_candidates) > 1:
                 raise AppError(
                     "comfyui_binding_ambiguous",
                     "Невозможно однозначно определить binding для prompt",
                     status_code=400,
-                    details={"field": "prompt", "candidates": sorted(positive_ids)},
+                    details={"field": "prompt", "candidates": sorted(qwen_candidates)},
                 )
-            elif negative_ids:
-                # A negative encoder is never a safe prompt fallback.  The
-                # positive conditioner may be a custom node that we do not
-                # understand, so leave the parameter explicitly unsupported.
-                prompt_binding = None
+            if qwen_candidates:
+                qwen_id, qwen_node = next(iter(qwen_candidates.items()))
+                qwen_binding = cls._qwen_prompt_binding(graph, qwen_id, qwen_node)
+                if qwen_binding is None:
+                    raise cls._unsupported("prompt")
+                inferred["prompt"] = qwen_binding
             else:
-                prompt_binding = cls._unique_inferred_binding(
-                    graph,
-                    "prompt",
-                    lambda node: "text"
-                    if node.get("class_type") in prompt_types and "text" in node["inputs"]
-                    else None,
-                )
-            if prompt_binding is not None:
-                inferred["prompt"] = prompt_binding
+                prompt_types = {
+                    "CLIPTextEncode",
+                    "CLIPTextEncodeSDXL",
+                    "CLIPTextEncodeSDXLRefiner",
+                }
+                prompt_candidates = {
+                    str(node_id): node
+                    for node_id, node in graph.items()
+                    if isinstance(node, Mapping)
+                    and isinstance(node.get("inputs"), Mapping)
+                    and node.get("class_type") in prompt_types
+                    and "text" in node["inputs"]
+                }
+                positive_ids: set[str] = set()
+                negative_ids: set[str] = set()
+                for node in graph.values():
+                    if not isinstance(node, Mapping) or not isinstance(node.get("inputs"), Mapping):
+                        continue
+                    for role, ids in (("positive", positive_ids), ("negative", negative_ids)):
+                        link = node["inputs"].get(role)
+                        if (
+                            isinstance(link, (list, tuple))
+                            and link
+                            and str(link[0]) in prompt_candidates
+                        ):
+                            ids.add(str(link[0]))
+                prompt_binding: dict[str, str] | None
+                if len(positive_ids) == 1:
+                    prompt_binding = {"node": next(iter(positive_ids)), "input": "text"}
+                elif len(positive_ids) > 1:
+                    raise AppError(
+                        "comfyui_binding_ambiguous",
+                        "Невозможно однозначно определить binding для prompt",
+                        status_code=400,
+                        details={"field": "prompt", "candidates": sorted(positive_ids)},
+                    )
+                elif negative_ids:
+                    # A negative encoder is never a safe prompt fallback.  The
+                    # positive conditioner may be a custom node that we do not
+                    # understand, so leave the parameter explicitly unsupported.
+                    prompt_binding = None
+                else:
+                    prompt_binding = cls._unique_inferred_binding(
+                        graph,
+                        "prompt",
+                        lambda node: (
+                            "text"
+                            if node.get("class_type") in prompt_types and "text" in node["inputs"]
+                            else None
+                        ),
+                    )
+                if prompt_binding is not None:
+                    inferred["prompt"] = prompt_binding
 
         def load_image_input(node: Mapping[str, Any]) -> str | None:
             if node.get("class_type") == "LoadImage" and "image" in node["inputs"]:
@@ -1680,6 +1825,9 @@ class ComfyProviderService:
 
     async def source_status(self, source: str) -> dict[str, Any]:
         return await self.provider.source_status(source)
+
+    async def validate_workflow(self, source: str, path: str) -> dict[str, Any]:
+        return await self.provider.validate_workflow(source, path)
 
     async def generate_image(
         self, request: Mapping[str, Any], *, request_id: str | None = None, url_prefix: str = "/v1"

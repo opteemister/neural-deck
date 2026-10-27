@@ -57,6 +57,10 @@ class FakeComfy:
             "message": "ComfyUI доступен",
             "checked_at": 1.0,
         }
+        self.validation_result: dict[str, Any] = {
+            "path": "workflows/generate.json",
+            "usable": True,
+        }
 
     def get_settings(self) -> dict[str, Any]:
         return copy.deepcopy(self.settings)
@@ -73,6 +77,11 @@ class FakeComfy:
     async def source_status(self, source: str) -> dict[str, Any]:
         self.source_status_source = source
         return copy.deepcopy(self.source_status_result)
+
+    async def validate_workflow(self, source: str, path: str) -> dict[str, Any]:
+        self.validation_source = source
+        self.validation_path = path
+        return copy.deepcopy(self.validation_result)
 
     async def create_video(self, payload: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
         self.video_calls.append({"payload": payload, **kwargs})
@@ -217,6 +226,19 @@ def test_status_endpoint_returns_enveloped_backend_health() -> None:
     assert response.json()["data"]["available"] is True
     assert response.json()["data"]["status"] == "ready"
     assert comfy.source_status_source == "local"
+
+
+def test_validate_workflow_endpoint_returns_enveloped_result() -> None:
+    comfy = FakeComfy({"sources": {}, "models": {}})
+    app = _management_app(_runtime(comfy))
+    response = TestClient(app).get(
+        "/api/v1/proxy/comfyui/sources/local/workflows/validate",
+        params={"path": "workflows/generate.json"},
+    )
+    assert response.status_code == 200
+    assert response.json()["data"] == comfy.validation_result
+    assert comfy.validation_source == "local"
+    assert comfy.validation_path == "workflows/generate.json"
 
 
 def test_models_do_not_advertise_unavailable_comfy_alias_and_internal_filter_is_preserved() -> None:

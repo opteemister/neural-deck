@@ -7,7 +7,7 @@ import type { ComfyConfig } from '@/lib/comfy-api'
 import { ProxyPage } from '@/pages/proxy'
 
 const initialConfig: ComfyConfig = {
-  sources: { local: { base_url: 'http://local-comfy', user_context: 'deck-user' } },
+  sources: { local: { base_url: 'http://local-comfy:8188/comfy/root', user_context: 'deck-user' } },
   models: {
     cached: {
       source: 'local', type: 'image',
@@ -25,7 +25,9 @@ function renderProxy() {
   return render(<QueryClientProvider client={client}><MemoryRouter><ProxyPage /></MemoryRouter></QueryClientProvider>)
 }
 
-function mockProxy(config: ComfyConfig = initialConfig) {
+type WorkflowValidation = { usable: boolean | null; message?: string }
+
+function mockProxy(config: ComfyConfig = initialConfig, validation: WorkflowValidation = { usable: null }) {
   vi.spyOn(api, 'getProxyRoutes').mockResolvedValue({ items: [] })
   vi.spyOn(api, 'getProfiles').mockResolvedValue({ items: [], issues: [] })
   const puts: unknown[] = []
@@ -39,6 +41,10 @@ function mockProxy(config: ComfyConfig = initialConfig) {
     }
     if (url === '/api/v1/proxy/comfyui') return new Response(JSON.stringify({ data: current }), { status: 200 })
     if (url.includes('/sources/') && url.endsWith('/status')) return new Response(JSON.stringify({ data: { available: false, cached: true, updated_at: 1 } }), { status: 200 })
+    if (url.includes('/sources/') && url.includes('/workflows/validate?path=')) {
+      const path = decodeURIComponent(url.split('?path=')[1] ?? '')
+      return new Response(JSON.stringify({ data: { path, usable: validation.usable, ...(validation.message ? { message: validation.message } : {}) } }), { status: 200 })
+    }
     if (url.includes('/sources/') && url.endsWith('/workflows')) return new Response(JSON.stringify({ data: { items: [], available: false, cached: true, updated_at: 1 } }), { status: 200 })
     return new Response(JSON.stringify({ error: { message: `unexpected ${url}` } }), { status: 404 })
   })
@@ -66,6 +72,10 @@ describe('proxy ComfyUI provider configuration', () => {
     expect(screen.queryByLabelText('URL источника local')).not.toBeInTheDocument()
     expect(screen.queryByLabelText('Поиск workflow generate')).not.toBeInTheDocument()
     expect(screen.queryByText('Входы API')).not.toBeInTheDocument()
+    expect(screen.queryByText('Generate')).not.toBeInTheDocument()
+    expect(screen.queryByText('Edit')).not.toBeInTheDocument()
+    expect(screen.queryByText('Mask')).not.toBeInTheDocument()
+    expect(screen.queryByText('Variations')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Сохранить' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Изменить подключение local' })).toBeInTheDocument()
     expect(screen.getByText('cached')).toBeInTheDocument()
@@ -93,6 +103,27 @@ describe('proxy ComfyUI provider configuration', () => {
     expect(saved.models.cached.workflows.generate).toBe('workflows/cached.json')
   })
 
+  it('edits a connection as one full URL without losing its path or legacy user context', async () => {
+    const { puts } = mockProxy()
+    renderProxy()
+    await openMediaTab('Изображения')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Изменить подключение local' }))
+    let dialog = screen.getByRole('dialog')
+    expect(within(dialog).getByRole('heading', { name: 'Изменить подключение' })).toBeInTheDocument()
+    expect(within(dialog).getByLabelText('URL')).toHaveValue('http://local-comfy:8188/comfy/root')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Отмена' }))
+    expect(puts).toHaveLength(0)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Изменить подключение local' }))
+    dialog = screen.getByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Сохранить' }))
+    await waitFor(() => expect(puts).toHaveLength(1))
+    const saved = latestPut(puts)
+    expect(saved.sources.local.base_url).toBe('http://local-comfy:8188/comfy/root')
+    expect(saved.sources.local.user_context).toBe('deck-user')
+  })
+
   it('adds a connection in a modal, then selects it in a new alias and fetches its workflow catalog', async () => {
     const config: ComfyConfig = { sources: { local: { base_url: 'http://local-comfy' } }, models: { existing: { source: 'local', type: 'image', workflows: {}, bindings: { generate: { prompt: { node: '6', input: 'text' } } } } } }
     const { fetchMock, puts } = mockProxy(config)
@@ -104,6 +135,10 @@ describe('proxy ComfyUI provider configuration', () => {
         return new Response(JSON.stringify({ data: body }), { status: 200 })
       }
       if (url === '/api/v1/proxy/comfyui') return new Response(JSON.stringify({ data: config }), { status: 200 })
+      if (url.includes('/sources/') && url.includes('/workflows/validate?path=')) {
+        const path = decodeURIComponent(url.split('?path=')[1] ?? '')
+        return new Response(JSON.stringify({ data: { path, usable: null } }), { status: 200 })
+      }
       if (url.endsWith('/sources/remote/workflows')) return new Response(JSON.stringify({ data: { items: ['workflows/remote.json'], available: true, cached: false, updated_at: 2 } }), { status: 200 })
       if (url.includes('/sources/') && url.endsWith('/workflows')) return new Response(JSON.stringify({ data: { items: [], available: false, cached: true, updated_at: 1 } }), { status: 200 })
       if (url.includes('/sources/') && url.endsWith('/status')) return new Response(JSON.stringify({ data: { available: true, cached: false, updated_at: 2 } }), { status: 200 })
@@ -116,13 +151,11 @@ describe('proxy ComfyUI provider configuration', () => {
     const sourceDialog = screen.getByRole('dialog')
     expect(within(sourceDialog).getByRole('heading', { name: 'Новое подключение' })).toBeInTheDocument()
     fireEvent.change(within(sourceDialog).getByLabelText('Имя'), { target: { value: 'remote' } })
-    fireEvent.change(within(sourceDialog).getByLabelText('URL'), { target: { value: 'http://remote-comfy' } })
-    fireEvent.change(within(sourceDialog).getByLabelText('Порт'), { target: { value: '8188' } })
+    fireEvent.change(within(sourceDialog).getByLabelText('URL'), { target: { value: 'http://remote-comfy:8188' } })
     fireEvent.click(within(sourceDialog).getByRole('button', { name: 'Добавить подключение' }))
     await waitFor(() => expect(puts).toHaveLength(1))
     const sourceSaved = latestPut(puts)
-    expect(sourceSaved.sources.remote.base_url).toContain('remote-comfy')
-    expect(sourceSaved.sources.remote.base_url).toContain('8188')
+    expect(sourceSaved.sources.remote.base_url).toBe('http://remote-comfy:8188')
 
     fireEvent.click(screen.getByRole('button', { name: 'Новый алиас' }))
     const aliasDialog = screen.getByRole('dialog')
@@ -158,5 +191,46 @@ describe('proxy ComfyUI provider configuration', () => {
     expect(within(dialog).queryByText('Входы API')).not.toBeInTheDocument()
     fireEvent.click(within(dialog).getByRole('button', { name: 'Отмена' }))
     expect(puts).toHaveLength(0)
+  })
+
+  it('blocks an unusable workflow graph and keeps the alias draft open', async () => {
+    const { fetchMock, puts } = mockProxy(initialConfig, { usable: false, message: 'Граф не содержит API-входы' })
+    renderProxy()
+    await openMediaTab('Изображения')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Изменить алиас cached' }))
+    const dialog = screen.getByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Сохранить' }))
+
+    await waitFor(() => expect(fetchMock.mock.calls.some(([input]) => String(input).includes('/sources/local/workflows/validate?path='))).toBe(true))
+    expect(puts).toHaveLength(0)
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect((screen.getByRole('dialog').querySelector('select[aria-label="Workflow generate"]') as HTMLSelectElement).value).toBe('workflows/cached.json')
+    expect(await screen.findByRole('alert')).toHaveTextContent(/Generate: Граф не содержит API-входы/)
+  })
+
+  it('allows an offline usable-null validation and preserves legacy bindings', async () => {
+    const config: ComfyConfig = {
+      sources: { local: { base_url: 'http://local-comfy:8188/offline', user_context: 'legacy' } },
+      models: {
+        offline: {
+          source: 'local', type: 'image', workflows: { generate: 'workflows/cached.json' },
+          bindings: { generate: { prompt: { node: '6', input: 'text' } } },
+        },
+      },
+    }
+    const { fetchMock, puts } = mockProxy(config, { usable: null })
+    renderProxy()
+    await openMediaTab('Изображения')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Изменить алиас offline' }))
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Сохранить' }))
+    await waitFor(() => expect(puts).toHaveLength(1))
+
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes('/sources/local/workflows/validate?path='))).toBe(true)
+    const saved = latestPut(puts)
+    expect(saved.sources.local.user_context).toBe('legacy')
+    expect(saved.models.offline.bindings?.generate?.prompt).toEqual({ node: '6', input: 'text' })
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 })

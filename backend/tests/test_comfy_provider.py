@@ -138,9 +138,7 @@ def test_virtual_local_source_is_visible_without_being_persisted(tmp_path: Path)
 
     repository.save_comfyui(
         {
-            "sources": {
-                "local": {"base_url": "http://custom.test:8188", "user_context": "deck"}
-            },
+            "sources": {"local": {"base_url": "http://custom.test:8188", "user_context": "deck"}},
             "models": {},
         }
     )
@@ -317,6 +315,140 @@ def test_unique_standard_nodes_are_inferred_without_graph_search_heuristics() ->
     assert patched["4"]["inputs"] == {"width": 768, "height": 640, "batch_size": 2}
 
 
+def _qwen_edit_graph(*, switch: bool = False) -> dict[str, dict[str, object]]:
+    return {
+        "459:474": {
+            "class_type": "TextEncodeQwenImage21",
+            "inputs": {"prompt": ["459:480", 0], "negative_prompt": "", "resolution": 0},
+        },
+        "459:480": {"class_type": "PreviewAny", "inputs": {"source": ["459:484", 0]}},
+        "459:484": {
+            "class_type": "ComfySwitchNode",
+            "inputs": {
+                "switch": switch,
+                "on_false": "default edit prompt",
+                "on_true": ["459:500", 0],
+            },
+        },
+        "459:500": {
+            "class_type": "TextGenerate",
+            "inputs": {"prompt": "generated default", "system_prompt": "system"},
+        },
+    }
+
+
+def test_qwen_edit_prompt_binding_uses_switch_literal_or_text_generate() -> None:
+    provider = ComfyUIProvider(
+        {
+            "sources": {"main": {"base_url": "http://comfy.test:8188"}},
+            "models": {
+                "qwen": {
+                    "source": "main",
+                    "type": "image",
+                    "workflows": {"edit": "workflows/edit.json"},
+                }
+            },
+        }
+    )
+    false_graph = _qwen_edit_graph()
+    false_patched = provider.patch_graph(
+        false_graph,
+        provider._model("qwen"),
+        "edit",
+        {"prompt": "new edit"},
+        provided_fields={"prompt"},
+    )
+    assert false_patched["459:484"]["inputs"]["on_false"] == "new edit"
+    assert false_patched["459:500"]["inputs"]["prompt"] == "generated default"
+
+    true_graph = _qwen_edit_graph(switch=True)
+    true_patched = provider.patch_graph(
+        true_graph,
+        provider._model("qwen"),
+        "edit",
+        {"prompt": "new edit"},
+        provided_fields={"prompt"},
+    )
+    assert true_patched["459:500"]["inputs"]["prompt"] == "new edit"
+    assert true_patched["459:484"]["inputs"]["on_false"] == "default edit prompt"
+
+
+def test_qwen_edit_prompt_does_not_skip_image_size_or_batch_bindings() -> None:
+    provider = ComfyUIProvider(
+        {
+            "sources": {"main": {"base_url": "http://comfy.test:8188"}},
+            "models": {
+                "qwen": {
+                    "source": "main",
+                    "type": "image",
+                    "workflows": {"edit": "workflows/edit.json"},
+                }
+            },
+        }
+    )
+    graph = _qwen_edit_graph()
+    graph.update(
+        {
+            "470": {"class_type": "LoadImage", "inputs": {"image": "old.png"}},
+            "459:456": {
+                "class_type": "EmptyLatentImage",
+                "inputs": {"width": 1024, "height": 1024, "batch_size": 1},
+            },
+        }
+    )
+    patched = provider.patch_graph(
+        graph,
+        provider._model("qwen"),
+        "edit",
+        {"prompt": "new edit", "image": b"ignored", "size": "768x640", "n": 2},
+        uploaded_inputs={"image": "uploaded.png"},
+        provided_fields={"prompt", "image", "size", "n"},
+    )
+    assert patched["459:484"]["inputs"]["on_false"] == "new edit"
+    assert patched["470"]["inputs"]["image"] == "uploaded.png"
+    assert patched["459:456"]["inputs"] == {"width": 768, "height": 640, "batch_size": 2}
+
+
+def test_qwen_edit_prompt_literal_binding_and_ambiguity_are_explicit() -> None:
+    provider = ComfyUIProvider(
+        {
+            "sources": {"main": {"base_url": "http://comfy.test:8188"}},
+            "models": {
+                "qwen": {
+                    "source": "main",
+                    "type": "image",
+                    "workflows": {"edit": "workflows/edit.json"},
+                }
+            },
+        }
+    )
+    graph = {
+        "1": {"class_type": "TextEncodeQwenImage21", "inputs": {"prompt": "default"}},
+    }
+    patched = provider.patch_graph(
+        graph,
+        provider._model("qwen"),
+        "edit",
+        {"prompt": "literal"},
+        provided_fields={"prompt"},
+    )
+    assert patched["1"]["inputs"]["prompt"] == "literal"
+
+    ambiguous = {
+        "1": {"class_type": "TextEncodeQwenImage21", "inputs": {"prompt": "one"}},
+        "2": {"class_type": "TextEncodeQwenImage21", "inputs": {"prompt": "two"}},
+    }
+    with pytest.raises(AppError) as error:
+        provider.patch_graph(
+            ambiguous,
+            provider._model("qwen"),
+            "edit",
+            {"prompt": "ambiguous"},
+            provided_fields={"prompt"},
+        )
+    assert error.value.code == "comfyui_binding_ambiguous"
+
+
 def test_ambiguous_inferred_prompt_requires_explicit_legacy_binding() -> None:
     provider = ComfyUIProvider(
         {
@@ -465,6 +597,81 @@ async def test_provider_facade_workflow_shape_and_user_header(tmp_path: Path) ->
     assert graph["6"]["class_type"] == "Text"
     assert requests[0].headers["Comfy-User"] == "alice"
     await service.close()
+
+
+@pytest.mark.asyncio
+async def test_ui_workflow_returns_actionable_api_export_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/userdata/workflows/generate.json"
+        return httpx.Response(
+            200,
+            json={
+                "nodes": [{"id": 6, "type": "CLIPTextEncode", "widgets_values": ["text"]}],
+                "links": [],
+            },
+        )
+
+    provider = ComfyUIProvider(
+        comfy_config(),
+        client_factory=lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    with pytest.raises(AppError) as error:
+        await provider.load_graph("qwen-image", "generate")
+    assert error.value.code == "comfyui_workflow_invalid"
+    assert error.value.status_code == 502
+    assert error.value.message == (
+        "Этот workflow сохранён для редактора ComfyUI. Выберите его API-экспорт."
+    )
+
+
+@pytest.mark.asyncio
+async def test_validate_workflow_distinguishes_api_ui_missing_and_offline() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("api.json"):
+            return httpx.Response(
+                200,
+                json={"6": {"class_type": "CLIPTextEncode", "inputs": {"text": "ok"}}},
+            )
+        if request.url.path.endswith("ui.json"):
+            return httpx.Response(200, json={"nodes": [], "links": []})
+        return httpx.Response(404, json={"error": "not found"})
+
+    provider = ComfyUIProvider(
+        comfy_config(),
+        client_factory=lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    assert await provider.validate_workflow("main", "workflows/api.json") == {
+        "path": "workflows/api.json",
+        "usable": True,
+    }
+    ui_result = await provider.validate_workflow("main", "workflows/ui.json")
+    assert ui_result["path"] == "workflows/ui.json"
+    assert ui_result["usable"] is False
+    assert "API-экспорт" in ui_result["message"]
+    missing_result = await provider.validate_workflow("main", "workflows/missing.json")
+    assert missing_result["usable"] is False
+    assert "прочитать" in missing_result["message"]
+
+    offline = ComfyUIProvider(
+        comfy_config(),
+        client_factory=lambda: httpx.AsyncClient(
+            transport=httpx.MockTransport(
+                lambda request: (_ for _ in ()).throw(
+                    httpx.ConnectError("offline", request=request)
+                )
+            )
+        ),
+    )
+    offline_result = await offline.validate_workflow("main", "workflows/api.json")
+    assert offline_result == {
+        "path": "workflows/api.json",
+        "usable": None,
+        "message": "ComfyUI недоступен; workflow не проверен",
+    }
+
+    with pytest.raises(AppError) as unknown:
+        await provider.validate_workflow("unknown", "workflows/api.json")
+    assert unknown.value.status_code == 404
 
 
 @pytest.mark.asyncio

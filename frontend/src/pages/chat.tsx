@@ -65,6 +65,7 @@ function CopyAnswer({ content }: { content: string }) {
 }
 
 function ResponseStats({ turn }: { turn: Turn }) {
+  if (turn.operation !== 'text' && turn.operation !== 'vision') return <div className="text-[11px] tabular-nums text-muted-foreground" aria-label="Статистика ответа">Всего {seconds(turn.elapsed)}{turn.state === 'cancelled' ? ' · Генерация прервана' : ''}</div>
   const input = turn.usage?.prompt_tokens ?? turn.timings?.prompt_n
   const output = turn.usage?.completion_tokens ?? turn.timings?.predicted_n
   const measuredSpeed = turn.timings?.predicted_per_second

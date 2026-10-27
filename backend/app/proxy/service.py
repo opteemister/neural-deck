@@ -619,7 +619,7 @@ class ProxyService:
                     raise AppError("unsupported_operation", "Модель не поддерживает эту операцию",
                                    status_code=400, details={"model": model_name, "route": route})
                 available = [candidate for candidate in matching if candidate.available]
-                if route in {"/v1/embeddings", "/v1/embeddings/media"}:
+                if route in {"/v1/embeddings", "/v1/embeddings/media", "/v2/embed"}:
                     await self._validate_embedding_route(matching)
                 if route_info.diagnostics or not available:
                     await self._journal_without_target(
@@ -787,6 +787,10 @@ class ProxyService:
             return httpx.Response(200, json=result)
         if route == "/v1/decisions":
             _, upstream_payload, decision_mappings = build_jev_request(payload)
+        elif route == "/v1/systemone":
+            # ``model`` selects the Neural Deck route.  Native Jev/System One
+            # receives its state and named questions, not the public model ID.
+            upstream_payload.pop("model", None)
         target = upstream_url(instance, route)
         outgoing_headers = {
             key: value
@@ -812,7 +816,13 @@ class ProxyService:
             if self.client_factory is not None
             else httpx.AsyncClient(timeout=self.timeout)
         )
-        if route in {"/v1/audio/speech", "/v1/audio/transcriptions"}:
+        if route in {
+            "/v1/audio/speech",
+            "/v1/audio/transcriptions",
+            "/v1/audio/translations",
+            "/v1/images/edits",
+            "/v1/images/variations",
+        }:
             data = dict(multipart_data or {})
             if multipart_files is not None:
                 data["model"] = upstream_model
@@ -835,7 +845,7 @@ class ProxyService:
             )
         decision_lock = (
             self._decision_lock_for(instance, registered)
-            if route == "/v1/decisions"
+            if route in {"/v1/decisions", "/v1/systemone"}
             else None
         )
         if decision_lock is not None:
@@ -973,7 +983,7 @@ class ProxyService:
                                 registered=registered, status_code=502, started=started,
                                 input_tokens=None, output_tokens=None, stream=True,
                                 error_code="upstream_unavailable")
-            raise AppError("upstream_unavailable", "Audio upstream недоступен", status_code=502,
+            raise AppError("upstream_unavailable", "Media upstream недоступен", status_code=502,
                            retryable=_safe_to_retry(exc)) from exc
 
         async def body() -> AsyncIterator[bytes]:

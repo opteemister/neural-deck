@@ -10,6 +10,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import yaml  # type: ignore[import-untyped]
 
@@ -150,7 +151,12 @@ class RouteConfigRepository:
 
     @staticmethod
     def _empty() -> dict[str, Any]:
-        return {"schema_version": 1, "auto_routes": {}, "aliases": {}}
+        return {
+            "schema_version": 1,
+            "auto_routes": {},
+            "aliases": {},
+            "comfyui": {"sources": {}, "models": {}},
+        }
 
     @classmethod
     def _normalise(cls, raw: Mapping[str, Any]) -> dict[str, Any]:
@@ -175,7 +181,260 @@ class RouteConfigRepository:
                 str(name): cls._profile_list(value_item, key, str(name))
                 for name, value_item in value.items()
             }
+        result["comfyui"] = cls._comfyui(raw.get("comfyui", {}))
         return result
+
+    def load_comfyui(self) -> dict[str, Any]:
+        """Return the validated ComfyUI section of the route configuration."""
+
+        value = self.load().get("comfyui", {})
+        return dict(value) if isinstance(value, Mapping) else {"sources": {}, "models": {}}
+
+    @classmethod
+    def validate_comfyui(cls, value: Mapping[str, Any]) -> dict[str, Any]:
+        """Validate a ComfyUI section without reading or writing a file."""
+
+        return cls._comfyui(value)
+
+    def save_comfyui(self, value: Mapping[str, Any]) -> None:
+        """Validate and persist only the ComfyUI section.
+
+        The rest of ``proxy-routes.yaml`` is loaded and written unchanged so
+        callers editing the provider settings cannot accidentally replace text
+        aliases or auto-route order.
+        """
+
+        config = self.load()
+        config["comfyui"] = self._comfyui(value)
+        self.save(config)
+
+    @classmethod
+    def _comfyui(cls, value: Any) -> dict[str, Any]:
+        if value is None:
+            value = {}
+        if not isinstance(value, Mapping):
+            raise AppError(
+                "route_config_invalid",
+                "comfyui конфигурации маршрутов должен быть объектом",
+                status_code=422,
+            )
+
+        sources_value = value.get("sources", {})
+        models_value = value.get("models", {})
+        if not isinstance(sources_value, Mapping):
+            raise AppError(
+                "route_config_invalid",
+                "comfyui.sources должен быть объектом",
+                status_code=422,
+            )
+        if not isinstance(models_value, Mapping):
+            raise AppError(
+                "route_config_invalid",
+                "comfyui.models должен быть объектом",
+                status_code=422,
+            )
+
+        sources: dict[str, dict[str, Any]] = {}
+        for raw_name, raw_source in sources_value.items():
+            name = str(raw_name)
+            if not ALIAS_NAME_RE.fullmatch(name):
+                raise AppError(
+                    "route_config_invalid",
+                    f"Недопустимое имя ComfyUI source: {name}",
+                    status_code=422,
+                    details={"field": f"comfyui.sources.{name}"},
+                )
+            if not isinstance(raw_source, Mapping):
+                raise AppError(
+                    "route_config_invalid",
+                    f"comfyui.sources.{name} должен быть объектом",
+                    status_code=422,
+                )
+            base_url = raw_source.get("base_url")
+            if not isinstance(base_url, str) or not base_url.strip():
+                raise AppError(
+                    "route_config_invalid",
+                    f"comfyui.sources.{name}.base_url должен быть непустым URL",
+                    status_code=422,
+                )
+            parsed = urlparse(base_url.strip())
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                raise AppError(
+                    "route_config_invalid",
+                    f"comfyui.sources.{name}.base_url должен начинаться с http:// или https://",
+                    status_code=422,
+                )
+            source: dict[str, Any] = {"base_url": base_url.strip().rstrip("/")}
+            # A caller may supply a stable user/context key for installations
+            # where the same ComfyUI URL serves more than one user namespace.
+            if "user_context" in raw_source:
+                context = raw_source["user_context"]
+                if not isinstance(context, (str, int, float, bool)):
+                    raise AppError(
+                        "route_config_invalid",
+                        f"comfyui.sources.{name}.user_context должен быть скаляром",
+                        status_code=422,
+                    )
+                source["user_context"] = str(context)
+            sources[name] = source
+
+        models: dict[str, dict[str, Any]] = {}
+        for raw_alias, raw_model in models_value.items():
+            alias = str(raw_alias)
+            if not ALIAS_NAME_RE.fullmatch(alias):
+                raise AppError(
+                    "route_config_invalid",
+                    f"Недопустимое имя ComfyUI model alias: {alias}",
+                    status_code=422,
+                )
+            if not isinstance(raw_model, Mapping):
+                raise AppError(
+                    "route_config_invalid",
+                    f"comfyui.models.{alias} должен быть объектом",
+                    status_code=422,
+                )
+            source_name = raw_model.get("source")
+            if not isinstance(source_name, str) or not source_name:
+                raise AppError(
+                    "route_config_invalid",
+                    f"comfyui.models.{alias}.source должен быть именем source",
+                    status_code=422,
+                )
+            if source_name not in sources:
+                raise AppError(
+                    "route_config_invalid",
+                    f"comfyui.models.{alias}.source не найден: {source_name}",
+                    status_code=422,
+                )
+            model_type = raw_model.get("type")
+            if model_type not in {"image", "video"}:
+                raise AppError(
+                    "route_config_invalid",
+                    f"comfyui.models.{alias}.type должен быть image или video",
+                    status_code=422,
+                )
+            workflows_value = raw_model.get("workflows", {})
+            if not isinstance(workflows_value, Mapping):
+                raise AppError(
+                    "route_config_invalid",
+                    f"comfyui.models.{alias}.workflows должен быть объектом",
+                    status_code=422,
+                )
+            workflows: dict[str, str] = {}
+            for operation, raw_path in workflows_value.items():
+                operation_name = str(operation)
+                if operation_name not in {"generate", "edit", "edit_masked", "variations"}:
+                    raise AppError(
+                        "route_config_invalid",
+                        f"comfyui.models.{alias}.workflows: "
+                        f"неизвестная операция {operation_name}",
+                        status_code=422,
+                    )
+                if not isinstance(raw_path, str) or not raw_path.strip():
+                    raise AppError(
+                        "route_config_invalid",
+                        f"comfyui.models.{alias}.workflows.{operation_name} должен быть путём",
+                        status_code=422,
+                    )
+                workflow_path = raw_path.strip().replace("\\", "/")
+                if workflow_path.startswith("/") or ".." in workflow_path.split("/"):
+                    raise AppError(
+                        "route_config_invalid",
+                        f"comfyui.models.{alias}.workflows.{operation_name}: "
+                        "требуется относительный путь",
+                        status_code=422,
+                    )
+                workflows[operation_name] = workflow_path
+
+            model: dict[str, Any] = {
+                "source": source_name,
+                "type": model_type,
+                "workflows": workflows,
+            }
+            if "bindings" in raw_model:
+                model["bindings"] = cls._comfy_bindings(raw_model["bindings"], alias)
+            models[alias] = model
+
+        return {"sources": sources, "models": models}
+
+    @staticmethod
+    def _comfy_bindings(value: Any, alias: str) -> dict[str, Any]:
+        """Validate the deliberately small ``{node, input}`` binding shape.
+
+        Bindings may be supplied per operation (``bindings.generate.prompt``)
+        or as a mapping shared by all operations.  The provider resolves the
+        operation-specific map first.  Lists are accepted as a compact
+        ``[node, input]`` spelling but no expressions or node discovery are
+        performed.
+        """
+
+        if not isinstance(value, Mapping):
+            raise AppError(
+                "route_config_invalid",
+                f"comfyui.models.{alias}.bindings должен быть объектом",
+                status_code=422,
+            )
+        result: dict[str, Any] = {}
+        operations = {"generate", "edit", "edit_masked", "variations"}
+        for key, item in value.items():
+            key = str(key)
+            # Operation maps are one level deeper; field maps are validated by
+            # the same helper below.
+            if key in operations:
+                result[key] = RouteConfigRepository._comfy_binding_map(item, alias, key)
+            else:
+                result[key] = RouteConfigRepository._comfy_binding(item, alias, key)
+        return result
+
+    @staticmethod
+    def _comfy_binding_map(value: Any, alias: str, operation: str) -> dict[str, Any]:
+        if not isinstance(value, Mapping):
+            raise AppError(
+                "route_config_invalid",
+                f"comfyui.models.{alias}.bindings.{operation} должен быть объектом",
+                status_code=422,
+            )
+        return {
+            str(field): RouteConfigRepository._comfy_binding(item, alias, str(field))
+            for field, item in value.items()
+        }
+
+    @staticmethod
+    def _comfy_binding(value: Any, alias: str, field: str) -> dict[str, Any]:
+        if isinstance(value, (list, tuple)) and len(value) == 2:
+            value = {"node": value[0], "input": value[1]}
+        if not isinstance(value, Mapping):
+            raise AppError(
+                "route_config_invalid",
+                f"comfyui.models.{alias}.bindings.{field} должен иметь node и input",
+                status_code=422,
+            )
+        node = value.get("node")
+        input_name = value.get("input")
+        if node is None and input_name is None:
+            if not value:
+                raise AppError(
+                    "route_config_invalid",
+                    f"comfyui.models.{alias}.bindings.{field} не может быть пустым",
+                    status_code=422,
+                )
+            return {
+                str(key): RouteConfigRepository._comfy_binding(item, alias, f"{field}.{key}")
+                for key, item in value.items()
+            }
+        if not isinstance(node, (str, int)) or not str(node):
+            raise AppError(
+                "route_config_invalid",
+                f"comfyui.models.{alias}.bindings.{field}.node должен быть строкой/числом",
+                status_code=422,
+            )
+        if not isinstance(input_name, str) or not input_name.strip():
+            raise AppError(
+                "route_config_invalid",
+                f"comfyui.models.{alias}.bindings.{field}.input должен быть непустой строкой",
+                status_code=422,
+            )
+        return {"node": str(node), "input": input_name.strip()}
 
     @staticmethod
     def _profile_list(value: Any, section: str, name: str) -> list[str]:
@@ -383,6 +642,13 @@ class RouteManager:
             raise AppError(
                 "route_conflict",
                 "Ручной алиас с таким именем уже существует",
+                status_code=409,
+                details={"name": name},
+            )
+        if name in config.get("comfyui", {}).get("models", {}):
+            raise AppError(
+                "route_conflict",
+                "Имя уже занято ComfyUI-моделью",
                 status_code=409,
                 details={"name": name},
             )

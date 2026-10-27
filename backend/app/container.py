@@ -31,6 +31,7 @@ from .token_stats import RequestJournalService
 if TYPE_CHECKING:
     from .image.service import ImageGenerationService
     from .metrics.service import MetricsService
+    from .proxy.comfy_provider import ComfyProviderService
     from .proxy.service import ProxyService
     from .statistics import StatisticsService
 
@@ -73,6 +74,7 @@ class AppContainer:
     image_service: ImageGenerationService
     metrics_service: MetricsService
     statistics_service: StatisticsService
+    comfy_service: ComfyProviderService | None = None
     external_discovery: ExternalDiscovery = discover_external
     diagnostics: list[RuntimeDiagnostic] = field(default_factory=list)
     mcp_server: Any | None = None
@@ -140,6 +142,8 @@ class AppContainer:
             await self.metrics_service.close()
             await self.proxy_service.close()
             await self.image_service.close()
+            if self.comfy_service is not None:
+                await self.comfy_service.close()
             await self.process_manager.close()
         finally:
             try:

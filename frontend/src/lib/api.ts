@@ -124,7 +124,7 @@ export type ChatStreamChunk = { content: string; done: boolean; reasoning?: stri
 
 /** Read the standard OpenAI SSE response and the JSON fallback used by small servers. */
 export async function streamChat(
-  body: { model: string; messages: Array<{ role: 'user' | 'assistant'; content: string }>; stream?: boolean; reasoning_effort?: string; chat_template_kwargs?: { enable_thinking?: boolean; reasoning_effort?: string } },
+  body: { model: string; messages: Array<{ role: 'user' | 'assistant'; content: string | Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }> }>; stream?: boolean; reasoning_effort?: string; chat_template_kwargs?: { enable_thinking?: boolean; reasoning_effort?: string } },
   onChunk: (chunk: ChatStreamChunk) => void,
   signal?: AbortSignal,
 ): Promise<void> {

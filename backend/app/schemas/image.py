@@ -18,9 +18,13 @@ class ImageGenerationRequest(BaseModel):
     seed: StrictInt | None = None
     steps: StrictInt = Field(default=25, ge=1, le=100)
     transparent: StrictBool = False
-    # Base64/data URL input is deliberately supported in JSON first. Multipart
-    # editing can be added without changing the profile or workflow contract.
+    quality: Literal["auto", "low", "medium", "high"] | None = None
+    background: Literal["auto", "transparent", "opaque"] | None = None
+    output_format: Literal["png", "jpeg", "webp"] | None = None
+    output_compression: StrictInt | None = Field(default=None, ge=0, le=100)
+    # Legacy JSON inputs; the provider multipart routes use the same adapter.
     image: StrictStr | None = None
+    mask: StrictStr | None = None
 
 
 __all__ = ["ImageGenerationRequest"]

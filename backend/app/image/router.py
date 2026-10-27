@@ -24,7 +24,9 @@ native_router = APIRouter(prefix="/comfyui", tags=["comfyui-native"])
 def _openai_error(exc: AppError) -> JSONResponse:
     return JSONResponse(
         status_code=exc.status_code,
-        content={"error": {"message": exc.message, "type": exc.code, "param": None, "code": exc.code}},
+        content={
+            "error": {"message": exc.message, "type": exc.code, "param": None, "code": exc.code}
+        },
     )
 
 
@@ -37,12 +39,22 @@ async def _generate(
     try:
         validated = ImageGenerationRequest.model_validate(payload)
         return JSONResponse(
-            await service.generate(validated, request_id=request.state.request_id, url_prefix=prefix)
+            await service.generate(
+                validated, request_id=request.state.request_id, url_prefix=prefix
+            )
         )
     except ValidationError as exc:
         return JSONResponse(
             status_code=400,
-            content={"error": {"message": "Неверный запрос генерации изображения", "type": "invalid_request_error", "param": None, "code": "invalid_request_error", "details": exc.errors()}},
+            content={
+                "error": {
+                    "message": "Неверный запрос генерации изображения",
+                    "type": "invalid_request_error",
+                    "param": None,
+                    "code": "invalid_request_error",
+                    "details": exc.errors(),
+                }
+            },
         )
     except AppError as exc:
         return _openai_error(exc)
@@ -79,7 +91,9 @@ async def image_asset(
     return FileResponse(path, media_type=media_type, filename=path.name)
 
 
-@native_router.api_route("/{profile_name}/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+@native_router.api_route(
+    "/{profile_name}/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"]
+)
 async def native_comfyui(
     profile_name: str,
     path: str,
@@ -96,7 +110,15 @@ async def native_comfyui(
             headers={
                 key: value
                 for key, value in request.headers.items()
-                if key.lower() not in {"host", "content-length", "connection", "transfer-encoding"}
+                if key.lower()
+                not in {
+                    "host",
+                    "content-length",
+                    "connection",
+                    "transfer-encoding",
+                    "authorization",
+                    "cookie",
+                }
             },
         )
     except AppError as exc:
@@ -104,7 +126,14 @@ async def native_comfyui(
     headers = {
         key: value
         for key, value in upstream.headers.items()
-        if key.lower() not in {"content-length", "connection", "transfer-encoding", "content-encoding"}
+        if key.lower()
+        not in {
+            "content-length",
+            "connection",
+            "transfer-encoding",
+            "content-encoding",
+            "set-cookie",
+        }
     }
     return Response(
         content=upstream.content,
@@ -123,7 +152,9 @@ async def native_websocket(profile_name: str, websocket: WebSocket) -> None:
     try:
         instance = await service.resolve_instance(profile_name=profile_name)
         if instance.port is None:
-            raise AppError("image_upstream_unavailable", "У ComfyUI отсутствует API-порт", status_code=503)
+            raise AppError(
+                "image_upstream_unavailable", "У ComfyUI отсутствует API-порт", status_code=503
+            )
         from websockets.asyncio.client import connect
 
         query = urlencode(list(websocket.query_params.multi_items()))
@@ -131,6 +162,7 @@ async def native_websocket(profile_name: str, websocket: WebSocket) -> None:
         if query:
             target = f"{target}?{query}"
         async with connect(target, open_timeout=5, close_timeout=2) as upstream:
+
             async def client_to_upstream() -> None:
                 while True:
                     message = await websocket.receive()

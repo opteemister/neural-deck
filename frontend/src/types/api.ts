@@ -1,5 +1,5 @@
 export type EngineId = string
-export type EngineType = 'text' | 'tts' | 'asr' | 'video' | 'image' | 'embeddings' | 'decision'
+export type EngineType = 'text' | 'tts' | 'asr' | 'video' | 'image' | 'embeddings' | 'decision' | 'ocr'
 export type ApiProtocol = 'none' | 'openai' | 'comfyui' | 'jev'
 
 export type InstallationKind = 'python_venv' | 'binary' | 'custom'

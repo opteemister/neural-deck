@@ -1,4 +1,4 @@
-import { useMemo, useState, type DragEvent } from 'react'
+import { useEffect, useMemo, useState, type DragEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, GripVertical, Pencil, Plus, RefreshCw, Trash2, X } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
@@ -8,20 +8,41 @@ import { Dialog } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { PageHeader } from '@/components/page-header'
 import { QueryError, QueryLoading } from '@/components/query-state'
+import { NotificationToast } from '@/components/ui/notification-toast'
+import { RunTabs } from '@/components/ui/run-tabs'
 import { api, queryKeys } from '@/lib/api'
+import { comfyApi, comfyQueryKey, type ComfyConfig } from '@/lib/comfy-api'
 import type { ProfileData, ProxyRoute } from '@/types/api'
+import { ProxyComfyConfig } from '@/components/proxy-comfy-config'
 
 const aliasPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
 
 export function ProxyPage() {
   const queryClient = useQueryClient()
+  const [tab, setTab] = useState<'models' | 'images' | 'video'>('models')
+  const [toast, setToast] = useState<{ tone: 'success' | 'error'; message: string } | null>(null)
   const routes = useQuery({ queryKey: queryKeys.proxyRoutes, queryFn: api.getProxyRoutes, refetchInterval: 10_000 })
   const profiles = useQuery({ queryKey: queryKeys.profiles, queryFn: api.getProfiles })
+  const comfy = useQuery({ queryKey: comfyQueryKey, queryFn: comfyApi.getConfig, retry: false })
+  const [comfyDraft, setComfyDraft] = useState<ComfyConfig>({ sources: {}, models: {} })
+  const [comfyDirty, setComfyDirty] = useState(false)
+  useEffect(() => {
+    if (comfy.data && !comfyDirty) setComfyDraft(comfy.data)
+  }, [comfy.data, comfyDirty])
   const [aliasName, setAliasName] = useState('')
   const [selectedProfiles, setSelectedProfiles] = useState<string[]>([])
   const [aliasDialog, setAliasDialog] = useState<{ kind: 'new' } | { kind: 'edit'; route: ProxyRoute } | null>(null)
   const [dragTarget, setDragTarget] = useState<{ route: string; index: number } | null>(null)
   const [dragSource, setDragSource] = useState<{ route: string; index: number } | null>(null)
+
+  function notify(tone: 'success' | 'error', message: string) {
+    setToast({ tone, message })
+  }
+
+  function updateComfyDraft(next: ComfyConfig) {
+    setComfyDraft(next)
+    setComfyDirty(true)
+  }
 
   const invalidateRoutes = () => {
     void queryClient.invalidateQueries({ queryKey: queryKeys.proxyRoutes })
@@ -30,18 +51,34 @@ export function ProxyPage() {
   const createAlias = useMutation({
     mutationFn: api.createProxyAlias,
     onSuccess: () => { closeAliasDialog(); invalidateRoutes() },
+    onError: (error) => notify('error', error instanceof Error ? error.message : 'Алиас не создан.'),
   })
   const updateRoute = useMutation({
     mutationFn: ({ name, profileIds }: { name: string; profileIds: string[] }) => api.updateProxyRoute(name, profileIds),
     onSuccess: invalidateRoutes,
+    onError: (error) => notify('error', error instanceof Error ? error.message : 'Порядок маршрута не сохранён.'),
   })
   const updateAlias = useMutation({
     mutationFn: ({ currentName, name, profileIds }: { currentName: string; name: string; profileIds: string[] }) => api.updateProxyAlias(currentName, { name, profile_ids: profileIds }),
     onSuccess: () => { closeAliasDialog(); invalidateRoutes() },
+    onError: (error) => notify('error', error instanceof Error ? error.message : 'Алиас не изменён.'),
   })
   const deleteAlias = useMutation({
     mutationFn: api.deleteProxyAlias,
     onSuccess: invalidateRoutes,
+    onError: (error) => notify('error', error instanceof Error ? error.message : 'Алиас не удалён.'),
+  })
+  const saveComfy = useMutation({
+    mutationFn: comfyApi.putConfig,
+    onSuccess: (data) => {
+      setComfyDraft(data)
+      setComfyDirty(false)
+      queryClient.setQueryData(comfyQueryKey, data)
+      void queryClient.resetQueries({ queryKey: ['proxy-comfy-workflows'] })
+      void queryClient.invalidateQueries({ queryKey: ['chat-models-all'] })
+      notify('success', 'Конфигурация ComfyUI сохранена.')
+    },
+    onError: (error) => notify('error', error instanceof Error ? error.message : 'Конфигурация ComfyUI не сохранена.'),
   })
 
   const editingRoute = aliasDialog?.kind === 'edit' ? aliasDialog.route : null
@@ -56,7 +93,6 @@ export function ProxyPage() {
       : manualRouteNames.has(aliasName) && aliasName !== editingRoute?.name
         ? 'Это имя уже занято ручным алиасом.'
         : null
-  const mutationError = createAlias.error ?? updateAlias.error ?? updateRoute.error ?? deleteAlias.error
   const visibleRoutes = routes.data?.items.filter((route) => route.kind === 'alias' || (route.available && route.diagnostics.length === 0)) ?? []
 
   function toggleProfile(profile: ProfileData) {
@@ -112,13 +148,20 @@ export function ProxyPage() {
     setDragSource(null)
   }
 
+  const comfyConfig = comfyDirty ? comfyDraft : (comfy.data ?? comfyDraft)
   return <div>
-    <PageHeader title="Прокси" action={<div className="flex gap-2"><Button variant="secondary" size="sm" onClick={() => { void routes.refetch(); void profiles.refetch() }}><RefreshCw className="size-3.5" />Обновить</Button><Button variant="primary" size="sm" onClick={openNewAlias}><Plus className="size-3.5" />Новый алиас</Button></div>} />
-    <div className="mb-6">
+    <PageHeader title="Прокси" action={<div className="flex gap-2"><Button variant="secondary" size="sm" onClick={() => { void routes.refetch(); void profiles.refetch(); void comfy.refetch(); void queryClient.resetQueries({ queryKey: ['proxy-comfy-workflows'] }) }}><RefreshCw className="size-3.5" />Обновить</Button>{tab === 'models' ? <Button variant="primary" size="sm" onClick={openNewAlias}><Plus className="size-3.5" />Новый алиас</Button> : <Button variant="primary" size="sm" onClick={() => saveComfy.mutate(comfyDraft)} disabled={!comfyDirty || saveComfy.isPending}>{saveComfy.isPending ? 'Сохраняем…' : 'Сохранить'}</Button>}</div>} />
+    <RunTabs ariaLabel="Разделы прокси" compact panelId="proxy-config-panel" value={tab} onChange={(value) => setTab(value as 'models' | 'images' | 'video')} items={[{ value: 'models', title: 'Модели', subtitle: 'Текстовые профили и алиасы' }, { value: 'images', title: 'Изображения', subtitle: 'ComfyUI workflow' }, { value: 'video', title: 'Видео', subtitle: 'ComfyUI workflow' }]} />
+    <div id="proxy-config-panel" role="tabpanel" aria-labelledby={`proxy-config-panel-tab-${tab}`} className="mb-6 pt-4">
+      {tab !== 'models' && comfy.isLoading && <QueryLoading label="Читаем конфигурацию ComfyUI" />}
+      {tab !== 'models' && comfy.isError && !comfy.data && <QueryError error={comfy.error} retry={() => void comfy.refetch()} label="Конфигурация ComfyUI недоступна" />}
+      {tab !== 'models' && !comfy.isLoading && <ProxyComfyConfig config={comfyConfig} mediaType={tab === 'images' ? 'image' : 'video'} onChange={updateComfyDraft} notify={notify} />}
+      {tab === 'models' && <>
       {routes.isLoading ? <QueryLoading label="Читаем маршруты" /> : routes.isError ? <QueryError error={routes.error} retry={() => void routes.refetch()} label="Маршруты недоступны" /> : visibleRoutes.length > 0 && <Card><CardContent className="space-y-3">{visibleRoutes.map((route) => <RouteCard key={`${route.kind}:${route.name}`} route={route} dragSource={dragSource} onDragSource={setDragSource} dragTarget={dragTarget} onDragTarget={setDragTarget} onDrop={drop} onDelete={() => deleteAlias.mutate(route.name)} onEdit={() => openEditAlias(route)} onRemove={(profileId) => updateRoute.mutate({ name: route.name, profileIds: route.candidate_profile_ids.filter((item) => item !== profileId) })} updating={updateRoute.isPending} deleting={deleteAlias.isPending && deleteAlias.variables === route.name} />)}</CardContent></Card>}
+    <Dialog open={aliasDialog !== null} title={editingRoute ? 'Изменить алиас' : 'Новый алиас'} onOpenChange={(open) => { if (!open) closeAliasDialog() }}><div className="space-y-4 px-4 py-4"><div><label htmlFor="proxy-alias-name" className="text-xs text-foreground">Имя алиаса</label><Input id="proxy-alias-name" className="mt-1.5" value={aliasName} onChange={(event) => setAliasName(event.target.value)} placeholder="my-chat-model" aria-invalid={Boolean(aliasError)} />{aliasError && <p className="mt-1.5 text-[11px] text-[#d09b87]">{aliasError}</p>}</div><div><p className="text-xs text-foreground">Профили-кандидаты</p><div className="mt-1.5 max-h-64 space-y-1 overflow-auto rounded-md border border-border bg-secondary p-2">{profiles.isLoading ? <p className="px-2 py-3 text-xs text-muted-foreground">Читаем профили…</p> : profiles.data?.items.length === 0 ? <p className="px-2 py-3 text-xs text-muted-foreground">Сначала создайте профиль.</p> : profiles.data?.items.map((profile) => <ProfileCheckbox key={profile.profile_id ?? profile.name} profile={profile} checked={selectedProfiles.includes(profile.profile_id ?? profile.name)} onChange={() => toggleProfile(profile)} />)}</div></div><div className="flex justify-end gap-2"><Button variant="ghost" onClick={closeAliasDialog}>Отмена</Button><Button variant="primary" disabled={!aliasName || Boolean(aliasError) || selectedProfiles.length === 0 || createAlias.isPending || updateAlias.isPending || updateRoute.isPending} onClick={submitAlias}>{editingRoute ? <Pencil className="size-3.5" /> : <Plus className="size-3.5" />}{editingRoute ? 'Сохранить' : createAlias.isPending ? 'Сохраняем…' : 'Добавить алиас'}</Button></div></div></Dialog>
+      </>}
     </div>
-    <Dialog open={aliasDialog !== null} title={editingRoute ? 'Изменить алиас' : 'Новый алиас'} onOpenChange={(open) => { if (!open) closeAliasDialog() }}><div className="space-y-4 px-4 py-4"><div><label htmlFor="proxy-alias-name" className="text-xs text-foreground">Имя алиаса</label><Input id="proxy-alias-name" className="mt-1.5" value={aliasName} onChange={(event) => setAliasName(event.target.value)} placeholder="my-chat-model" aria-invalid={Boolean(aliasError)} />{aliasError && <p className="mt-1.5 text-[11px] text-[#d09b87]">{aliasError}</p>}</div><div><p className="text-xs text-foreground">Профили-кандидаты</p><div className="mt-1.5 max-h-64 space-y-1 overflow-auto rounded-md border border-border bg-secondary p-2">{profiles.isLoading ? <p className="px-2 py-3 text-xs text-muted-foreground">Читаем профили…</p> : profiles.data?.items.length === 0 ? <p className="px-2 py-3 text-xs text-muted-foreground">Сначала создайте профиль.</p> : profiles.data?.items.map((profile) => <ProfileCheckbox key={profile.profile_id ?? profile.name} profile={profile} checked={selectedProfiles.includes(profile.profile_id ?? profile.name)} onChange={() => toggleProfile(profile)} />)}</div></div>{updateAlias.isError && <QueryError error={updateAlias.error} label="Изменение алиаса не сохранено" />}<div className="flex justify-end gap-2"><Button variant="ghost" onClick={closeAliasDialog}>Отмена</Button><Button variant="primary" disabled={!aliasName || Boolean(aliasError) || selectedProfiles.length === 0 || createAlias.isPending || updateAlias.isPending || updateRoute.isPending} onClick={submitAlias}>{editingRoute ? <Pencil className="size-3.5" /> : <Plus className="size-3.5" />}{editingRoute ? 'Сохранить' : createAlias.isPending ? 'Сохраняем…' : 'Добавить алиас'}</Button></div></div></Dialog>
-    {mutationError && <QueryError error={mutationError} label="Изменение маршрута не сохранено" />}
+    {toast && <NotificationToast tone={toast.tone} title={toast.tone === 'success' ? 'Готово' : 'Не удалось сохранить'} message={toast.message} />}
   </div>
 }
 

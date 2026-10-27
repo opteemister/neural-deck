@@ -19,6 +19,30 @@ function streamResponse(text: string): Response {
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
 describe('ChatPage', () => {
+  it('sends vision content parts through the existing text stream', async () => {
+    vi.spyOn(api, 'getOpenAiModels').mockResolvedValue({ items: [{ id: 'vision-model', object: 'model', types: ['text'] }] })
+    const stream = vi.spyOn(api, 'streamChat').mockImplementation(async (_request, onChunk) => { onChunk({ done: false, content: 'На изображении есть дом.' }) })
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const view = render(<QueryClientProvider client={client}><MemoryRouter initialEntries={['/chat?model=vision-model']}><ChatPage /></MemoryRouter></QueryClientProvider>)
+    await screen.findByLabelText('Сообщение')
+    fireEvent.click(screen.getByRole('button', { name: 'Операция чата' }))
+    fireEvent.click(screen.getByRole('option', { name: 'Vision' }))
+    const fileInput = view.container.querySelector('input[type="file"]') as HTMLInputElement
+    const image = new File(['pixels'], 'house.png', { type: 'image/png' })
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: vi.fn(() => 'blob:house') })
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() })
+    fireEvent.change(fileInput, { target: { files: [image] } })
+    fireEvent.change(screen.getByLabelText('Сообщение'), { target: { value: 'Что на картинке?' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Отправить' }))
+    await waitFor(() => expect(screen.getByText('На изображении есть дом.')).toBeInTheDocument())
+    const request = stream.mock.calls[0][0] as { messages: Array<{ content: unknown }> }
+    expect(request.messages.at(-1)?.content).toEqual([
+      { type: 'text', text: 'Что на картинке?' },
+      { type: 'image_url', image_url: { url: expect.stringMatching(/^data:image\/png;base64,/) } },
+    ])
+    client.clear()
+  })
+
   it('keeps the last measured context visible during later requests and updates it from usage', async () => {
     vi.spyOn(api, 'getOpenAiModels').mockResolvedValue({ items: [{ id: 'local-model', object: 'model', context_length: 4096 }] })
     let emit: Parameters<typeof api.streamChat>[1] | undefined

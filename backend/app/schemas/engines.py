@@ -29,7 +29,16 @@ EngineId = Annotated[
         pattern=r"^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$",
     ),
 ]
-Capability = Literal["text", "tts", "asr", "video", "image", "embeddings", "decision"]
+Capability = Literal[
+    "text",
+    "tts",
+    "asr",
+    "ocr",
+    "video",
+    "image",
+    "embeddings",
+    "decision",
+]
 ApiProtocol = Literal["none", "openai", "comfyui", "jev"]
 InstallationKind = Literal["python_venv", "binary", "custom"]
 InstallationStatus = Literal["ready", "broken", "candidate"]

@@ -80,7 +80,6 @@ describe('ChatPage', () => {
     const initialContext = screen.getByLabelText('Контекст диалога')
     expect(initialContext).toHaveTextContent('Контекст —')
     expect(initialContext.closest('form')).toBeNull()
-    expect(screen.getByText('Enter — отправить · Shift+Enter — новая строка')).toBeInTheDocument()
     const send = async (text: string) => {
       fireEvent.change(screen.getByLabelText('Сообщение'), { target: { value: text } })
       await waitFor(() => expect(screen.getByRole('button', { name: 'Отправить' })).toBeEnabled())

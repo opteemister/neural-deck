@@ -282,8 +282,7 @@ export function ChatPage() {
             </div>
           </div>
         </form>
-        <div className="mt-2 flex flex-wrap items-center justify-between gap-2 px-1 text-[11px] text-muted-foreground">
-          <span>Enter — отправить · Shift+Enter — новая строка</span>
+        <div className="mt-2 flex justify-end px-1 text-[11px] text-muted-foreground">
           <span className="inline-flex items-center gap-2 tabular-nums" aria-label="Контекст диалога" title="Последний известный контекст с учётом ответа. Во время генерации сохраняется последнее измерение; число обновляется из usage движка. Прочерк означает, что измерения ещё нет.">
             {contextPercent !== undefined && <span className="h-1 w-12 overflow-hidden rounded-full bg-border"><span className="block h-full bg-copper" style={{ width: contextPercent + '%' }} /></span>}
             Контекст {number(usedContext)}{capacity ? ' / ' + number(capacity) : ' токенов'}

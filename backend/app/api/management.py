@@ -38,6 +38,8 @@ from ..schemas.models import (
     HfRepoData,
     HfSearchData,
     LocalModelList,
+    ModelFileUpdateRequest,
+    ModelFileUpdates,
     ModelRegistryData,
 )
 from ..schemas.system import HealthData, SettingsData, SettingsPatch, StatusData, SystemData
@@ -514,6 +516,25 @@ async def scan_local_models(
             "scan_error": catalogue.scan_error,
         },
     )
+
+
+@router.get("/models/local/{model_id}/updates", response_model=SuccessEnvelope[ModelFileUpdates])
+async def local_model_file_updates(
+    request: Request, model_id: str, catalogue: ModelCatalogue = Depends(get_model_catalogue),
+) -> JSONResponse:
+    return success(request, await asyncio.to_thread(catalogue.file_updates, model_id))
+
+
+@router.post(
+    "/models/local/{model_id}/updates", response_model=SuccessEnvelope[Operation],
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def update_local_model_files(
+    request: Request, model_id: str, payload: ModelFileUpdateRequest,
+    catalogue: ModelCatalogue = Depends(get_model_catalogue),
+) -> JSONResponse:
+    operation = await catalogue.update_files(model_id, payload.files)
+    return success(request, operation_data(operation), status_code=status.HTTP_202_ACCEPTED)
 
 
 @router.post("/models/local/check-updates", response_model=SuccessEnvelope[LocalModelList])

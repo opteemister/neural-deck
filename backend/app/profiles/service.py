@@ -81,11 +81,6 @@ class ProfileService:
             await asyncio.to_thread(resolver, profile)
             if resolver is not None else None
         )
-        protocol = (
-            resolved.api_protocol if resolved is not None
-            else "comfyui" if profile.engine.id in {"image", "comfyui"}
-            else None
-        )
         model_path = resolved.model_path if resolved is not None else (
             profile.model.path if profile.model is not None else None
         )
@@ -94,8 +89,7 @@ class ProfileService:
             engine=str(resolved.executable_path) if resolved is not None else str(engine_path),
             model=str(model_path) if model_path is not None else None,
             model_name=resolved.model_name if resolved is not None else profile.model_name,
-            model_draft=str(profile.model.draft_path) if profile.model and profile.model.draft_path else None,
-            port=profile.port or (8188 if protocol == "comfyui" else None),
+            port=profile.port,
             target=(str(resolved.installation.root_path) if resolved is not None else None),
             models_root=(
                 str(self.process_manager.models_root)

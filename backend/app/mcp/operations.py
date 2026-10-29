@@ -9,12 +9,11 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
-from uuid import uuid4
 
-import httpx
 import yaml  # type: ignore[import-untyped]
 from pydantic import TypeAdapter, ValidationError
 
+from ..chat.service import ChatService, ChatTurnRequest
 from ..errors import AppError
 from ..logs.service import LogsService
 from ..models.catalogue import ModelCatalogue
@@ -25,7 +24,7 @@ from ..schemas.models import DownloadRequest
 from ..schemas.profiles import ProfileData
 from ..system import collect_status, collect_system_data
 from .server import _decode_cursor, _encode_cursor, _value
-
+from .proxy_management import build_proxy_operations
 
 CAPABILITY_TYPE_NOTE = (
     "types описывает основную задачу и результат движка, а не все модальности входа. "
@@ -39,6 +38,7 @@ CAPABILITY_TYPE_LEGEND: dict[str, str] = {
     "asr": "Распознавание речи: аудио -> текст.",
     "embeddings": "Векторные представления: вход -> embedding-векторы.",
     "image": "Генерация или обработка изображений; результат — изображение.",
+    "ocr": "Распознавание документов; результат — текст.",
     "video": "Генерация или обработка видео; результат — видео.",
     "decision": "Структурированные решения: вход и вопросы -> ответы решения.",
 }
@@ -698,6 +698,15 @@ def build_operations(app: Any) -> dict[str, Any]:
         request = DownloadRequest(repo_id=repo_id, revision=revision, files=files, label=label)
         return _operation_summary(await app.state.runtime.model_catalogue.download(request))
 
+    async def get_model_file_updates(model_id: str) -> Any:
+        return await asyncio.to_thread(app.state.runtime.model_catalogue.file_updates, model_id)
+
+    async def update_model_files(model_id: str, files: list[str] | None) -> Any:
+        from ..schemas.models import ModelFileUpdateRequest
+
+        request = ModelFileUpdateRequest(files=files)
+        return _operation_summary(await app.state.runtime.model_catalogue.update_files(model_id, request.files))
+
     async def scan_local_models(verify_hashes: bool) -> Any:
         async def worker(operation: dict[str, Any]) -> None:
             items = await asyncio.to_thread(
@@ -1006,70 +1015,50 @@ def build_operations(app: Any) -> dict[str, Any]:
     async def delete_log_source(source_id: str) -> Any:
         return LogsService(app.state.runtime.paths).delete(source_id)
 
+    def chat_service() -> ChatService:
+        service: ChatService | None = app.state.runtime.chat_service
+        if service is None:
+            raise AppError("chat_unavailable", "Сервис чата недоступен", status_code=503)
+        return service
+
+    async def list_chats() -> Any:
+        return await chat_service().list_conversations()
+
+    async def delete_chat(conversation_id: str) -> Any:
+        return await chat_service().delete(conversation_id)
+
     async def list_chat_models() -> dict[str, Any]:
-        data = await app.state.runtime.proxy_service.models()
+        data = await chat_service().models()
         return {
             "items": [
-                {
-                    "id": item["id"],
-                    "engine_id": item.get("engine_id"),
-                    "types": item.get("types", []),
-                    "context_length": item.get("context_length"),
-                    "reasoning_capabilities": item.get("reasoning_capabilities"),
-                }
+                item
                 for item in data.get("data", [])
-                if "text" in item.get("types", [])
+                if set(item.get("types", [])) & {"text", "image", "video", "ocr"}
             ],
-            **_capability_metadata(["text"]),
+            **_capability_metadata(["text", "image", "video", "ocr"]),
         }
 
     async def chat(
-        model: str,
-        messages: list[dict[str, Any]],
-        reasoning_effort: str,
-        max_output_tokens: int | None,
-        include_reasoning: bool,
+        action: str, conversation_id: str | None, request: ChatTurnRequest | None
     ) -> Any:
-        if not messages:
-            raise AppError("validation_error", "messages не должен быть пустым", status_code=422)
-        payload: dict[str, Any] = {"model": model, "messages": messages, "stream": False}
-        if reasoning_effort != "auto":
-            payload["reasoning_effort"] = reasoning_effort
-        if max_output_tokens is not None:
-            payload["max_tokens"] = max_output_tokens
-        result = await app.state.runtime.proxy_service.forward(
-            route="/v1/chat/completions",
-            payload=payload,
-            headers={"authorization": "Bearer mcp"},
-            request_id=f"mcp_{uuid4().hex}",
+        service = chat_service()
+        if action == "send":
+            if request is None:
+                raise AppError(
+                    "validation_error",
+                    "Для nd_chat_send требуется request по схеме API чата",
+                    status_code=422,
+                )
+            return await service.start(conversation_id or request.id, request)
+        if action not in {"get", "stop"} or not conversation_id or request is not None:
+            raise AppError(
+                "validation_error",
+                "Для nd_chat_get/nd_chat_stop укажите conversation_id без request",
+                status_code=422,
+            )
+        return await (
+            service.get(conversation_id) if action == "get" else service.stop(conversation_id)
         )
-        if not isinstance(result, httpx.Response):
-            raise AppError(
-                "upstream_contract_unsupported",
-                "Чат вернул неподдерживаемый ответ",
-                status_code=502,
-            )
-        body = result.json()
-        if result.status_code >= 400:
-            error = body.get("error", {}) if isinstance(body, dict) else {}
-            raise AppError(
-                str(error.get("code") or "upstream_error"),
-                str(error.get("message") or "Ошибка модели"),
-                status_code=result.status_code,
-                retryable=result.status_code >= 500,
-            )
-        choice = (body.get("choices") or [{}])[0]
-        message = choice.get("message") or {}
-        output = {
-            "model": body.get("model", model),
-            "message": {"role": "assistant", "content": message.get("content", "")},
-            "finish_reason": choice.get("finish_reason"),
-            "usage": body.get("usage"),
-            "timings": body.get("timings"),
-        }
-        if include_reasoning and message.get("reasoning") is not None:
-            output["message"]["reasoning"] = message["reasoning"]
-        return output
 
     async def list_proxy_routes() -> list[Any]:
         data = await app.state.runtime.proxy_service.route_data()
@@ -1080,6 +1069,7 @@ def build_operations(app: Any) -> dict[str, Any]:
                 "kind": item.get("kind"),
                 "available": item.get("available"),
                 "candidate_profile_ids": item.get("candidate_profile_ids", []),
+                "candidate_ids": item.get("candidate_ids", []),
                 "candidate_count": len(item.get("candidates", [])),
                 "diagnostic_count": len(item.get("diagnostics", [])),
             }
@@ -1104,19 +1094,19 @@ def build_operations(app: Any) -> dict[str, Any]:
             raise AppError("route_not_found", "Маршрут прокси не найден", status_code=404)
         return [{"message": message} for message in route.get("diagnostics", [])]
 
-    async def set_proxy_route_order(route_name: str, profile_ids: list[str]) -> Any:
-        return await app.state.runtime.proxy_service.update_route_order(route_name, profile_ids)
+    async def set_proxy_route_order(route_name: str, profile_ids: list[str], candidate_ids: list[str] | None = None) -> Any:
+        return await app.state.runtime.proxy_service.update_route_order(route_name, profile_ids, candidate_ids)
 
     async def save_proxy_alias(
-        mode: str, name: str, profile_ids: list[str], previous_name: str | None
+        mode: str, name: str, profile_ids: list[str], previous_name: str | None, candidates: list[dict[str, str]] | None = None
     ) -> Any:
         if mode == "create":
-            return await app.state.runtime.proxy_service.create_alias(name, profile_ids)
+            return await app.state.runtime.proxy_service.create_alias(name, profile_ids, candidates=candidates)
         if mode == "update":
             if previous_name is None:
                 previous_name = name
             return await app.state.runtime.proxy_service.update_alias(
-                previous_name, name, profile_ids
+                previous_name, name, profile_ids, candidates=candidates
             )
         raise AppError("validation_error", "mode должен быть create или update", status_code=422)
 
@@ -1191,6 +1181,8 @@ def build_operations(app: Any) -> dict[str, Any]:
         "read_model_readme": read_model_readme,
         "list_hub_model_contents": list_hub_model_contents,
         "download_model": download_model,
+        "get_model_file_updates": get_model_file_updates,
+        "update_model_files": update_model_files,
         "scan_local_models": scan_local_models,
         "check_model_updates": check_model_updates,
         "list_model_updates": list_model_updates,
@@ -1204,6 +1196,8 @@ def build_operations(app: Any) -> dict[str, Any]:
         "export_log": export_log,
         "delete_log_source": delete_log_source,
         "list_chat_models": list_chat_models,
+        "list_chats": list_chats,
+        "delete_chat": delete_chat,
         "chat": chat,
         "list_proxy_routes": list_proxy_routes,
         "list_proxy_candidates": list_proxy_candidates,
@@ -1211,6 +1205,7 @@ def build_operations(app: Any) -> dict[str, Any]:
         "set_proxy_route_order": set_proxy_route_order,
         "save_proxy_alias": save_proxy_alias,
         "delete_proxy_alias": delete_proxy_alias,
+        **build_proxy_operations(app),
         "get_settings": get_settings,
         "update_settings": update_settings,
     }

@@ -15,7 +15,7 @@ def data_root(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def settings(data_root: Path) -> Settings:
-    return Settings(data_root=data_root, host="127.0.0.1", port=8080)
+    return Settings(data_root=data_root, host="127.0.0.1", port=3000, openai_port=8080)
 
 
 @pytest.fixture

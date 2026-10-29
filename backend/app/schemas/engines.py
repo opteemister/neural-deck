@@ -5,7 +5,6 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal
-
 from urllib.parse import urlsplit
 
 from pydantic import (
@@ -29,7 +28,16 @@ EngineId = Annotated[
         pattern=r"^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$",
     ),
 ]
-Capability = Literal["text", "tts", "asr", "video", "image", "embeddings", "decision"]
+Capability = Literal[
+    "text",
+    "tts",
+    "asr",
+    "ocr",
+    "video",
+    "image",
+    "embeddings",
+    "decision",
+]
 ApiProtocol = Literal["none", "openai", "comfyui", "jev"]
 InstallationKind = Literal["python_venv", "binary", "custom"]
 InstallationStatus = Literal["ready", "broken", "candidate"]
@@ -67,20 +75,6 @@ class EngineApi(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     protocol: ApiProtocol
-    base_url: StrictStr | None = None
-
-    @field_validator("base_url")
-    @classmethod
-    def valid_base_url(cls, value: str | None) -> str | None:
-        return _validate_http_url(value)
-
-
-class ProfileApiOverride(BaseModel):
-    """Optional protocol/base URL overrides; omitted values inherit."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    protocol: ApiProtocol | None = None
     base_url: StrictStr | None = None
 
     @field_validator("base_url")
@@ -338,7 +332,6 @@ __all__ = [
     "Operation",
     "OperationList",
     "OperationProgress",
-    "ProfileApiOverride",
     "PythonVenvInstallationCreate",
     "ResolvedEngineProfile",
 ]

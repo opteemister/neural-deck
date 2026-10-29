@@ -78,6 +78,9 @@ def test_status_refreshes_registry_and_reports_current_model_count(client) -> No
             process_start_time_ns=1,
             identity_verified=True,
             can_stop=False,
+            types=["text"],
+            api_protocol="openai",
+            api_base_url="http://127.0.0.1:8000/v1",
             state="ready",
             observed_at=datetime.now(UTC),
         ),
@@ -106,7 +109,11 @@ def test_error_envelope_is_stable_for_invalid_route_input(client) -> None:
 @pytest.mark.version_zero
 def test_openai_routes_keep_openai_wire_errors(client) -> None:
     # spec: version-zero
-    invalid_body = client.post("/v1/chat/completions", json=[])
+    from app.main import create_proxy_app
+    from fastapi.testclient import TestClient
+
+    proxy_client = TestClient(create_proxy_app(client.app.state.runtime))
+    invalid_body = proxy_client.post("/v1/chat/completions", json=[])
     assert invalid_body.status_code == 422
     assert set(invalid_body.json()) == {"error"}
     assert invalid_body.json()["error"] == {
@@ -116,7 +123,7 @@ def test_openai_routes_keep_openai_wire_errors(client) -> None:
         "code": "invalid_request_error",
     }
 
-    unknown_route = client.get("/v1/does-not-exist")
+    unknown_route = proxy_client.get("/v1/does-not-exist")
     assert unknown_route.status_code == 404
     assert set(unknown_route.json()) == {"error"}
     assert unknown_route.json()["error"]["type"] == "invalid_request_error"

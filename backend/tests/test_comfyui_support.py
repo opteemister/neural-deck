@@ -71,6 +71,8 @@ async def test_image_service_queues_workflow_and_returns_openai_image(tmp_path: 
         source="managed",
         profile_name=profile.name,
         engine_id="image",
+        types=["image"],
+        api_protocol="comfyui",
         pid=1,
         process_start_time_ns=2,
         identity_verified=True,
@@ -122,4 +124,4 @@ async def test_image_service_queues_workflow_and_returns_openai_image(tmp_path: 
     )
 
     assert result["data"][0]["b64_json"] == base64.b64encode(b"png-bytes").decode("ascii")
-    assert (tmp_path / "runtime" / profile.name / "workflows" / "qwen-image-2.1-t2i.json").is_file()
+    assert not (tmp_path / "runtime" / profile.name / "workflows").exists()

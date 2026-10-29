@@ -226,12 +226,12 @@ if grep -Eq 'uv[[:space:]]+sync|pnpm([^[:alnum:]]|.*[[:space:]])install|pnpm.*ru
     exit 1
 fi
 
-grep -Fq 'ARG VLLM_VERSION=0.11.2' "$root/docker/Dockerfile" \
-    || { printf 'Docker image does not pin vLLM 0.11.2\n' >&2; exit 1; }
+if grep -Eq 'VLLM_VERSION|/opt/venvs/vllm' "$root/docker/Dockerfile" "$root/docker-compose.yml"; then
+    printf 'Docker build must not preinstall vLLM\n' >&2
+    exit 1
+fi
 grep -Fq 'ARG LLAMA_CPP_VERSION=b5046' "$root/docker/Dockerfile" \
     || { printf 'Docker image does not pin llama.cpp b5046\n' >&2; exit 1; }
-grep -Fq '/opt/venvs/vllm' "$root/docker/Dockerfile" \
-    || { printf 'Docker image does not install a discoverable vLLM environment\n' >&2; exit 1; }
 grep -Fq '/usr/local/bin/llama-server' "$root/docker/Dockerfile" \
     || { printf 'Docker image does not expose llama-server\n' >&2; exit 1; }
 

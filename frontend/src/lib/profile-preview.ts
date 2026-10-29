@@ -1,6 +1,6 @@
 /** Deterministic client preview for the Version Zero profile command contract. */
 
-const PLACEHOLDERS = ['{{engine}}', '{{model}}', '{{model_draft}}', '{{model_name}}', '{{base_directory}}', '{{target}}', '{{extra_model_paths_config}}', '{{port}}'] as const
+const PLACEHOLDERS = ['{{engine}}', '{{model}}', '{{model_name}}', '{{base_directory}}', '{{target}}', '{{extra_model_paths_config}}', '{{port}}'] as const
 
 function isSeparator(value: string | undefined): boolean {
   return value === undefined || ' \t\r\n|;&<>()'.includes(value)
@@ -18,9 +18,9 @@ export function quoteShellWord(value: string): string {
  * backend/app/profiles/formatting.py. The UI must never claim a preview for a
  * command the backend would reject before execution.
  */
-export function previewProfileCommand(command: string, values: { engine: string; model?: string | null; model_draft?: string | null; model_name?: string | null; base_directory?: string | null; target?: string | null; extra_model_paths_config?: string | null; port?: number | null }): { ok: true; command: string } | { ok: false; error: string } {
+export function previewProfileCommand(command: string, values: { engine: string; model?: string | null; model_name?: string | null; base_directory?: string | null; target?: string | null; extra_model_paths_config?: string | null; port?: number | null }): { ok: true; command: string } | { ok: false; error: string } {
   if (command.includes('{{model}}') && !values.model) return { ok: false, error: 'Укажите путь модели или удалите {{model}} из команды.' }
-  if (command.includes('{{model_draft}}') && !values.model_draft) return { ok: false, error: 'Выберите draft-модель для {{model_draft}}.' }
+  if (command.includes('{{model_draft}}')) return { ok: false, error: 'Укажите draft-модель непосредственно в команде запуска.' }
   if (command.includes('{{model_name}}') && !values.model_name) return { ok: false, error: 'Укажите публичное имя модели для {{model_name}}.' }
   if (command.includes('{{base_directory}}') && !values.base_directory) return { ok: false, error: 'Не задан runtime-каталог для {{base_directory}}.' }
   if (command.includes('{{target}}') && !values.target) return { ok: false, error: 'Не задан целевой каталог для {{target}}.' }
@@ -125,7 +125,7 @@ export function previewProfileCommand(command: string, values: { engine: string;
 
   return {
     ok: true,
-    command: command.replace(/\{\{(engine|model|model_draft|model_name|base_directory|port)\}\}/g, (_, key: keyof typeof values) => quoteShellWord(String(values[key] ?? ''))),
+    command: command.replace(/\{\{(engine|model|model_name|base_directory|port)\}\}/g, (_, key: keyof typeof values) => quoteShellWord(String(values[key] ?? ''))),
   }
 }
 

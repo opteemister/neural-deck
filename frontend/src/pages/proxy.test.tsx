@@ -2,6 +2,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createEvent, fireEvent, render, screen, waitFor, cleanup } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { api } from '@/lib/api'
+import { comfyApi } from '@/lib/comfy-api'
+import { MemoryRouter } from 'react-router-dom'
 import { ProxyPage } from '@/pages/proxy'
 import type { ProxyRoute } from '@/types/api'
 
@@ -18,10 +20,12 @@ afterEach(() => { cleanup(); vi.restoreAllMocks() })
 
 async function setup() {
   vi.spyOn(api, 'getProxyRoutes').mockResolvedValue({ items: [route] })
-  vi.spyOn(api, 'getProfiles').mockResolvedValue({ items: [], issues: [] })
-  const update = vi.spyOn(api, 'updateProxyRoute').mockResolvedValue(route)
+  vi.spyOn(api, 'getProxyModelChoices').mockResolvedValue({ items: route.candidates.map((candidate) => ({ id: candidate.profile_id!, title: candidate.profile_name!, detail: candidate.profile_name!, target: { profile_id: candidate.profile_id! } })), diagnostics: [] })
+  vi.spyOn(api, 'getOpenAIConnections').mockResolvedValue({ items: [] })
+  vi.spyOn(comfyApi, 'getConfig').mockResolvedValue({ sources: {}, models: {} })
+  const update = vi.spyOn(api, 'updateProxyCandidates').mockResolvedValue(route)
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  render(<QueryClientProvider client={client}><ProxyPage /></QueryClientProvider>)
+  render(<QueryClientProvider client={client}><MemoryRouter><ProxyPage /></MemoryRouter></QueryClientProvider>)
   await screen.findByText('first')
   const rows = ['first', 'second', 'third'].map((name, index) => {
     const row = screen.getByText(name).closest('[data-index]') as HTMLElement
@@ -91,19 +95,22 @@ it('renames an alias and sends its candidates in the same update', async () => {
   await setup()
   const update = vi.spyOn(api, 'updateProxyAlias').mockResolvedValue({ ...route, name: 'smart' })
   fireEvent.click(screen.getByRole('button', { name: 'Изменить алиас manual' }))
+  await screen.findByRole('checkbox', { name: /first/ })
   fireEvent.change(screen.getByLabelText('Имя алиаса'), { target: { value: 'smart' } })
   fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }))
   await waitFor(() => expect(update).toHaveBeenCalledWith('manual', {
-    name: 'smart', profile_ids: ['first', 'second', 'third'],
+    name: 'smart', profile_ids: [], candidates: ['first', 'second', 'third'].map((profile_id) => ({ profile_id })),
   }))
 })
 
 it('blocks renaming to an existing manual alias', async () => {
   vi.spyOn(api, 'getProxyRoutes').mockResolvedValue({ items: [route, { ...route, name: 'taken' }] })
-  vi.spyOn(api, 'getProfiles').mockResolvedValue({ items: [], issues: [] })
+  vi.spyOn(api, 'getProxyModelChoices').mockResolvedValue({ items: route.candidates.map((candidate) => ({ id: candidate.profile_id!, title: candidate.profile_name!, detail: candidate.profile_name!, target: { profile_id: candidate.profile_id! } })), diagnostics: [] })
+  vi.spyOn(api, 'getOpenAIConnections').mockResolvedValue({ items: [] })
+  vi.spyOn(comfyApi, 'getConfig').mockResolvedValue({ sources: {}, models: {} })
   const update = vi.spyOn(api, 'updateProxyAlias')
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  render(<QueryClientProvider client={client}><ProxyPage /></QueryClientProvider>)
+  render(<QueryClientProvider client={client}><MemoryRouter><ProxyPage /></MemoryRouter></QueryClientProvider>)
   fireEvent.click(await screen.findByRole('button', { name: 'Изменить алиас manual' }))
   fireEvent.change(screen.getByLabelText('Имя алиаса'), { target: { value: 'taken' } })
   expect(screen.getByRole('button', { name: 'Сохранить' })).toBeDisabled()

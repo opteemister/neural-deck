@@ -65,6 +65,7 @@ class ProfileEndpointSummary(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     port: int | None = None
+    ports: list[int] = Field(default_factory=list)
     state: Literal["ok", "unknown"]
     source: str = Field(min_length=1)
     conflict: bool = False

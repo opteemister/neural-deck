@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
-import json
 import time
 from collections.abc import Mapping
 from pathlib import Path
@@ -13,10 +12,11 @@ from typing import Any
 from uuid import uuid4
 
 import httpx
+from pydantic import ValidationError
 
 from ..errors import AppError
-from ..process.manager import ProcessManager
 from ..process.discovery import backend_probe_url
+from ..process.manager import ProcessManager
 from ..profiles.repository import ProfileRepository
 from ..schemas.image import ImageGenerationRequest
 from ..schemas.instances import Instance
@@ -46,7 +46,9 @@ class ImageGenerationService:
             return self.client_factory()
         return httpx.AsyncClient(timeout=self.timeout)
 
-    async def resolve_instance(self, model: str | None = None, profile_name: str | None = None) -> Instance:
+    async def resolve_instance(
+        self, model: str | None = None, profile_name: str | None = None
+    ) -> Instance:
         observed = await self.process_manager.refresh(probe_models=False)
         candidates = [
             item
@@ -62,7 +64,9 @@ class ImageGenerationService:
             candidates = [item for item in candidates if item.profile_name == profile_name]
         elif model:
             candidates = [
-                item for item in candidates if item.profile_name == model or item.model_name == model
+                item
+                for item in candidates
+                if item.profile_name == model or item.model_name == model
             ]
         if not candidates:
             raise AppError(
@@ -87,10 +91,41 @@ class ImageGenerationService:
         request_id: str,
         url_prefix: str = "/v1",
     ) -> dict[str, Any]:
-        payload = request if isinstance(request, ImageGenerationRequest) else ImageGenerationRequest.model_validate(request)
+        fields = (
+            request.model_fields_set
+            if isinstance(request, ImageGenerationRequest)
+            else set(request)
+        )
+        unsupported = fields & {
+            "quality",
+            "background",
+            "output_format",
+            "output_compression",
+            "mask",
+        }
+        if unsupported:
+            field = sorted(unsupported)[0]
+            raise AppError(
+                "unsupported_parameter",
+                f"Legacy image workflow не поддерживает {field}",
+                status_code=400,
+                details={"field": field},
+            )
+        try:
+            payload = (
+                request
+                if isinstance(request, ImageGenerationRequest)
+                else ImageGenerationRequest.model_validate(request)
+            )
+        except ValidationError as exc:
+            raise AppError(
+                "invalid_image_request", "Неверные параметры изображения", status_code=400
+            ) from exc
         instance = await self.resolve_instance(model=payload.model)
         if not instance.profile_name:
-            raise AppError("image_profile_missing", "У image-экземпляра отсутствует профиль", status_code=409)
+            raise AppError(
+                "image_profile_missing", "У image-экземпляра отсутствует профиль", status_code=409
+            )
         profile = await asyncio.to_thread(self.profile_repository.get, instance.profile_name)
         if profile.model is None:
             raise AppError(
@@ -101,11 +136,13 @@ class ImageGenerationService:
             )
         validate_model_directory(profile.model.path)
         base_directory = self.process_manager.profile_runtime_dir(profile.name)
-        workflow_directory = base_directory / "workflows"
-        workflow_directory.mkdir(parents=True, exist_ok=True)
         output: list[dict[str, Any]] = []
         for _index in range(payload.n):
-            seed = payload.seed if payload.seed is not None else int.from_bytes(uuid4().bytes[:8], "big")
+            seed = (
+                payload.seed
+                if payload.seed is not None
+                else int.from_bytes(uuid4().bytes[:8], "big")
+            )
             input_name = None
             if payload.image:
                 input_name = await self._upload_input_image(instance, payload.image)
@@ -118,12 +155,15 @@ class ImageGenerationService:
                 transparent=payload.transparent,
                 input_image=input_name,
             )
-            workflow_path = workflow_directory / "qwen-image-2.1-t2i.json"
-            workflow_path.write_text(json.dumps(workflow, ensure_ascii=False, indent=2), encoding="utf-8")
             prompt_id = await self._queue(instance, workflow, request_id)
             images = await self._wait_for_images(instance, prompt_id)
             if not images:
-                raise AppError("image_output_missing", "ComfyUI не вернул изображение", status_code=502, retryable=True)
+                raise AppError(
+                    "image_output_missing",
+                    "ComfyUI не вернул изображение",
+                    status_code=502,
+                    retryable=True,
+                )
             for image in images:
                 asset_id = uuid4().hex
                 content, media_type = await self._download(instance, image)
@@ -147,29 +187,51 @@ class ImageGenerationService:
         content = decode_image_bytes(value)
         filename = f"neural-deck-{uuid4().hex}.png"
         response = await self._request(
-            instance, "POST", "/upload/image",
+            instance,
+            "POST",
+            "/upload/image",
             files={"image": (filename, content, "image/png")},
             data={"type": "input"},
         )
         if response.status_code >= 400:
-            raise AppError("image_upload_failed", "ComfyUI не принял входное изображение", status_code=502)
+            raise AppError(
+                "image_upload_failed", "ComfyUI не принял входное изображение", status_code=502
+            )
         try:
             uploaded = response.json()
         except ValueError as exc:
-            raise AppError("image_upload_failed", "ComfyUI вернул неверный ответ загрузки", status_code=502) from exc
-        if not isinstance(uploaded, dict) or not isinstance(uploaded.get("name"), str) or not uploaded["name"]:
-            raise AppError("image_upload_failed", "ComfyUI не вернул имя загруженного изображения", status_code=502)
+            raise AppError(
+                "image_upload_failed", "ComfyUI вернул неверный ответ загрузки", status_code=502
+            ) from exc
+        if (
+            not isinstance(uploaded, dict)
+            or not isinstance(uploaded.get("name"), str)
+            or not uploaded["name"]
+        ):
+            raise AppError(
+                "image_upload_failed",
+                "ComfyUI не вернул имя загруженного изображения",
+                status_code=502,
+            )
         subfolder = uploaded.get("subfolder", "")
         if not isinstance(subfolder, str):
-            raise AppError("image_upload_failed", "ComfyUI вернул неверный каталог изображения", status_code=502)
+            raise AppError(
+                "image_upload_failed",
+                "ComfyUI вернул неверный каталог изображения",
+                status_code=502,
+            )
         return f"{subfolder}/{uploaded['name']}" if subfolder else uploaded["name"]
 
     async def _queue(self, instance: Instance, workflow: dict[str, Any], request_id: str) -> str:
-        response = await self._request(instance, "POST", "/prompt", json={"prompt": workflow, "client_id": request_id})
+        response = await self._request(
+            instance, "POST", "/prompt", json={"prompt": workflow, "client_id": request_id}
+        )
         try:
             payload = response.json()
         except (ValueError, TypeError) as exc:
-            raise AppError("image_upstream_error", "ComfyUI вернул неверный ответ на /prompt", status_code=502) from exc
+            raise AppError(
+                "image_upstream_error", "ComfyUI вернул неверный ответ на /prompt", status_code=502
+            ) from exc
         prompt_id = payload.get("prompt_id") if isinstance(payload, dict) else None
         if response.status_code >= 400 or not isinstance(prompt_id, str) or not prompt_id:
             raise AppError(
@@ -193,7 +255,12 @@ class ImageGenerationService:
                 if isinstance(entry, dict):
                     status = entry.get("status")
                     if isinstance(status, dict) and status.get("status_str") == "error":
-                        raise AppError("image_upstream_error", "ComfyUI завершил workflow с ошибкой", status_code=502, details={"status": status})
+                        raise AppError(
+                            "image_upstream_error",
+                            "ComfyUI завершил workflow с ошибкой",
+                            status_code=502,
+                            details={"status": status},
+                        )
                     result: list[dict[str, str]] = []
                     outputs = entry.get("outputs")
                     if isinstance(outputs, dict):
@@ -204,27 +271,42 @@ class ImageGenerationService:
                             if not isinstance(images, list):
                                 continue
                             for image in images:
-                                if not isinstance(image, dict) or not isinstance(image.get("filename"), str):
+                                if not isinstance(image, dict) or not isinstance(
+                                    image.get("filename"), str
+                                ):
                                     continue
-                                result.append({
-                                    "filename": image["filename"],
-                                    "subfolder": str(image.get("subfolder", "")),
-                                    "type": str(image.get("type", "output")),
-                                })
+                                result.append(
+                                    {
+                                        "filename": image["filename"],
+                                        "subfolder": str(image.get("subfolder", "")),
+                                        "type": str(image.get("type", "output")),
+                                    }
+                                )
                     if result:
                         return result
             await asyncio.sleep(0.25)
-        raise AppError("image_timeout", "ComfyUI не завершил генерацию за отведённое время", status_code=504, retryable=True)
+        raise AppError(
+            "image_timeout",
+            "ComfyUI не завершил генерацию за отведённое время",
+            status_code=504,
+            retryable=True,
+        )
 
     async def _download(self, instance: Instance, image: Mapping[str, str]) -> tuple[bytes, str]:
         response = await self._request(
             instance,
             "GET",
             "/view",
-            params={"filename": image["filename"], "subfolder": image.get("subfolder", ""), "type": image.get("type", "output")},
+            params={
+                "filename": image["filename"],
+                "subfolder": image.get("subfolder", ""),
+                "type": image.get("type", "output"),
+            },
         )
         if response.status_code >= 400:
-            raise AppError("image_output_unavailable", "ComfyUI не отдал файл изображения", status_code=502)
+            raise AppError(
+                "image_output_unavailable", "ComfyUI не отдал файл изображения", status_code=502
+            )
         media_type = response.headers.get("content-type", "image/png").split(";", 1)[0]
         return response.content, media_type
 
@@ -241,7 +323,9 @@ class ImageGenerationService:
         instance = await self.resolve_instance(profile_name=profile_name)
         clean_path = path.strip("/")
         if not clean_path or ".." in clean_path.split("/"):
-            raise AppError("invalid_comfyui_path", "Недопустимый native ComfyUI путь", status_code=422)
+            raise AppError(
+                "invalid_comfyui_path", "Недопустимый native ComfyUI путь", status_code=422
+            )
         return await self._request(
             instance,
             method,
@@ -254,20 +338,37 @@ class ImageGenerationService:
     async def asset(self, asset_id: str) -> tuple[Path, str]:
         item = self._assets.get(asset_id)
         if item is None or not item[0].is_file():
-            raise AppError("image_not_found", "Изображение не найдено или срок его хранения истёк", status_code=404)
+            raise AppError(
+                "image_not_found",
+                "Изображение не найдено или срок его хранения истёк",
+                status_code=404,
+            )
         return item
 
-    async def _request(self, instance: Instance, method: str, path: str, **kwargs: Any) -> httpx.Response:
+    async def _request(
+        self, instance: Instance, method: str, path: str, **kwargs: Any
+    ) -> httpx.Response:
         if instance.api_base_url is None and instance.port is None:
-            raise AppError("image_upstream_unavailable", "У ComfyUI отсутствует API-порт", status_code=503, retryable=True)
+            raise AppError(
+                "image_upstream_unavailable",
+                "У ComfyUI отсутствует API-порт",
+                status_code=503,
+                retryable=True,
+            )
         client = await self._client()
         try:
-            base_url = backend_probe_url(instance.api_base_url) if instance.api_base_url else f"http://127.0.0.1:{instance.port}"
+            base_url = (
+                backend_probe_url(instance.api_base_url)
+                if instance.api_base_url
+                else f"http://127.0.0.1:{instance.port}"
+            )
             response = await client.request(method, f"{base_url.rstrip('/')}{path}", **kwargs)
             await response.aread()
             return response
         except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as exc:
-            raise AppError("image_upstream_unavailable", "ComfyUI недоступен", status_code=502, retryable=True) from exc
+            raise AppError(
+                "image_upstream_unavailable", "ComfyUI недоступен", status_code=502, retryable=True
+            ) from exc
         finally:
             with contextlib.suppress(Exception):
                 await client.aclose()

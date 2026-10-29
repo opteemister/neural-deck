@@ -1,3 +1,4 @@
+import type { ProxyModelChoices } from '@/types/api'
 import type {
   ApiErrorResponse,
   ApiSuccess,
@@ -13,6 +14,7 @@ import type {
   Installation,
   InstallationCreateRequest,
   LocalModelsData,
+  ModelFileUpdates,
   LogData,
   LogSourceData,
   ModelRegistryData,
@@ -25,6 +27,9 @@ import type {
   ProfileListData,
   ProfileSummaryData,
   ProxyRoute,
+  OpenAIConnection,
+  RemoteAliasTarget,
+  AliasCandidateTarget,
   ProxyRoutesData,
   SettingsData,
   StatusData,
@@ -34,6 +39,7 @@ import type {
 } from '@/types/api'
 
 import { openAiEndpoint } from '@/lib/openai-endpoint'
+import type { ChatConversation, ChatHistoryData, HarnessRequest } from '@/lib/chat-harness'
 
 const apiBase = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, '') ?? ''
 let modelApiBasePromise: Promise<string> | undefined
@@ -124,7 +130,7 @@ export type ChatStreamChunk = { content: string; done: boolean; reasoning?: stri
 
 /** Read the standard OpenAI SSE response and the JSON fallback used by small servers. */
 export async function streamChat(
-  body: { model: string; messages: Array<{ role: 'user' | 'assistant'; content: string }>; stream?: boolean; reasoning_effort?: string; chat_template_kwargs?: { enable_thinking?: boolean; reasoning_effort?: string } },
+  body: { model: string; messages: Array<{ role: 'user' | 'assistant'; content: string | Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }> }>; stream?: boolean; reasoning_effort?: string; chat_template_kwargs?: { enable_thinking?: boolean; reasoning_effort?: string } },
   onChunk: (chunk: ChatStreamChunk) => void,
   signal?: AbortSignal,
 ): Promise<void> {
@@ -204,6 +210,11 @@ export async function streamChat(
 const json = (body: unknown): RequestInit => ({ method: 'POST', body: JSON.stringify(body) })
 
 export const api = {
+  listChats: (signal?: AbortSignal) => request<ChatHistoryData>('/api/v1/chat', { signal }),
+  deleteChat: (id: string) => request<{ id: string; deleted: boolean }>(`/api/v1/chat/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  getChat: (id: string, signal?: AbortSignal) => request<ChatConversation>(`/api/v1/chat/${encodeURIComponent(id)}`, { signal }),
+  sendChat: (id: string, body: HarnessRequest, signal?: AbortSignal) => request<ChatConversation>(`/api/v1/chat/${encodeURIComponent(id)}/turns`, { ...json(body), signal }),
+  stopChat: (id: string) => request<ChatConversation>(`/api/v1/chat/${encodeURIComponent(id)}/stop`, json({})),
   getSystem: () => request<SystemData>('/api/v1/system'),
   getStatus: () => request<StatusData>('/api/v1/status'),
   getHealth: () => request<HealthData>('/api/v1/health'),
@@ -238,14 +249,23 @@ export const api = {
   getHfRepo: (namespace: string, name: string, revision?: string) => request<HfRepoData>(`/api/v1/models/hf/repos/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}${revision ? `?revision=${encodeURIComponent(revision)}` : ''}`),
   getHfQuantizations: (namespace: string, name: string) => request<import('@/types/api').HfSearchData>(`/api/v1/models/hf/repos/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/quantizations`),
   getHfFiles: (namespace: string, name: string, revision?: string) => request<HfRepoData>(`/api/v1/models/hf/repos/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/files${revision ? `?revision=${encodeURIComponent(revision)}` : ''}`),
+  getModelFileUpdates: (id: string) => request<ModelFileUpdates>(`/api/v1/models/local/${encodeURIComponent(id)}/updates`),
+  updateModelFiles: (id: string, files: string[] | null) => request<Operation>(`/api/v1/models/local/${encodeURIComponent(id)}/updates`, json({ files })),
   downloadModels: (body: DownloadRequest) => request<Operation>('/api/v1/models/downloads', json(body)),
   getProfiles: () => request<ProfileListData>('/api/v1/profiles'),
   getProfileSummary: () => request<ProfileSummaryData>('/api/v1/profiles/summary'),
   getDailyMetricRuns: () => request<{ items: Array<{ profile_name: string; model_name: string | null; engine_id: string }> }>('/api/v1/metrics/runs'),
   getProfile: (name: string) => request<ProfileData>(`/api/v1/profiles/${encodeURIComponent(name)}`),
+  getProxyModelChoices: (routeName?: string, refresh = false) => request<ProxyModelChoices>(`/api/v1/proxy/routes/choices?${new URLSearchParams({ ...(routeName ? { route_name: routeName } : {}), refresh: String(refresh) })}`),
   getProxyRoutes: () => request<ProxyRoutesData>('/api/v1/proxy/routes'),
-  createProxyAlias: (body: { name: string; profile_ids: string[] }) => request<ProxyRoute>('/api/v1/proxy/routes/aliases', json(body)),
-  updateProxyAlias: (currentName: string, body: { name: string; profile_ids: string[] }) => request<ProxyRoute>(`/api/v1/proxy/routes/aliases/${encodeURIComponent(currentName)}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  getOpenAIConnections: () => request<{ items: OpenAIConnection[] }>('/api/v1/proxy/openai/connections'),
+  createOpenAIConnection: (body: { name: string; base_url: string; api_key?: string }) => request<OpenAIConnection>('/api/v1/proxy/openai/connections', json(body)),
+  updateOpenAIConnection: (id: string, body: { name: string; base_url: string; api_key?: string }) => request<OpenAIConnection>(`/api/v1/proxy/openai/connections/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  deleteOpenAIConnection: (id: string) => request<{ id: string }>(`/api/v1/proxy/openai/connections/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  getConnectionModels: (id: string, refresh = false) => request<{ items: OpenAiModel[] }>(`/api/v1/proxy/openai/connections/${encodeURIComponent(id)}/models?refresh=${refresh}`),
+  createProxyAlias: (body: { name: string; profile_ids: string[]; remote?: RemoteAliasTarget | null; candidates?: AliasCandidateTarget[] }) => request<ProxyRoute>('/api/v1/proxy/routes/aliases', json(body)),
+  updateProxyAlias: (currentName: string, body: { name: string; profile_ids: string[]; remote?: RemoteAliasTarget | null; candidates?: AliasCandidateTarget[] }) => request<ProxyRoute>(`/api/v1/proxy/routes/aliases/${encodeURIComponent(currentName)}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  updateProxyCandidates: (name: string, candidate_ids: string[]) => request<ProxyRoute>(`/api/v1/proxy/routes/${encodeURIComponent(name)}`, { method: 'PUT', body: JSON.stringify({ candidate_ids }) }),
   updateProxyRoute: (name: string, profile_ids: string[]) => request<ProxyRoute>(`/api/v1/proxy/routes/${encodeURIComponent(name)}`, { method: 'PUT', body: JSON.stringify({ profile_ids }) }),
   deleteProxyAlias: (name: string) => request<{ name: string }>(`/api/v1/proxy/routes/aliases/${encodeURIComponent(name)}`, { method: 'DELETE' }),
   previewProfile: (body: ProfileData) => request<{ command: string }>('/api/v1/profiles/preview', json(body)),
@@ -316,8 +336,8 @@ export const api = {
     if (filters.profile_id) query.set('profile_id', filters.profile_id)
     return request<StatisticsData>(`/api/v1/statistics?${query}`)
   },
-  getOpenAiModels: async (): Promise<OpenAiModelsData> => {
-    const response = await openAiRequest<{ data: OpenAiModel[] }>('/models')
+  getOpenAiModels: async (allTypes = false): Promise<OpenAiModelsData> => {
+    const response = await openAiRequest<{ data: OpenAiModel[] }>(allTypes ? '/models?all_types=true' : '/models')
     return { items: response.data }
   },
   completeChat: (body: { model: string; messages: Array<{ role: 'user' | 'assistant'; content: string }>; stream?: boolean }) => openAiRequest<import('@/types/api').ChatCompletionResponse>('/chat/completions', { method: 'POST', body: JSON.stringify(body) }),

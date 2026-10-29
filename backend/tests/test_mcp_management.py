@@ -61,7 +61,9 @@ async def test_mcp_catalog_contains_management_tools() -> None:
         "nd_get_statistics",
         "nd_read_log",
         "nd_list_chat_models",
-        "nd_chat",
+        "nd_chat_send",
+        "nd_chat_get",
+        "nd_chat_stop",
     } <= names
 
 

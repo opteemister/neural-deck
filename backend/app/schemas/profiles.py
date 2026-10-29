@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from urllib.parse import urlsplit
 from uuid import UUID
 
 from pydantic import (
@@ -18,7 +17,7 @@ from pydantic import (
 )
 
 from ..profiles.formatting import validate_placeholders
-from .engines import Capability, EngineId, ProfileApiOverride
+from .engines import EngineId
 
 
 def _profile_name(value: str) -> str:
@@ -30,19 +29,18 @@ def _profile_name(value: str) -> str:
 
 
 class ProfileEngine(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     id: EngineId
     installation_id: StrictStr = Field(min_length=1)
 
 
 class ProfileModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     path: Path
-    draft_path: Path | None = None
 
-    @field_validator("path", "draft_path")
+    @field_validator("path")
     @classmethod
     def absolute_path(cls, value: Path | None) -> Path | None:
         if value is not None and not value.is_absolute():
@@ -57,7 +55,7 @@ class ProfileData(BaseModel):
     ``yes`` must not silently become a different profile.
     """
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     version: StrictInt
     profile_id: StrictStr | None = Field(default=None, min_length=1)
@@ -66,9 +64,6 @@ class ProfileData(BaseModel):
     engine: ProfileEngine
     model: ProfileModel | None = None
     command: StrictStr = Field(min_length=1)
-    types: list[Capability] | None = None
-    api: ProfileApiOverride | None = None
-    ui_url: StrictStr | None = None
     port: StrictInt | None = Field(default=None, ge=1, le=65535)
     environment: dict[StrictStr, StrictStr] = Field(default_factory=dict)
     autostart: StrictBool = False
@@ -78,43 +73,10 @@ class ProfileData(BaseModel):
     cached_input_price_usd_per_million_tokens: float | None = Field(default=None, ge=0)
 
     @model_validator(mode="after")
-    def draft_placeholder_has_path(self) -> ProfileData:
-        if "{{model_draft}}" in self.command and (
-            self.model is None or self.model.draft_path is None
-        ):
-            raise ValueError("для {{model_draft}} необходимо выбрать draft-модель")
-        return self
-
-    @model_validator(mode="after")
     def model_placeholder_has_path(self) -> ProfileData:
         if "{{model}}" in self.command and self.model is None:
             raise ValueError("для {{model}} необходимо выбрать модель")
         return self
-
-    @model_validator(mode="after")
-    def image_profile_has_port(self) -> ProfileData:
-        if self.engine.id in {"image", "comfyui"} and self.port is None:
-            self.port = 8188
-        return self
-
-    @field_validator("types")
-    @classmethod
-    def unique_types(cls, value: list[Capability] | None) -> list[Capability] | None:
-        if value is not None and len(set(value)) != len(value):
-            raise ValueError("типы профиля не должны повторяться")
-        return value
-
-    @field_validator("ui_url")
-    @classmethod
-    def valid_ui_url(cls, value: str | None) -> str | None:
-        if value is None:
-            return value
-        parsed = urlsplit(value)
-        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-            raise ValueError("ui_url должен быть абсолютным HTTP(S) адресом")
-        if parsed.username is not None or parsed.password is not None:
-            raise ValueError("учётные данные не должны входить в ui_url")
-        return value
 
     @field_validator("version")
     @classmethod

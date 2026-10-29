@@ -1,5 +1,5 @@
 export type EngineId = string
-export type EngineType = 'text' | 'tts' | 'asr' | 'video' | 'image' | 'embeddings' | 'decision'
+export type EngineType = 'text' | 'tts' | 'asr' | 'video' | 'image' | 'embeddings' | 'decision' | 'ocr'
 export type ApiProtocol = 'none' | 'openai' | 'comfyui' | 'jev'
 
 export type InstallationKind = 'python_venv' | 'binary' | 'custom'
@@ -8,11 +8,6 @@ export type InstallationStatus = 'ready' | 'broken' | 'candidate'
 export interface EngineApi {
   protocol: ApiProtocol
   base_url: string | null
-}
-
-export interface ProfileApiOverride {
-  protocol?: ApiProtocol | null
-  base_url?: string | null
 }
 
 export interface EngineHealthcheck {
@@ -192,6 +187,26 @@ export interface SettingsData {
   openai_port: number
 }
 
+export interface ModelFileVersion {
+  size: number | null
+  file_date: string | null
+  hash: string | null
+  hash_kind: string | null
+}
+export interface ModelFileUpdate {
+  path: string
+  status: 'changed' | 'added' | 'removed' | 'local_divergence'
+  local: ModelFileVersion
+  remote: ModelFileVersion
+}
+export interface ModelFileUpdates {
+  model_id: string
+  repo_id: string
+  revision: string | null
+  checked_at: string | null
+  items: ModelFileUpdate[]
+}
+
 export interface LocalModelArtifact {
   id: string
   path: string
@@ -288,7 +303,10 @@ export interface ModelRegistryData {
 export type ProxyRouteKind = 'auto' | 'alias'
 
 export interface ProxyRouteCandidate {
-  profile_id: string
+  id?: string
+  connection_id?: string | null
+  connection_name?: string | null
+  profile_id: string | null
   profile_name: string | null
   instance_id: string | null
   upstream_model: string | null
@@ -299,10 +317,23 @@ export interface ProxyRouteCandidate {
   reason: string | null
 }
 
+export interface OpenAIConnection {
+  id: string
+  name: string
+  base_url: string
+  has_api_key: boolean
+}
+
+export interface RemoteAliasTarget { connection_id: string; model: string }
+export type AliasCandidateTarget = { profile_id: string } | RemoteAliasTarget
+
 export interface ProxyRoute {
   name: string
   kind: ProxyRouteKind
   candidate_profile_ids: string[]
+  candidate_ids?: string[]
+  remote?: RemoteAliasTarget | null
+  connection_name?: string | null
   candidates: ProxyRouteCandidate[]
   available: boolean
   diagnostics: string[]
@@ -326,6 +357,7 @@ export interface OpenAiModel {
     efforts: string[]
     effort_parameter: 'reasoning_effort' | 'chat_template_kwargs'
     can_disable_thinking: boolean
+    default_effort?: string | null
   }
 }
 
@@ -340,7 +372,6 @@ export interface ProfileEngineRef {
 
 export interface ProfileModelRef {
   path: string
-  draft_path?: string | null
 }
 
 export interface ProfileData {
@@ -351,9 +382,6 @@ export interface ProfileData {
   engine: ProfileEngineRef
   model?: ProfileModelRef | null
   command: string
-  types?: EngineType[] | null
-  api?: ProfileApiOverride | null
-  ui_url?: string | null
   port?: number | null
   environment: Record<string, string>
   autostart: boolean
@@ -406,6 +434,7 @@ export interface ProfileSummary {
   load: { percent: ProfileSummaryMetric }
   endpoint: {
     port: number | null
+    ports?: number[]
     state: 'ok' | 'unknown'
     source: string
     conflict: boolean
@@ -685,3 +714,6 @@ export interface TokenHistoryData {
   bucket_minutes: number
   source: string
 }
+
+export type ProxyModelChoice = { id: string; title: string; detail: string; target: AliasCandidateTarget }
+export type ProxyModelChoices = { items: ProxyModelChoice[]; diagnostics: Array<{ connection_id: string; code: string; message: string }> }

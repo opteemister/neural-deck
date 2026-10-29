@@ -25,6 +25,16 @@ async def list_routes(
     return success(request, await service.route_data())
 
 
+@router.get("/choices")
+async def model_choices(request: Request, route_name: str | None = None, refresh: bool = False, service: ProxyService = Depends(get_proxy_service)):
+    return success(request, await service.model_choices(route_name, refresh))
+
+
+@router.get("/details/{route_name:path}")
+async def get_route(request: Request, route_name: str, service: ProxyService = Depends(get_proxy_service)):
+    return success(request, await service.get_route(route_name))
+
+
 @router.post(
     "/aliases",
     response_model=SuccessEnvelope[dict[str, object]],
@@ -37,7 +47,7 @@ async def create_alias(
 ) -> JSONResponse:
     return success(
         request,
-        await service.create_alias(payload.name, payload.profile_ids),
+        await service.create_alias(payload.name, payload.profile_ids, payload.remote.model_dump() if payload.remote else None, payload.candidates),
         status_code=status.HTTP_201_CREATED,
     )
 
@@ -49,7 +59,7 @@ async def update_alias(
     payload: AliasCreateRequest,
     service: ProxyService = Depends(get_proxy_service),
 ) -> JSONResponse:
-    return success(request, await service.update_alias(alias_name, payload.name, payload.profile_ids))
+    return success(request, await service.update_alias(alias_name, payload.name, payload.profile_ids, payload.remote.model_dump() if payload.remote else None, payload.candidates))
 
 
 @router.put("/{route_name:path}", response_model=SuccessEnvelope[dict[str, object]])
@@ -59,7 +69,7 @@ async def update_route_order(
     payload: RouteOrderRequest,
     service: ProxyService = Depends(get_proxy_service),
 ) -> JSONResponse:
-    return success(request, await service.update_route_order(route_name, payload.profile_ids))
+    return success(request, await service.update_route_order(route_name, payload.profile_ids, payload.candidate_ids))
 
 
 @router.delete(

@@ -1,7 +1,7 @@
-import type { AnchorHTMLAttributes, ButtonHTMLAttributes } from 'react'
+import type { AnchorHTMLAttributes, ButtonHTMLAttributes, Ref } from 'react'
 import { cn } from '@/lib/utils'
 
-type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger'
+type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger' | 'overlay'
 type ButtonSize = 'sm' | 'md' | 'icon' | 'icon-sm'
 type ButtonShape = 'default' | 'pill'
 
@@ -12,7 +12,7 @@ interface ButtonStyleProps {
   shape?: ButtonShape
 }
 
-export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement>, ButtonStyleProps {}
+export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement>, ButtonStyleProps { ref?: Ref<HTMLButtonElement> }
 
 export interface ButtonLinkProps extends AnchorHTMLAttributes<HTMLAnchorElement>, ButtonStyleProps {}
 
@@ -35,6 +35,7 @@ function buttonClassName({ className, variant = 'secondary', size = 'md', iconOn
         variant === 'secondary' && 'border-border bg-secondary text-secondary-foreground hover:border-[#6c625a] hover:bg-accent',
         variant === 'ghost' && 'border-transparent bg-transparent text-muted-foreground hover:bg-accent hover:text-foreground',
         variant === 'danger' && 'border-[#81554c] bg-transparent text-[#d09b87] hover:bg-[#382725]',
+        variant === 'overlay' && 'border-white/15 bg-black/55 text-white backdrop-blur-md hover:bg-black/75',
         iconOnly && 'shrink-0',
         className,
       )

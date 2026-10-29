@@ -107,7 +107,7 @@ def test_public_model_name_is_one_literal_argument() -> None:
     "command",
     [
         'echo "{{model_name}}"',
-        "NAME={{model_name}}",
+        "NAME=prefix{{model_name}}",
         "echo {{model_name}}x",
         "echo $({{model_name}})",
     ],
@@ -291,3 +291,10 @@ async def test_saved_profile_gets_quiet_monitoring_on_launch_without_rewriting_y
     launched = await service.start("demo")
     assert launched.command.endswith(" --disable-access-log-for-endpoints /metrics --enable-prompt-tokens-details")
     assert path.read_text() == original
+
+
+def test_public_model_name_is_safe_as_a_complete_assignment_value() -> None:
+    command = substitute_placeholders(
+        "NAME={{model_name}} echo value", engine="/bin/engine", model=None, model_name="qwen; echo unsafe"
+    )
+    assert shlex.split(command) == ["NAME=qwen; echo unsafe", "echo", "value"]

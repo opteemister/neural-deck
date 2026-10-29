@@ -21,7 +21,9 @@ from uuid import uuid4
 
 import psutil
 
+from ..documents import runtime_document_metadata
 from ..errors import AppError
+from ..reasoning import runtime_reasoning_metadata
 from ..profiles.formatting import substitute_placeholders
 from ..profiles.ports import resolve_effective_port
 from ..schemas.engines import ResolvedEngineProfile
@@ -62,7 +64,6 @@ class _Managed:
     working_directory: Path | None = None
     healthcheck: dict[str, Any] | None = None
     model_paths_fingerprint: str | None = None
-    api_base_url_explicit: bool = False
 
 
 def _identity_start_ns(pid: int) -> int | None:
@@ -126,6 +127,15 @@ class ProcessManager:
         task.add_done_callback(self._tasks.discard)
         return task
 
+    def reasoning_metadata(self, instance: Instance) -> dict[str, Any]:
+        item = self._managed.get(instance.id)
+        if item is None or not instance.identity_verified:
+            return {}
+        return {
+            **runtime_reasoning_metadata(item.command, item.working_directory),
+            **runtime_document_metadata(item.command),
+        }
+
     async def close(self) -> None:
         """Stop watcher tasks while leaving already started model processes alive."""
 
@@ -151,7 +161,6 @@ class ProcessManager:
             "working_directory": str(item.working_directory) if item.working_directory else None,
             "healthcheck": item.healthcheck,
             "model_paths_fingerprint": item.model_paths_fingerprint,
-            "api_base_url_explicit": item.api_base_url_explicit,
         }
 
     @property
@@ -198,7 +207,6 @@ class ProcessManager:
                             data["engine_id"],
                             data["command"],
                             data["port"],
-                            api_base_url_explicit=bool(data.get("api_base_url_explicit", False)),
                         ),
                         state="starting",
                         observed_at=datetime.now(UTC),
@@ -214,7 +222,6 @@ class ProcessManager:
                 raw_instance["engine_id"],
                 data["command"],
                 raw_instance.get("port"),
-                api_base_url_explicit=bool(data.get("api_base_url_explicit", False)),
             ))
             instance = Instance.model_validate(raw_instance)
             actual = process_start_ns(instance.pid)
@@ -241,7 +248,6 @@ class ProcessManager:
                 Path(data["working_directory"]) if data.get("working_directory") else None,
                 data.get("healthcheck"),
                 data.get("model_paths_fingerprint"),
-                bool(data.get("api_base_url_explicit", False)),
             )
             self._managed[instance.id] = item
             self.registry.register_instance(instance)
@@ -307,12 +313,7 @@ class ProcessManager:
                 engine=str(resolved.executable_path) if resolved else str(engine_path),
                 model=str(model_path) if model_path is not None else None,
                 model_name=resolved.model_name if resolved else profile.model_name,
-                model_draft=(
-                    str(profile.model.draft_path)
-                    if profile.model and profile.model.draft_path
-                    else None
-                ),
-                port=profile.port or (8188 if protocol == "comfyui" else None),
+                port=profile.port,
                 target=str(resolved.installation.root_path) if resolved else None,
                 models_root=str(self.models_root) if self.models_root is not None else None,
                 extra_model_paths_config=str(self.extra_model_paths_config),
@@ -327,18 +328,10 @@ class ProcessManager:
                 configured_port = urlsplit(configured_url).port if configured_url else None
                 port = profile.port or configured_port or port
             metadata = legacy_runtime_metadata(profile.engine.id, _command_words(command), port)
-            api_base_url_explicit = False
             if resolved is not None:
-                api_base_url_explicit = bool(
-                    profile.api is not None
-                    and "base_url" in profile.api.model_fields_set
-                    and profile.api.base_url is not None
-                )
-                api_base_url = resolved.api_base_url
-                if not api_base_url_explicit:
-                    api_base_url = _command_api_base_url(
-                        resolved.api_protocol, command, port
-                    ) or api_base_url
+                api_base_url = _command_api_base_url(
+                    resolved.api_protocol, command, port
+                ) or resolved.api_base_url
                 metadata = {
                     "types": list(resolved.types),
                     "api_protocol": resolved.api_protocol,
@@ -392,7 +385,6 @@ class ProcessManager:
                         "working_directory": str(working_directory),
                         "healthcheck": healthcheck,
                         "model_paths_fingerprint": model_paths_fingerprint,
-                        "api_base_url_explicit": api_base_url_explicit,
                     },
                 )
                 pid = await self.launcher.start(
@@ -490,7 +482,6 @@ class ProcessManager:
                 working_directory=working_directory,
                 healthcheck=healthcheck,
                 model_paths_fingerprint=model_paths_fingerprint,
-                api_base_url_explicit=api_base_url_explicit,
             )
             if self.run_store is not None:
                 try:
@@ -916,8 +907,6 @@ def _snapshot_metadata(
     engine_id: str,
     command: str,
     port: int | None,
-    *,
-    api_base_url_explicit: bool = False,
 ) -> dict[str, Any]:
     # Missing keys identify old snapshots; an explicit new protocol=none is
     # an operator choice and must not be replaced by legacy engine defaults.
@@ -926,13 +915,11 @@ def _snapshot_metadata(
         key: snapshot[key] if key in snapshot else value
         for key, value in legacy.items()
     }
-    # Snapshots written before API URL provenance was stored may contain the
-    # fixed URL from an engine definition even though the profile command uses
-    # another port. Repair known built-in engines from their rendered command.
-    if not api_base_url_explicit:
-        metadata["api_base_url"] = _command_api_base_url(
-            str(metadata["api_protocol"]), command, port
-        ) or metadata["api_base_url"]
+    # A restored snapshot may contain the fixed URL from the engine definition
+    # even though the launch command uses another port.
+    metadata["api_base_url"] = _command_api_base_url(
+        str(metadata["api_protocol"]), command, port
+    ) or metadata["api_base_url"]
     return metadata
 
 

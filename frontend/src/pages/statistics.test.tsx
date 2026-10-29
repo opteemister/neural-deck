@@ -24,7 +24,7 @@ function fixture(period: string): StatisticsData {
 }
 afterEach(() => vi.restoreAllMocks())
 describe('Statistics page', () => {
-  it('marks partial cost in the summary and both tables with the excluded request count', async () => {
+  it('marks partial cost in the summary and both tables with the incomplete request count', async () => {
     vi.spyOn(api, 'getStatistics').mockImplementation(async filters => {
       const data = fixture(filters?.period ?? 'month')
       const partial = { ...aggregate, cost: { ...aggregate.cost, usd: 1.875, state: 'partial' as const, unknown_requests: 2 } }
@@ -37,9 +37,9 @@ describe('Statistics page', () => {
     })
     render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><StatisticsPage /></QueryClientProvider>)
     await screen.findByText('test-client')
-    const costs = screen.getAllByTitle(/Не удалось оценить 2 запросов/)
+    const costs = screen.getAllByTitle(/Неполные данные у 2 запросов/)
     expect(costs).toHaveLength(3)
-    costs.forEach(cost => expect(cost).toHaveTextContent('$1.8750*'))
+    costs.forEach(cost => expect(cost).toHaveTextContent(/\$1\.8750\s*\*/))
   })
   it('shows small engine load and keeps its explanation in the header tooltip', async () => {
     vi.spyOn(api, 'getStatistics').mockImplementation(async filters => {

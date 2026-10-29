@@ -19,14 +19,15 @@ describe('Profiles workflow', () => {
     expect(status.instance?.can_stop).toBe(true)
   })
 
-  it.each([['llama.cpp', '--metrics'], ['sglang', '--enable-metrics']])('shows the saved final command for %s with metrics', async (engineId, flag) => {
+  it.each([['llama.cpp', '--metrics'], ['sglang', '--enable-metrics']])('shows the server-calculated command without changing the saved template for %s with metrics', async (engineId, flag) => {
     const command = '{{engine}} --model {{model}}'
     let savedProfile = { ...profile, engine: { ...profile.engine, id: engineId }, command, enable_metrics: true }
     const selectedEngine = { ...engine, id: engineId, command_template: command, installations: engine.installations.map((item) => ({ ...item, engine_id: engineId })) }
     const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
+      if (url.endsWith('/api/v1/profiles/preview')) return Promise.resolve(new Response(envelope({ command: `'/opt/bin/llama server' --model '/models/space model' ${flag}` }), { status: 200 }))
       if (url.endsWith('/api/v1/profiles/demo')) {
-        if (init?.method === 'PUT') savedProfile = { ...JSON.parse(String(init.body)), command: `${command} ${flag}` }
+        if (init?.method === 'PUT') savedProfile = JSON.parse(String(init.body))
         return Promise.resolve(new Response(envelope(savedProfile), { status: 200 }))
       }
       if (url.endsWith('/api/v1/profiles')) return Promise.resolve(new Response(envelope({ items: [savedProfile], issues: [] }), { status: 200 }))
@@ -45,6 +46,7 @@ describe('Profiles workflow', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Сохранить профиль' }))
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/v1/profiles/demo', expect.objectContaining({ method: 'PUT', body: expect.stringContaining('"enable_metrics":true') })))
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Изменить профиль demo' })).not.toBeInTheDocument())
+    expect(savedProfile.command).toBe(command)
     fireEvent.click(await screen.findByText('public-qwen'))
     expect(await screen.findByText(`'/opt/bin/llama server' --model '/models/space model' ${flag}`)).toBeVisible()
   })
@@ -95,7 +97,7 @@ describe('Profiles workflow', () => {
     expect(currentProfile.command).toBe(profile.command)
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Изменить профиль demo' })).not.toBeInTheDocument())
     fireEvent.click(await screen.findByRole('button', { name: 'Изменить' }))
-    expect(await screen.findByRole('checkbox', { name: 'Включить метрики' })).not.toBeChecked()
+    await waitFor(() => expect(screen.getByRole('checkbox', { name: 'Включить метрики' })).not.toBeChecked())
   })
 
   it('starts a profile when the start button is clicked', async () => {

@@ -29,8 +29,10 @@ from .profiles.service import ProfileService
 from .token_stats import RequestJournalService
 
 if TYPE_CHECKING:
+    from .chat.service import ChatService
     from .image.service import ImageGenerationService
     from .metrics.service import MetricsService
+    from .proxy.comfy_provider import ComfyProviderService
     from .proxy.service import ProxyService
     from .statistics import StatisticsService
 
@@ -73,6 +75,8 @@ class AppContainer:
     image_service: ImageGenerationService
     metrics_service: MetricsService
     statistics_service: StatisticsService
+    comfy_service: ComfyProviderService | None = None
+    chat_service: ChatService | None = None
     external_discovery: ExternalDiscovery = discover_external
     diagnostics: list[RuntimeDiagnostic] = field(default_factory=list)
     mcp_server: Any | None = None
@@ -138,8 +142,12 @@ class AppContainer:
                 self.startup_task = None
             await self.model_catalogue.stop_update_scheduler()
             await self.metrics_service.close()
+            if self.chat_service is not None:
+                await self.chat_service.close()
             await self.proxy_service.close()
             await self.image_service.close()
+            if self.comfy_service is not None:
+                await self.comfy_service.close()
             await self.process_manager.close()
         finally:
             try:

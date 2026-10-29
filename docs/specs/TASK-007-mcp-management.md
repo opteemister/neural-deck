@@ -236,12 +236,16 @@ model IDs, фактическая версия, счётчики сканиро�
 | `nd_start_profile` | `profile_id` | InstanceSummary |
 
 ProfileData — существующая файловая схема: `version,name,model_name,engine
-{id,installation_id},command`, опциональные `profile_id,model{path,draft_path},
-types,api,ui_url,port,environment,autostart,enable_metrics` и существующие три
+{id,installation_id},command`, опциональные `profile_id,model{path},
+port,environment,autostart,enable_metrics` и существующие три
 поля цен за миллион токенов. Полная схема доступна в tools/list. Сохранённые
 профили остаются в файлах; SQLite не становится источником конфигурации.
 Профили без стабильного ID разрешаются/мигрируют существующим механизмом;
 MCP не генерирует новый ID при каждом чтении.
+
+Уточнение 2026-10-29: типы задач, API-протокол, API URL и UI URL принадлежат
+только определению движка и не переопределяются профилем. Draft-модель задаётся
+явно аргументами command; отдельные draft_path и model_draft не поддерживаются.
 
 Выбор GPU хранится в `environment.CUDA_VISIBLE_DEVICES`: UUID из
 `nd_get_hardware`, несколько — через запятую. Отсутствие переменной означает

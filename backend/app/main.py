@@ -14,15 +14,18 @@ from pathlib import Path
 from typing import Annotated, Any, cast
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.routing import APIRoute
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.routing import BaseRoute
 
 from .api.dependencies import get_engine, get_runtime
+from .api.chat import router as chat_router
 from .api.instances import router as instances_router
 from .api.logs import router as logs_router
 from .api.management import router as management_router
@@ -30,7 +33,10 @@ from .api.metrics import export_router as metrics_export_router
 from .api.metrics import router as metrics_router
 from .api.profiles import router as profiles_router
 from .api.proxy_routes import router as proxy_routes_router
+from .api.openai_connections import router as openai_connections_router
 from .config import Settings, load_settings
+from .chat.service import ChatService
+from .chat.store import ChatStore
 from .container import AppContainer
 from .db import check_database, create_engine, create_session_factory, migrate_database
 from .engines.service import EngineService
@@ -58,9 +64,14 @@ from .process.registry import ModelRegistry
 from .process.runs import RunStore
 from .profiles.repository import ProfileRepository
 from .profiles.service import ProfileService
+from .proxy.comfy_provider import ComfyProviderService
 from .proxy.listener import ApplicationCORSMiddleware, model_api_listener
+from .proxy.media_router import internal_router as internal_media_router
+from .proxy.media_router import management_router as media_management_router
+from .proxy.media_router import router as media_router
 from .proxy.router import internal_router as internal_proxy_router
 from .proxy.router import router as proxy_router
+from .proxy.router import v2_router
 from .proxy.routes import RouteManager
 from .proxy.service import ProxyService
 from .schemas.common import SuccessEnvelope
@@ -370,12 +381,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await _backfill_profile_ids(profile_repository, session_factory)
         journal_service = RequestJournalService(session_factory=session_factory)
         route_manager = RouteManager(paths.config_dir, profile_repository)
+        comfy_service = ComfyProviderService(
+            route_manager.config,
+            session_factory=session_factory,
+            cache_path=paths.sqlite_path.with_name("comfyui-workflow-cache.json"),
+        )
         image_service = ImageGenerationService(process_manager, profile_repository)
         proxy_service = ProxyService(
             process_manager,
             journal=journal_service,
             route_manager=route_manager,
             image_service=image_service,
+            reasoning_metadata=process_manager.reasoning_metadata,
         )
         import secrets
 
@@ -413,9 +430,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             image_service=image_service,
             metrics_service=metrics_service,
             statistics_service=statistics_service,
+            comfy_service=comfy_service,
             external_discovery=external_discovery,
             mcp_server=getattr(app.state, "mcp_server", None),
         )
+        runtime.chat_service = ChatService(
+            proxy_service, comfy_service, ChatStore(paths.sqlite_path.with_name("chats.sqlite3"))
+        )
+        await runtime.chat_service.initialize()
         _publish_runtime(app, runtime)
         model_catalogue.prepare_background_scan()
         await model_catalogue.start_update_scheduler()
@@ -551,6 +573,10 @@ def create_app(
     # must be included before the frontend fallback route as well.
     app.include_router(management_router)
     app.include_router(proxy_routes_router)
+    app.include_router(openai_connections_router)
+    app.include_router(chat_router)
+    app.include_router(media_management_router)
+    app.include_router(internal_media_router)
     app.include_router(internal_proxy_router)
     app.include_router(internal_image_router)
     app.include_router(profiles_router)
@@ -560,6 +586,18 @@ def create_app(
     app.include_router(metrics_export_router)
     app.include_router(instances_router)
     app.include_router(logs_router)
+
+    @app.get("/api/v1/proxy/openapi.json", include_in_schema=False)
+    async def provider_openapi(request: Request) -> JSONResponse:
+        # Generate from the provider app, never from the management routes or
+        # an external OPENAI_PORT request made by the browser.
+        provider = create_proxy_app(request.app.state.runtime)
+        return JSONResponse(
+            provider.openapi(),
+            headers={
+                "Content-Disposition": 'inline; filename="neural-deck-openapi.json"',
+            },
+        )
 
     # The MCP server is mounted before the SPA fallback.  Its session manager
     # is entered from the host lifespan below, so the mounted Starlette app
@@ -610,6 +648,21 @@ def create_app(
     return app
 
 
+def _include_unique_routes(app: FastAPI, routers: list[APIRouter]) -> None:
+    """Select the active handlers before include_router nests the routes."""
+    seen: set[tuple[str, frozenset[str]]] = set()
+    for source in routers:
+        selected: list[BaseRoute] = []
+        for route in source.routes:
+            if isinstance(route, APIRoute):
+                key = (route.path, frozenset(route.methods or ()))
+                if key in seen:
+                    continue
+                seen.add(key)
+            selected.append(route)
+        app.include_router(APIRouter(routes=selected))
+
+
 def create_proxy_app(runtime: AppContainer) -> FastAPI:
     app = FastAPI(title="Neural Deck OpenAI API", version="0.1.0")
     app.state.runtime = runtime
@@ -620,9 +673,10 @@ def create_proxy_app(runtime: AppContainer) -> FastAPI:
     app.add_exception_handler(HTTPException, cast(Any, http_error_handler))
     app.add_exception_handler(StarletteHTTPException, cast(Any, http_error_handler))
     app.add_exception_handler(Exception, unhandled_error_handler)
-    app.include_router(proxy_router)
-    app.include_router(image_router)
-    app.include_router(native_image_router)
+    _include_unique_routes(app, [media_router, proxy_router, v2_router, image_router])
+    # The native multi-method wildcard bridge remains available, but cannot
+    # describe operation-specific provider request/response contracts.
+    app.include_router(native_image_router, include_in_schema=False)
     return app
 
 

@@ -12,8 +12,14 @@ OPERATIONS = {
     "/v1/embeddings/media": ("embeddings", {"openai"}),
     "/v1/audio/speech": ("tts", {"openai"}),
     "/v1/audio/transcriptions": ("asr", {"openai"}),
+    "/v1/audio/translations": ("asr", {"openai"}),
+    "/v1/ocr": ("ocr", {"openai"}),
     "/v1/images/generations": ("image", {"openai", "comfyui"}),
+    "/v1/images/edits": ("image", {"openai"}),
+    "/v1/images/variations": ("image", {"openai"}),
     "/v1/decisions": ("decision", {"jev"}),
+    "/v1/systemone": ("decision", {"jev"}),
+    "/v2/embed": ("embeddings", {"openai"}),
 }
 
 
@@ -38,7 +44,17 @@ def upstream_url(instance: Instance, route: str) -> str:
                        status_code=503)
     path = parsed.path.rstrip("/")
     if instance.api_protocol == "openai":
-        suffix = route.removeprefix("/v1") if path.endswith("/v1") else route
+        # Cohere-compatible providers may store the endpoint itself rather
+        # than a server root.  Only normalize this known endpoint; arbitrary
+        # path suffixes must continue to receive the operation route.
+        if route == "/v2/embed" and path.endswith(route):
+            suffix = ""
+        elif path.endswith("/v1"):
+            root = path[:-3]
+            suffix = route
+            path = root
+        else:
+            suffix = route
     else:
         suffix = "/v1/systemone" if route == "/v1/decisions" else route
     return urlunsplit((parsed.scheme, parsed.netloc, path + suffix, "", ""))

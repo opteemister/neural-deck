@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.pool import Pool
 
 from .config import Settings
 from .paths import DataPaths
@@ -38,7 +39,10 @@ def database_url(sqlite_path: Path) -> str:
     return f"sqlite+aiosqlite:///{sqlite_path}"
 
 
-def create_engine(sqlite_path: Path, *, echo: bool = False) -> AsyncEngine:
+def create_engine(
+    sqlite_path: Path, *, echo: bool = False, poolclass: type[Pool] | None = None
+) -> AsyncEngine:
+    pool_options: dict[str, Any] = {"poolclass": poolclass} if poolclass is not None else {}
     engine = create_async_engine(
         database_url(sqlite_path),
         echo=echo,
@@ -46,6 +50,7 @@ def create_engine(sqlite_path: Path, *, echo: bool = False) -> AsyncEngine:
         hide_parameters=True,
         pool_pre_ping=True,
         connect_args={"check_same_thread": False, "timeout": 30},
+        **pool_options,
     )
 
     @event.listens_for(engine.sync_engine, "connect")

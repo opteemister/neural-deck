@@ -13,7 +13,8 @@ class Manager:
         self.instance = Instance(
             id="managed/profile/10-20", source="managed", profile_name="profile",
             engine_id="vllm", pid=10, process_start_time_ns=20,
-            port=8000, model_name="public-model", state="running",
+            port=8000, model_name="public-model", state="ready", types=["text"],
+            api_protocol="openai", api_base_url="http://127.0.0.1:8000/v1",
             observed_at=datetime.now(UTC),
         )
         self.registry.register_instance(self.instance)
@@ -159,7 +160,7 @@ async def test_starting_engine_retries_without_reprobing_cached_ready_engine():
     manager = Manager()
     starting = manager.instance.model_copy(update={
         "id": "managed/starting/11-30", "pid": 11, "process_start_time_ns": 30,
-        "port": 8001, "model_name": "starting-model",
+        "port": 8001, "api_base_url": "http://127.0.0.1:8001/v1", "model_name": "starting-model",
     })
 
     async def refresh(*, probe_models):

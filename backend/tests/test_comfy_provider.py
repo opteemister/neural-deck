@@ -409,6 +409,321 @@ def test_qwen_edit_prompt_does_not_skip_image_size_or_batch_bindings() -> None:
     assert patched["459:456"]["inputs"] == {"width": 768, "height": 640, "batch_size": 2}
 
 
+@pytest.mark.parametrize(
+    ("size", "width", "height"),
+    [("1024x1024", 1024, 1024), ("768x1024", 768, 1024), ("1024x768", 1024, 768)],
+)
+def test_qwen_custom_size_switch_and_transparent_prompt(size: str, width: int, height: int) -> None:
+    provider = ComfyUIProvider(
+        {
+            "sources": {"main": {"base_url": "http://comfy.test:8188"}},
+            "models": {
+                "qwen": {
+                    "source": "main",
+                    "type": "image",
+                    "workflows": {"edit": "workflows/edit.json"},
+                }
+            },
+        }
+    )
+    graph = _qwen_edit_graph()
+    graph.update(
+        {
+            "470": {"class_type": "LoadImage", "inputs": {"image": "old.png"}},
+            "459:468": {
+                "class_type": "ComfySwitchNode",
+                "inputs": {
+                    "switch": False,
+                    "on_false": ["459:474", 2],
+                    "on_true": ["459:456", 0],
+                },
+            },
+            "459:456": {
+                "class_type": "EmptyLatentImage",
+                "inputs": {"width": 1024, "height": 1024, "batch_size": 1},
+            },
+        }
+    )
+    patched = provider.patch_graph(
+        graph,
+        provider._model("qwen"),
+        "edit",
+        {
+            "prompt": "make the background transparent",
+            "image": b"ignored",
+            "size": size,
+            "n": 2,
+            "background": "transparent",
+        },
+        uploaded_inputs={"image": "uploaded.png"},
+        provided_fields={"prompt", "image", "size", "n", "background"},
+    )
+    assert patched["459:468"]["inputs"]["switch"] is True
+    assert patched["459:456"]["inputs"] == {
+        "width": width,
+        "height": height,
+        "batch_size": 2,
+    }
+    assert patched["470"]["inputs"]["image"] == "uploaded.png"
+    assert "RGBA format image with transparency" in patched["459:484"]["inputs"]["on_false"]
+
+
+def test_qwen_opaque_background_keeps_existing_graph_without_background_binding() -> None:
+    provider = ComfyUIProvider(
+        {
+            "sources": {"main": {"base_url": "http://comfy.test:8188"}},
+            "models": {
+                "qwen": {
+                    "source": "main",
+                    "type": "image",
+                    "workflows": {"edit": "workflows/edit.json"},
+                }
+            },
+        }
+    )
+    graph = _qwen_edit_graph()
+    patched = provider.patch_graph(
+        graph,
+        provider._model("qwen"),
+        "edit",
+        {"background": "opaque"},
+        provided_fields={"background"},
+    )
+    assert patched["459:484"]["inputs"]["on_false"] == "default edit prompt"
+
+
+def test_unknown_graph_background_requires_explicit_binding() -> None:
+    provider = ComfyUIProvider(
+        {
+            "sources": {"main": {"base_url": "http://comfy.test:8188"}},
+            "models": {
+                "image": {
+                    "source": "main",
+                    "type": "image",
+                    "workflows": {"generate": "workflows/generate.json"},
+                }
+            },
+        }
+    )
+    with pytest.raises(AppError) as error:
+        provider.patch_graph(
+            {"1": {"class_type": "CustomText", "inputs": {"prompt": "old"}}},
+            provider._model("image"),
+            "generate",
+            {"background": "transparent"},
+            provided_fields={"background"},
+        )
+    assert error.value.code == "comfyui_parameter_unsupported"
+    assert error.value.details["field"] == "background"
+
+
+def _qwen_masked_resize_graph() -> dict[str, dict[str, object]]:
+    graph = _qwen_edit_graph()
+    graph["459:474"]["inputs"]["images.image_1"] = ["470", 0]
+    graph.update(
+        {
+            "470": {"class_type": "LoadImage", "inputs": {"image": "source.png"}},
+            "512": {
+                "class_type": "LoadImageMask",
+                "inputs": {"image": "mask.png", "channel": "alpha"},
+            },
+            "513": {
+                "class_type": "ImageCompositeMasked",
+                "inputs": {
+                    "destination": ["470", 0],
+                    "source": ["459:457", 0],
+                    "mask": ["512", 0],
+                    "x": 0,
+                    "y": 0,
+                    "resize_source": False,
+                },
+            },
+            "459:468": {
+                "class_type": "ComfySwitchNode",
+                "inputs": {
+                    "switch": False,
+                    "on_false": ["459:474", 2],
+                    "on_true": ["459:456", 0],
+                },
+            },
+            "459:456": {
+                "class_type": "EmptyLatentImage",
+                "inputs": {"width": 1024, "height": 1024, "batch_size": 1},
+            },
+        }
+    )
+    return graph
+
+
+def _qwen_model(*, bindings: dict[str, object] | None = None) -> dict[str, object]:
+    model: dict[str, object] = {
+        "source": "main",
+        "type": "image",
+        "workflows": {"edit_masked": "workflows/edit-masked.json"},
+    }
+    if bindings is not None:
+        model["bindings"] = {"edit_masked": bindings}
+    return model
+
+
+def test_qwen_masked_resize_rewires_image_and_mask_in_memory() -> None:
+    graph = _qwen_masked_resize_graph()
+    original = copy.deepcopy(graph)
+    provider = ComfyUIProvider(
+        {
+            "sources": {"main": {"base_url": "http://comfy.test:8188"}},
+            "models": {"qwen": _qwen_model()},
+        }
+    )
+    patched = provider.patch_graph(
+        graph,
+        provider._model("qwen"),
+        "edit_masked",
+        {"prompt": "resize", "image": b"ignored", "mask": b"ignored", "size": "768x1024"},
+        uploaded_inputs={"image": "uploaded.png", "mask": "uploaded-mask.png"},
+        provided_fields={"prompt", "image", "mask", "size"},
+    )
+    assert graph == original
+    assert patched["470"]["inputs"]["image"] == "uploaded.png"
+    assert patched["512"]["inputs"]["image"] == "uploaded-mask.png"
+    assert patched["459:474"]["inputs"]["images.image_1"] == [
+        "__nd_qwen_mask_resize_image",
+        0,
+    ]
+    assert patched["513"]["inputs"]["destination"] == [
+        "__nd_qwen_mask_resize_image",
+        0,
+    ]
+    assert patched["513"]["inputs"]["mask"] == ["__nd_qwen_image_to_mask", 0]
+    assert patched["459:468"]["inputs"]["switch"] is True
+    assert patched["459:456"]["inputs"]["width"] == 768
+    assert patched["459:456"]["inputs"]["height"] == 1024
+    assert patched["__nd_qwen_mask_resize_image"]["inputs"] == {
+        "image": ["470", 0],
+        "upscale_method": "lanczos",
+        "width": 768,
+        "height": 1024,
+        "crop": "disabled",
+    }
+    assert patched["__nd_qwen_mask_to_image"]["inputs"] == {"mask": ["512", 0]}
+    assert patched["__nd_qwen_mask_resize_mask"]["inputs"]["image"] == [
+        "__nd_qwen_mask_to_image",
+        0,
+    ]
+    assert patched["__nd_qwen_mask_resize_mask"]["inputs"]["width"] == 768
+    assert patched["__nd_qwen_mask_resize_mask"]["inputs"]["height"] == 1024
+    assert patched["__nd_qwen_image_to_mask"]["inputs"] == {
+        "image": ["__nd_qwen_mask_resize_mask", 0],
+        "channel": "red",
+    }
+
+
+def test_qwen_masked_resize_keeps_explicit_size_bindings_authoritative() -> None:
+    graph = _qwen_masked_resize_graph()
+    provider = ComfyUIProvider(
+        {
+            "sources": {"main": {"base_url": "http://comfy.test:8188"}},
+            "models": {
+                "qwen": _qwen_model(
+                    bindings={
+                        "size.width": {"node": "459:456", "input": "width"},
+                        "size.height": {"node": "459:456", "input": "height"},
+                        "image": {"node": "470", "input": "image"},
+                        "mask": {"node": "512", "input": "image"},
+                    }
+                )
+            },
+        }
+    )
+    patched = provider.patch_graph(
+        graph,
+        provider._model("qwen"),
+        "edit_masked",
+        {"image": b"ignored", "mask": b"ignored", "size": "1024x768"},
+        uploaded_inputs={"image": "explicit.png", "mask": "explicit-mask.png"},
+        provided_fields={"image", "mask", "size"},
+    )
+    assert patched["470"]["inputs"]["image"] == "explicit.png"
+    assert patched["512"]["inputs"]["image"] == "explicit-mask.png"
+    assert patched["459:456"]["inputs"]["width"] == 1024
+    assert patched["459:456"]["inputs"]["height"] == 768
+    assert patched["459:468"]["inputs"]["switch"] is True
+
+
+def test_qwen_masked_transparent_path_preserves_rgba_through_composite() -> None:
+    graph = _qwen_masked_resize_graph()
+    provider = ComfyUIProvider(
+        {
+            "sources": {"main": {"base_url": "http://comfy.test:8188"}},
+            "models": {"qwen": _qwen_model()},
+        }
+    )
+    patched = provider.patch_graph(
+        graph,
+        provider._model("qwen"),
+        "edit_masked",
+        {"size": "768x1024", "background": "transparent"},
+        provided_fields={"size", "background"},
+    )
+    assert patched["513"]["inputs"]["destination"] == ["__nd_qwen_mask_dest_join", 0]
+    assert patched["513"]["inputs"]["source"] == ["__nd_qwen_mask_source_join", 0]
+    assert patched["__nd_qwen_mask_dest_split"]["inputs"] == {
+        "image": ["__nd_qwen_mask_resize_image", 0]
+    }
+    assert patched["__nd_qwen_mask_dest_join"]["inputs"] == {
+        "image": ["__nd_qwen_mask_dest_split", 0],
+        "alpha": ["__nd_qwen_mask_dest_split", 1],
+    }
+    assert patched["__nd_qwen_mask_source_split"]["inputs"] == {"image": ["459:457", 0]}
+    assert patched["__nd_qwen_mask_source_join"]["inputs"] == {
+        "image": ["__nd_qwen_mask_source_split", 0],
+        "alpha": ["__nd_qwen_mask_source_split", 1],
+    }
+
+
+def test_qwen_masked_transparent_without_size_still_keeps_alpha() -> None:
+    graph = _qwen_masked_resize_graph()
+    provider = ComfyUIProvider(
+        {
+            "sources": {"main": {"base_url": "http://comfy.test:8188"}},
+            "models": {"qwen": _qwen_model()},
+        }
+    )
+    patched = provider.patch_graph(
+        graph,
+        provider._model("qwen"),
+        "edit_masked",
+        {"background": "transparent"},
+        provided_fields={"background"},
+    )
+    assert patched["513"]["inputs"]["destination"] == ["__nd_qwen_mask_dest_join", 0]
+    assert patched["513"]["inputs"]["source"] == ["__nd_qwen_mask_source_join", 0]
+    assert "__nd_qwen_mask_resize_image" not in patched
+
+
+def test_qwen_masked_resize_rejects_unknown_composite_shape() -> None:
+    graph = _qwen_masked_resize_graph()
+    graph["513"]["inputs"]["destination"] = ["other-image", 0]
+    original = copy.deepcopy(graph)
+    provider = ComfyUIProvider(
+        {
+            "sources": {"main": {"base_url": "http://comfy.test:8188"}},
+            "models": {"qwen": _qwen_model()},
+        }
+    )
+    with pytest.raises(AppError) as error:
+        provider.patch_graph(
+            graph,
+            provider._model("qwen"),
+            "edit_masked",
+            {"size": "768x1024"},
+            provided_fields={"size"},
+        )
+    assert error.value.code == "comfyui_parameter_unsupported"
+    assert error.value.details["field"] == "size"
+    assert graph == original
+
+
 def test_qwen_edit_prompt_literal_binding_and_ambiguity_are_explicit() -> None:
     provider = ComfyUIProvider(
         {

@@ -25,6 +25,9 @@ import type {
   ProfileListData,
   ProfileSummaryData,
   ProxyRoute,
+  OpenAIConnection,
+  RemoteAliasTarget,
+  AliasCandidateTarget,
   ProxyRoutesData,
   SettingsData,
   StatusData,
@@ -34,6 +37,7 @@ import type {
 } from '@/types/api'
 
 import { openAiEndpoint } from '@/lib/openai-endpoint'
+import type { ChatConversation, ChatHistoryData, HarnessRequest } from '@/lib/chat-harness'
 
 const apiBase = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, '') ?? ''
 let modelApiBasePromise: Promise<string> | undefined
@@ -204,6 +208,11 @@ export async function streamChat(
 const json = (body: unknown): RequestInit => ({ method: 'POST', body: JSON.stringify(body) })
 
 export const api = {
+  listChats: (signal?: AbortSignal) => request<ChatHistoryData>('/api/v1/chat', { signal }),
+  deleteChat: (id: string) => request<{ id: string; deleted: boolean }>(`/api/v1/chat/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  getChat: (id: string, signal?: AbortSignal) => request<ChatConversation>(`/api/v1/chat/${encodeURIComponent(id)}`, { signal }),
+  sendChat: (id: string, body: HarnessRequest, signal?: AbortSignal) => request<ChatConversation>(`/api/v1/chat/${encodeURIComponent(id)}/turns`, { ...json(body), signal }),
+  stopChat: (id: string) => request<ChatConversation>(`/api/v1/chat/${encodeURIComponent(id)}/stop`, json({})),
   getSystem: () => request<SystemData>('/api/v1/system'),
   getStatus: () => request<StatusData>('/api/v1/status'),
   getHealth: () => request<HealthData>('/api/v1/health'),
@@ -244,8 +253,14 @@ export const api = {
   getDailyMetricRuns: () => request<{ items: Array<{ profile_name: string; model_name: string | null; engine_id: string }> }>('/api/v1/metrics/runs'),
   getProfile: (name: string) => request<ProfileData>(`/api/v1/profiles/${encodeURIComponent(name)}`),
   getProxyRoutes: () => request<ProxyRoutesData>('/api/v1/proxy/routes'),
-  createProxyAlias: (body: { name: string; profile_ids: string[] }) => request<ProxyRoute>('/api/v1/proxy/routes/aliases', json(body)),
-  updateProxyAlias: (currentName: string, body: { name: string; profile_ids: string[] }) => request<ProxyRoute>(`/api/v1/proxy/routes/aliases/${encodeURIComponent(currentName)}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  getOpenAIConnections: () => request<{ items: OpenAIConnection[] }>('/api/v1/proxy/openai/connections'),
+  createOpenAIConnection: (body: { name: string; base_url: string; api_key?: string }) => request<OpenAIConnection>('/api/v1/proxy/openai/connections', json(body)),
+  updateOpenAIConnection: (id: string, body: { name: string; base_url: string; api_key?: string }) => request<OpenAIConnection>(`/api/v1/proxy/openai/connections/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  deleteOpenAIConnection: (id: string) => request<{ id: string }>(`/api/v1/proxy/openai/connections/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  getConnectionModels: (id: string, refresh = false) => request<{ items: OpenAiModel[] }>(`/api/v1/proxy/openai/connections/${encodeURIComponent(id)}/models?refresh=${refresh}`),
+  createProxyAlias: (body: { name: string; profile_ids: string[]; remote?: RemoteAliasTarget | null; candidates?: AliasCandidateTarget[] }) => request<ProxyRoute>('/api/v1/proxy/routes/aliases', json(body)),
+  updateProxyAlias: (currentName: string, body: { name: string; profile_ids: string[]; remote?: RemoteAliasTarget | null; candidates?: AliasCandidateTarget[] }) => request<ProxyRoute>(`/api/v1/proxy/routes/aliases/${encodeURIComponent(currentName)}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  updateProxyCandidates: (name: string, candidate_ids: string[]) => request<ProxyRoute>(`/api/v1/proxy/routes/${encodeURIComponent(name)}`, { method: 'PUT', body: JSON.stringify({ candidate_ids }) }),
   updateProxyRoute: (name: string, profile_ids: string[]) => request<ProxyRoute>(`/api/v1/proxy/routes/${encodeURIComponent(name)}`, { method: 'PUT', body: JSON.stringify({ profile_ids }) }),
   deleteProxyAlias: (name: string) => request<{ name: string }>(`/api/v1/proxy/routes/aliases/${encodeURIComponent(name)}`, { method: 'DELETE' }),
   previewProfile: (body: ProfileData) => request<{ command: string }>('/api/v1/profiles/preview', json(body)),

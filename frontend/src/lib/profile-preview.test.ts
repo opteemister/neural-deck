@@ -3,6 +3,10 @@ import { describe, expect, it } from 'vitest'
 import { previewProfileCommand } from '@/lib/profile-preview'
 
 describe('profile command preview', () => {
+  it('accepts a literal draft path and rejects the removed draft placeholder', () => {
+    expect(previewProfileCommand("{{engine}} --model-draft '/models/draft model.gguf'", { engine: '/bin/llama-server' })).toEqual({ ok: true, command: "/bin/llama-server --model-draft '/models/draft model.gguf'" })
+    expect(previewProfileCommand('{{engine}} --model-draft {{model_draft}}', { engine: '/bin/llama-server' })).toMatchObject({ ok: false })
+  })
   it('quotes the public alias and preserves placeholder-like text in values', () => {
     expect(previewProfileCommand('{{engine}} --model {{model}} --alias {{model_name}}', { engine: '/bin/engine', model: '/models/{{model_name}}', model_name: 'public $& {{model}}' })).toEqual({ ok: true, command: "/bin/engine --model '/models/{{model_name}}' --alias 'public $& {{model}}'" })
   })

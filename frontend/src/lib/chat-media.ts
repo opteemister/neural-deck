@@ -82,6 +82,11 @@ export function isImageAttachment(attachment: ChatAttachment | File): boolean {
   return classifyAttachment(attachment) === 'image'
 }
 
+export function isPdfAttachment(attachment: ChatAttachment | File): boolean {
+  const file = attachmentFile(attachment)
+  return file.type.toLowerCase().split(';', 1)[0] === 'application/pdf' || fileExtension(file) === 'pdf'
+}
+
 export function isDocumentAttachment(attachment: ChatAttachment | File): boolean {
   return classifyAttachment(attachment) === 'document'
 }
@@ -95,6 +100,7 @@ export type ChatModelType = 'text' | 'image' | 'video' | 'ocr'
 
 /** Pick the first chat-compatible output type from declared model metadata. */
 export function chatModelType(model: OpenAiModel | undefined): ChatModelType | null {
+  if (model?.capabilities?.document_adapter === 'unlimited_ocr_2') return 'ocr'
   if (!model?.types?.length) return 'text'
   const declared = new Set(model?.types ?? [])
   if (declared.has('text')) return 'text'
@@ -125,7 +131,7 @@ export function resolveChatOperation(model: OpenAiModel | undefined, attachments
       : 'Не удалось определить операцию выбранной модели для этого чата.')
   }
 
-  if (!modelType || modelType === 'text') return images.length > 0 ? 'vision' : 'text'
+  if (!modelType || modelType === 'text') return images.length > 0 || attachments.some(isPdfAttachment) ? 'vision' : 'text'
   if (modelType === 'image') {
     if (nonImages.length > 0) throw new ChatMediaError(nonImages.some(isDocumentAttachment) ? 'Для этого вложения выберите модель для документов.' : 'К этому запросу можно прикрепить только изображения.')
     if (images.length === 0) return 'image-generation'
@@ -165,6 +171,11 @@ export async function prepareUserContent(prompt: string, attachments: ChatAttach
     const kind = classifyAttachment(file)
     if (kind === 'image') {
       parts.push({ type: 'image_url', image_url: { url: await fileToDataUrl(file) } })
+      continue
+    }
+    if (isPdfAttachment(file)) {
+      if (file.size > 25 * 1024 * 1024) throw new ChatMediaError('Максимальный размер PDF — 25 МБ')
+      parts.push({ type: 'file', file: { filename: file.name, file_data: await fileToDataUrl(file) } })
       continue
     }
     if (kind === 'text') {
@@ -226,6 +237,7 @@ export type MediaStreamChunk = {
 export type VisionContentPart =
   | { type: 'text'; text: string }
   | { type: 'image_url'; image_url: { url: string } }
+  | { type: 'file'; file: { filename: string; file_data: string } }
 
 export type VisionMessage = {
   role: 'user' | 'assistant'
@@ -254,15 +266,25 @@ async function errorMessage(response: Response): Promise<string> {
 export async function mediaJson<T>(path: string, init?: RequestInit, signal?: AbortSignal): Promise<T> {
   const headers = new Headers(init?.headers)
   if (init?.body && typeof init.body === 'string' && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
-  const response = await fetch(`${mediaApiBase}${path}`, { ...init, headers, signal: signal ?? init?.signal })
-  if (!response.ok) throw new ChatMediaError(await errorMessage(response), response.status)
-  return await response.json() as T
+  try {
+    const response = await fetch(`${mediaApiBase}${path}`, { ...init, headers, signal: signal ?? init?.signal })
+    if (!response.ok) throw new ChatMediaError(await errorMessage(response), response.status)
+    return await response.json() as T
+  } catch (error) {
+    if (error instanceof TypeError) throw new ChatMediaError('Связь с сервером прервана')
+    throw error
+  }
 }
 
 export async function mediaBlob(path: string, signal?: AbortSignal): Promise<Blob> {
-  const response = await fetch(`${mediaApiBase}${path}`, { signal })
-  if (!response.ok) throw new ChatMediaError(await errorMessage(response), response.status)
-  return response.blob()
+  try {
+    const response = await fetch(`${mediaApiBase}${path}`, { signal })
+    if (!response.ok) throw new ChatMediaError(await errorMessage(response), response.status)
+    return await response.blob()
+  } catch (error) {
+    if (error instanceof TypeError) throw new ChatMediaError('Связь с сервером прервана')
+    throw error
+  }
 }
 
 /** Models are deliberately requested with all_types so media aliases are not hidden. */
@@ -279,15 +301,17 @@ function responseData<T extends object>(response: T): T extends { data: infer D 
   return response as never
 }
 
-export async function createImageGeneration(body: { model: string; prompt: string }, signal?: AbortSignal): Promise<ImageResult> {
+export async function createImageGeneration(body: { model: string; prompt: string; size?: string; background?: 'transparent' | 'opaque' }, signal?: AbortSignal): Promise<ImageResult> {
   const response = responseData(await mediaJson<{ data?: ImageAsset[] } | { data: ImageAsset[] }>('/images/generations', { method: 'POST', body: JSON.stringify(body) }, signal))
   const assets = Array.isArray(response) ? response : (response as { data?: ImageAsset[] }).data ?? []
   return { kind: 'image', assets }
 }
 
-export async function createImageMultipart(path: '/images/edits' | '/images/variations', fields: { model: string; prompt?: string; image: File; mask?: File }, signal?: AbortSignal): Promise<ImageResult> {
+export async function createImageMultipart(path: '/images/edits' | '/images/variations', fields: { model: string; prompt?: string; image: File; mask?: File; size?: string; background?: 'transparent' | 'opaque' }, signal?: AbortSignal): Promise<ImageResult> {
   const form = new FormData()
   form.append('model', fields.model)
+  if (fields.size) form.append('size', fields.size)
+  if (fields.background) form.append('background', fields.background)
   if (path === '/images/edits') form.append('prompt', fields.prompt ?? '')
   form.append('image', fields.image, fields.image.name)
   if (fields.mask) form.append('mask', fields.mask, fields.mask.name)
@@ -298,6 +322,8 @@ export async function createImageMultipart(path: '/images/edits' | '/images/vari
 
 export type VideoStatus = {
   id?: string
+  model?: string
+  created_at?: number
   status?: string
   url?: string | null
   content_url?: string | null
@@ -305,10 +331,12 @@ export type VideoStatus = {
   error?: string | { code?: string; message: string } | null
 }
 
-export async function createVideo(fields: { model: string; prompt: string; inputReference?: File }, signal?: AbortSignal): Promise<VideoStatus> {
+export async function createVideo(fields: { model: string; prompt: string; inputReference?: File; size?: string; seconds?: number }, signal?: AbortSignal): Promise<VideoStatus> {
   const form = new FormData()
   form.append('model', fields.model)
   form.append('prompt', fields.prompt)
+  if (fields.size) form.append('size', fields.size)
+  if (fields.seconds !== undefined) form.append('seconds', String(fields.seconds))
   if (fields.inputReference) form.append('input_reference', fields.inputReference, fields.inputReference.name)
   return responseData(await mediaJson<VideoStatus | { data: VideoStatus }>('/videos', { method: 'POST', body: form }, signal))
 }
@@ -317,18 +345,48 @@ export async function getVideo(id: string, signal?: AbortSignal): Promise<VideoS
   return responseData(await mediaJson<VideoStatus | { data: VideoStatus }>(`/videos/${encodeURIComponent(id)}`, undefined, signal))
 }
 
-export async function waitForVideo(id: string, signal: AbortSignal, onStatus?: (status: VideoStatus) => void): Promise<VideoStatus> {
-  let status = await getVideo(id, signal)
+function videoDelay(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) { reject(new DOMException('Aborted', 'AbortError')); return }
+    const abort = () => { window.clearTimeout(timer); signal?.removeEventListener('abort', abort); reject(new DOMException('Aborted', 'AbortError')) }
+    const timer = window.setTimeout(() => { signal?.removeEventListener('abort', abort); resolve() }, ms)
+    signal?.addEventListener('abort', abort, { once: true })
+  })
+}
+
+/** Retry safe reads of an existing job, never POST /videos. No generation deadline. */
+async function retryVideoRead<T>(read: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal, onConnection?: (reconnecting: boolean) => void, timeoutMs?: number): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+    const controller = new AbortController()
+    const abort = () => controller.abort()
+    signal?.addEventListener('abort', abort, { once: true })
+    const timer = timeoutMs ? window.setTimeout(abort, timeoutMs) : undefined
+    try {
+      const result = await read(controller.signal)
+      onConnection?.(false)
+      return result
+    } catch (error) {
+      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+      const retryable = controller.signal.aborted
+        || (error instanceof ChatMediaError && [0, 408, 429, 500, 502, 503, 504].includes(error.status))
+      if (!retryable) throw error
+    } finally {
+      if (timer !== undefined) window.clearTimeout(timer)
+      signal?.removeEventListener('abort', abort)
+    }
+    onConnection?.(true)
+    await videoDelay(Math.min(15_000, 1000 * 2 ** Math.min(attempt, 4)), signal)
+  }
+}
+
+export async function waitForVideo(id: string, signal: AbortSignal, onStatus?: (status: VideoStatus) => void, onConnection?: (reconnecting: boolean) => void): Promise<VideoStatus> {
+  let status = await retryVideoRead((requestSignal) => getVideo(id, requestSignal), signal, onConnection, 20_000)
   onStatus?.(status)
   while (!isVideoDone(status)) {
     if (isVideoFailed(status)) throw new ChatMediaError(videoError(status))
-    await new Promise<void>((resolve, reject) => {
-      if (signal.aborted) { reject(new DOMException('Aborted', 'AbortError')); return }
-      const abort = () => { window.clearTimeout(timer); reject(new DOMException('Aborted', 'AbortError')) }
-      const timer = window.setTimeout(() => { signal.removeEventListener('abort', abort); resolve() }, 900)
-      signal.addEventListener('abort', abort, { once: true })
-    })
-    status = await getVideo(id, signal)
+    await videoDelay(2000, signal)
+    status = await retryVideoRead((requestSignal) => getVideo(id, requestSignal), signal, onConnection, 20_000)
     onStatus?.(status)
   }
   if (isVideoFailed(status)) throw new ChatMediaError(videoError(status))
@@ -347,11 +405,11 @@ function isVideoFailed(status: VideoStatus): boolean {
   return ['failed', 'error', 'cancelled', 'canceled'].includes((status.status ?? '').toLowerCase())
 }
 
-export async function resolveVideoResult(status: VideoStatus, signal?: AbortSignal): Promise<VideoResult> {
+export async function resolveVideoResult(status: VideoStatus, signal?: AbortSignal, onConnection?: (reconnecting: boolean) => void): Promise<VideoResult> {
   const url = status.url ?? status.content_url
   if (url) return { kind: 'video', id: status.id, url, downloadUrl: status.download_url ?? url }
   if (!status.id) throw new ChatMediaError('Ответ видео не содержит идентификатор результата')
-  const blob = await mediaBlob(`/videos/${encodeURIComponent(status.id)}/content`, signal)
+  const blob = await retryVideoRead((requestSignal) => mediaBlob(`/videos/${encodeURIComponent(status.id!)}/content`, requestSignal), signal, onConnection)
   const objectUrl = URL.createObjectURL(blob)
   return { kind: 'video', id: status.id, url: objectUrl, downloadUrl: objectUrl }
 }

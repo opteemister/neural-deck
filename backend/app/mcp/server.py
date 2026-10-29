@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
 
+from ..chat.service import ChatTurnRequest
 from ..errors import AppError
 from ..schemas.engines import EngineDefinition, InstallationCreate
 from ..schemas.profiles import ProfileData
@@ -758,8 +759,7 @@ def create_mcp_server(
     @server.tool(
         name="nd_list_local_model_contents",
         description=(
-            "Постраничный список файлов локальной модели с сохранёнными локальными "
-            "и Hub-хэшами."
+            "Постраничный список файлов локальной модели с сохранёнными локальными и Hub-хэшами."
         ),
         annotations=readonly,
     )
@@ -1017,7 +1017,7 @@ def create_mcp_server(
     @server.tool(
         name="nd_list_chat_models",
         description=(
-            "Постраничный список моделей для текстового чата. Фильтрует types=text; "
+            "Постраничный список всех моделей встроенного чата: text, image, video, ocr; "
             "type_legend поясняет, что это основной результат модели, а не все модальности входа."
         ),
         annotations=readonly,
@@ -1028,25 +1028,53 @@ def create_mcp_server(
         )
 
     @server.tool(
-        name="nd_chat",
-        description="Один полноценный запрос к выбранной модели.",
+        name="nd_chat_list",
+        description="Список сохранённых чатов: ID, название, модель, дата и состояние запроса.",
+        annotations=readonly,
+    )
+    async def nd_chat_list() -> Any:
+        return await invoke(_operation(dependencies, "list_chats"))
+
+    @server.tool(
+        name="nd_chat_delete",
+        description=(
+            "Удалить выбранный чат с его историей и загруженными вложениями по conversation_id."
+        ),
+        annotations=destructive,
+    )
+    async def nd_chat_delete(conversation_id: str) -> Any:
+        return await invoke(_operation(dependencies, "delete_chat"), conversation_id)
+
+    @server.tool(
+        name="nd_chat_send",
+        description=(
+            "Отправить сообщение в тот же чат, что в UI: текст/Vision, PDF/OCR, "
+            "изображения, видео и внутренние инструменты модели. "
+            "request использует схему API чата; сохраняйте его id при повторе. "
+            "Без conversation_id новый диалог получает request.id. "
+            "При busy=true вызывайте nd_chat_get с возвращённым id, "
+            "не отправляйте запрос заново. results содержат ссылки на созданные файлы."
+        ),
         annotations=mutation,
     )
-    async def nd_chat(
-        model: str,
-        messages: list[dict[str, Any]],
-        reasoning_effort: str = "auto",
-        max_output_tokens: int | None = None,
-        include_reasoning: bool = False,
-    ) -> Any:
-        return await invoke(
-            _operation(dependencies, "chat"),
-            model,
-            messages,
-            reasoning_effort,
-            max_output_tokens,
-            include_reasoning,
-        )
+    async def nd_chat_send(request: ChatTurnRequest, conversation_id: str | None = None) -> Any:
+        return await invoke(_operation(dependencies, "chat"), "send", conversation_id, request)
+
+    @server.tool(
+        name="nd_chat_get",
+        description="Прочитать состояние, ответы и результаты диалога по conversation_id.",
+        annotations=readonly,
+    )
+    async def nd_chat_get(conversation_id: str) -> Any:
+        return await invoke(_operation(dependencies, "chat"), "get", conversation_id, None)
+
+    @server.tool(
+        name="nd_chat_stop",
+        description="Остановить выполняемый запрос только в указанном диалоге чата.",
+        annotations=mutation,
+    )
+    async def nd_chat_stop(conversation_id: str) -> Any:
+        return await invoke(_operation(dependencies, "chat"), "stop", conversation_id, None)
 
     @server.tool(
         name="nd_list_proxy_routes",

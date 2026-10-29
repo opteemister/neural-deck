@@ -91,10 +91,77 @@ http://<host>:<PORT>/mcp
 3. `profile` — конфигурация запуска конкретной модели на выбранной installation
    с GPU, environment, портом и автозапуском.
 
-Проверить работу поднятой модели можно через `nd_list_chat_models` и `nd_chat`.
-История передаётся агентом в `messages`; сервер не хранит отдельный chat_id.
-`nd_chat` возвращает ответ, finish reason и доступные usage/timings. Для
-проверки проблем запуска используются `nd_list_log_sources` и `nd_read_log`.
+## Чат через MCP
+
+`nd_chat_list` возвращает сохранённые чаты с ID, названием, моделью и датой,
+как правая панель в UI. `nd_chat_delete` принимает `conversation_id` и удаляет
+историю и загруженные вложения этого диалога; выполняемый запрос сначала
+останавливается. Общие файлы ComfyUI не удаляются.
+
+`nd_list_chat_models` возвращает тот же каталог поддерживаемых чатовых моделей,
+что UI: текст/Vision, OCR, изображения и видео, включая алиасы ComfyUI.
+`nd_chat_send`, `nd_chat_get`, `nd_chat_stop` используют общий `ChatService` и схему `ChatTurnRequest` HTTP API
+`/api/v1/chat`. Поддерживаются PDF, изображения, reasoning, настройки генерации
+и внутренние инструменты модели. Разделение ответственности закреплено в
+[правилах чата и MCP](development/chat-and-mcp.md).
+
+Отправка сообщения через `nd_chat_send`:
+
+```json
+{
+  "conversation_id": "my-chat-unique-id",
+  "request": {
+    "id": "my-turn-unique-id",
+    "model": "main-llm-model",
+    "prompt": "Создай изображение котёнка",
+    "content": "Создай изображение котёнка"
+  }
+}
+```
+
+`model` — выбранная модель чата. LLM может вызвать внутренний инструмент
+генерации, а при выборе image/video-алиаса запрос выполняется напрямую через
+настроенный workflow. Выбор операции находится в общем backend-сервисе.
+Настройки передаются в `request.media_defaults` по имени алиаса, например
+`{"qwen-image-turbo":{"size":"1024x1024","background":"opaque"}}` либо
+`{"video-alias":{"size":"1280x720","seconds":5}}`. Reasoning передаётся
+в `request.reasoning` стандартным полем `reasoning_effort`.
+
+Для PDF `content` содержит `{"type":"file","file":{"filename":"document.pdf",
+"file_data":"data:application/pdf;base64,..."}}`; для изображения —
+`{"type":"image_url","image_url":{"url":"data:image/png;base64,..."}}`.
+Можно добавить текстовую часть `{"type":"text","text":"Прочитай документ"}`.
+Это тот же формат вложений, что отправляет UI. Пути к локальным файлам клиента
+не являются путями на сервере и вместо содержимого не принимаются.
+
+Ответ содержит `id`, `busy` и `turns`, как HTTP API. При `busy: true` вызывайте `nd_chat_get`:
+
+```json
+{"conversation_id":"my-chat-unique-id"}
+```
+
+Повторяйте чтение до `busy: false`. Итоговый `turn.state` различает `complete`,
+`error`, `cancelled`; ошибка хранится в `turn.error`. `results` содержит медиа
+и распознанный текст, `answer` — ответ модели, `reasoning` — её рассуждение,
+`usage`/`timings` — доступную статистику. Ссылки `/api/...` разрешаются относительно
+origin Neural Deck, к которому подключён MCP-клиент. Этот же диалог доступен
+в UI по `/chat?chat=<id>&model=<model>`.
+
+Для продолжения отправьте новый `request.id` с прежним `conversation_id`.
+При повторе потерянного `nd_chat_send` сохраните оба исходных идентификатора — новая
+генерация не запускается. Без `conversation_id` новый диалог получает
+`request.id`, поэтому повтор той же отправки также идемпотентен. Остановка через `nd_chat_stop`:
+
+```json
+{"conversation_id":"my-chat-unique-id"}
+```
+
+Долгую генерацию не нужно держать внутри одного MCP-вызова. Закрытие клиента
+не останавливает задачу. `nd_chat_get`/`nd_chat_stop` принимают `conversation_id` без `request`.
+Прежний `nd_chat` заменён тремя явно названными инструментами общего чата; клиенту нужно
+обновить каталог инструментов. Для прямого OpenAI-вызова сохраняется `/v1`.
+
+Для проверки проблем запуска используются `nd_list_log_sources` и `nd_read_log`.
 
 Длительные скачивания, установки и сканирования возвращают `operation_id`.
 Состояние нужно проверять через `nd_get_operation`; `queued` и `running` не

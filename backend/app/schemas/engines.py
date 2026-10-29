@@ -5,7 +5,6 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal
-
 from urllib.parse import urlsplit
 
 from pydantic import (
@@ -76,20 +75,6 @@ class EngineApi(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     protocol: ApiProtocol
-    base_url: StrictStr | None = None
-
-    @field_validator("base_url")
-    @classmethod
-    def valid_base_url(cls, value: str | None) -> str | None:
-        return _validate_http_url(value)
-
-
-class ProfileApiOverride(BaseModel):
-    """Optional protocol/base URL overrides; omitted values inherit."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    protocol: ApiProtocol | None = None
     base_url: StrictStr | None = None
 
     @field_validator("base_url")
@@ -347,7 +332,6 @@ __all__ = [
     "Operation",
     "OperationList",
     "OperationProgress",
-    "ProfileApiOverride",
     "PythonVenvInstallationCreate",
     "ResolvedEngineProfile",
 ]

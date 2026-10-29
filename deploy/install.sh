@@ -87,7 +87,7 @@ prepare_system_packages() {
     local package
     local missing=()
     if command -v apt-get >/dev/null 2>&1; then
-        for package in ca-certificates curl tar gzip coreutils git libgomp1 util-linux dbus-user-session; do
+        for package in ca-certificates curl tar gzip coreutils git libgomp1 util-linux dbus-user-session poppler-utils; do
             if [[ "$(dpkg-query -W -f='${Status}' "$package" 2>/dev/null || true)" != 'install ok installed' ]]; then
                 missing+=("$package")
             fi
@@ -98,7 +98,7 @@ prepare_system_packages() {
             as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${missing[@]}"
         fi
     elif command -v dnf >/dev/null 2>&1; then
-        for package in ca-certificates curl tar gzip coreutils git libgomp util-linux dbus-daemon; do
+        for package in ca-certificates curl tar gzip coreutils git libgomp util-linux dbus-daemon poppler-utils; do
             if ! rpm -q "$package" >/dev/null 2>&1; then
                 missing+=("$package")
             fi

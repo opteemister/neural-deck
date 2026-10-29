@@ -24,7 +24,7 @@ from ..schemas.profile_summary import (
     SummaryState,
 )
 from ..schemas.profiles import ProfileData
-from .ports import PortResolution, resolve_effective_port
+from .runtime_ports import ProfilePorts, configured_profile_ports, observe_instance_ports
 
 
 def utc_day_window(now: datetime | None = None) -> tuple[datetime, datetime]:
@@ -114,12 +114,16 @@ def _current_metric(
 
 
 def _port_summary(
-    resolution: PortResolution, conflicts: dict[int, list[str]], profile_name: str
+    resolution: ProfilePorts, conflicts: dict[int, list[str]], profile_name: str
 ) -> ProfileEndpointSummary:
-    peers = [name for name in conflicts.get(resolution.port or -1, []) if name != profile_name] if resolution.port is not None else []
+    peers = sorted({
+        name for port in resolution.ports for name in conflicts.get(port, [])
+        if name != profile_name
+    })
     return ProfileEndpointSummary(
-        port=resolution.port,
-        state="ok" if resolution.state == "ok" else "unknown",
+        port=resolution.ports[0] if resolution.ports else None,
+        ports=resolution.ports,
+        state="ok" if resolution.ports else "unknown",
         source=resolution.source,
         conflict=bool(peers),
         conflict_with=peers,
@@ -138,19 +142,6 @@ async def build_profile_summary(
     """Build all requested cards in one backend operation."""
 
     catalogue_items = await asyncio.to_thread(catalogue.items)
-    resolutions = {
-        (profile.profile_id or profile.name): resolve_effective_port(profile.engine.id, profile.command)
-        for profile in profiles
-    }
-    by_port: dict[int, list[str]] = {}
-    for profile_ref, resolution in resolutions.items():
-        if resolution.port is not None:
-            profile = next(
-                (item for item in profiles if (item.profile_id or item.name) == profile_ref),
-                None,
-            )
-            by_port.setdefault(resolution.port, []).append(profile.name if profile else profile_ref)
-
     instances: list[Instance] = []
     try:
         observed = await metrics.process_manager.refresh(probe_models=False)
@@ -158,7 +149,7 @@ async def build_profile_summary(
             item
             for item in observed.items
             if item.profile_name is not None
-            and item.state in {"starting", "ready", "running"}
+            and item.state in {"starting", "ready", "running", "stopping", "unknown"}
         ]
     except Exception:
         # A summary must remain useful when process discovery is temporarily
@@ -175,6 +166,29 @@ async def build_profile_summary(
         profile_ref = instance.profile_id or profile_ids_by_name.get(instance.profile_name or "") or instance.profile_name
         if profile_ref is not None:
             active_by_profile[profile_ref] = instance
+
+    async def ports_for(profile: ProfileData) -> ProfilePorts:
+        if profile.port is not None:
+            return ProfilePorts([profile.port], "profile_config")
+        profile_ref = profile.profile_id or profile.name
+        instance = active_by_profile.get(profile_ref)
+        value = (
+            await asyncio.to_thread(observe_instance_ports, instance)
+            if instance is not None else configured_profile_ports(profile)
+        )
+        if not value.ports:
+            value = configured_profile_ports(profile)
+        return value
+
+    port_results = await asyncio.gather(*(ports_for(profile) for profile in profiles))
+    resolutions = {
+        (profile.profile_id or profile.name): resolution
+        for profile, resolution in zip(profiles, port_results, strict=True)
+    }
+    by_port: dict[int, list[str]] = {}
+    for profile, resolution in zip(profiles, port_results, strict=True):
+        for port in resolution.ports:
+            by_port.setdefault(port, []).append(profile.name)
     current_results = await asyncio.gather(
         *(metrics.local(instance.id) for instance in active_by_profile.values()),
         return_exceptions=True,
@@ -277,7 +291,7 @@ async def build_profile_summary(
                         reason="daily_load_not_collected",
                     )
                 ),
-            endpoint=_port_summary(resolutions[profile_ref], by_port, profile.name),
+                endpoint=_port_summary(resolutions[profile_ref], by_port, profile.name),
             )
         )
     source = "sqlite" if metrics.storage is not None else "unavailable"

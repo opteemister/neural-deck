@@ -16,7 +16,7 @@ import {
 } from '@/lib/chat-media'
 import type { OpenAiModel } from '@/types/api'
 
-afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers() })
 
 function stubObjectUrls(value: string) {
   Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: vi.fn(() => value) })
@@ -32,6 +32,71 @@ function model(types?: OpenAiModel['types'], capabilities?: OpenAiModel['capabil
 }
 
 describe('chat media client', () => {
+  it('recovers status reads after a network failure and a server restart without a new POST', async () => {
+    vi.useFakeTimers()
+    const fetchMock = vi.fn().mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockResolvedValueOnce(new Response('', { status: 503 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: 'video-1', status: 'completed' })))
+    vi.stubGlobal('fetch', fetchMock)
+    const connection = vi.fn()
+    const result = waitForVideo('video-1', new AbortController().signal, undefined, connection)
+    await vi.advanceTimersByTimeAsync(3000)
+    await expect(result).resolves.toMatchObject({ id: 'video-1', status: 'completed' })
+    expect(connection).toHaveBeenCalledWith(true)
+    expect(connection).toHaveBeenLastCalledWith(false)
+    expect(fetchMock.mock.calls.every(([url, init]) => url === '/api/proxy/videos/video-1' && !init?.method)).toBe(true)
+  })
+
+  it('keeps waiting beyond thirty minutes for the same video', async () => {
+    vi.useFakeTimers()
+    const fetchMock = vi.fn().mockImplementation(async () => new Response(JSON.stringify({ id: 'long-video', status: 'in_progress' })))
+    vi.stubGlobal('fetch', fetchMock)
+    const result = waitForVideo('long-video', new AbortController().signal)
+    await vi.advanceTimersByTimeAsync(31 * 60 * 1000)
+    fetchMock.mockImplementation(async () => new Response(JSON.stringify({ id: 'long-video', status: 'completed' })))
+    await vi.advanceTimersByTimeAsync(2000)
+    await expect(result).resolves.toMatchObject({ status: 'completed' })
+  })
+
+  it('retries a status request that hangs without limiting overall video duration', async () => {
+    vi.useFakeTimers()
+    const fetchMock = vi.fn().mockImplementationOnce((_url, init) => new Promise((_resolve, reject) => {
+      init.signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true })
+    })).mockResolvedValueOnce(new Response(JSON.stringify({ id: 'video-1', status: 'completed' })))
+    vi.stubGlobal('fetch', fetchMock)
+    const result = waitForVideo('video-1', new AbortController().signal)
+    await vi.advanceTimersByTimeAsync(21_000)
+    await expect(result).resolves.toMatchObject({ status: 'completed' })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('allows stopping reconnection and does not retry permanent HTTP errors', async () => {
+    vi.useFakeTimers()
+    const fetchMock = vi.fn().mockRejectedValue(new TypeError('Failed to fetch'))
+    vi.stubGlobal('fetch', fetchMock)
+    const controller = new AbortController()
+    const result = waitForVideo('video-1', controller.signal).catch((error) => error)
+    await vi.advanceTimersByTimeAsync(0)
+    controller.abort()
+    expect(await result).toMatchObject({ name: 'AbortError' })
+    expect(fetchMock).toHaveBeenCalledOnce()
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ error: { message: 'Video missing' } }), { status: 404 }))
+    await expect(waitForVideo('missing', new AbortController().signal)).rejects.toThrow('Video missing')
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('retries downloading the existing video after a connection failure', async () => {
+    vi.useFakeTimers()
+    stubObjectUrls('blob:recovered')
+    const fetchMock = vi.fn().mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockResolvedValueOnce(new Response(new Blob(['video'], { type: 'video/mp4' })))
+    vi.stubGlobal('fetch', fetchMock)
+    const result = resolveVideoResult({ id: 'video-1', status: 'completed' }, new AbortController().signal)
+    await vi.advanceTimersByTimeAsync(1000)
+    await expect(result).resolves.toMatchObject({ url: 'blob:recovered' })
+    expect(fetchMock.mock.calls.every(([url]) => url === '/api/proxy/videos/video-1/content')).toBe(true)
+  })
+
   it('sends standard image variations without a spurious empty prompt', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ data: [{ b64_json: 'abc' }] })))
     vi.stubGlobal('fetch', fetchMock)
@@ -164,8 +229,16 @@ describe('chat media client', () => {
     await expect(fileToDataUrl(new File(['pdf'], 'scan.pdf'))).resolves.toMatch(/^data:application\/pdf;base64,/)
   })
 
+  it('prepares PDFs for server rendering without requiring an OCR model', async () => {
+    expect(await prepareUserContent('Прочитай', [attachment('scan.pdf', '', '%PDF-1.4')])).toEqual([
+      { type: 'text', text: 'Прочитай' },
+      { type: 'file', file: { filename: 'scan.pdf', file_data: expect.stringMatching(/^data:application\/pdf;base64,/) } },
+    ])
+    expect(resolveChatOperation({ id: 'uocr', object: 'model', types: ['text'], capabilities: { document_adapter: 'unlimited_ocr_2' } }, [])).toBe('ocr')
+  })
+
   it('explains that documents need a document-capable model and keeps binary errors visible', async () => {
-    await expect(prepareUserContent('', [attachment('scan.pdf', 'application/pdf')])).rejects.toThrow('выберите модель для документов')
+    await expect(prepareUserContent('', [attachment('scan.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')])).rejects.toThrow('выберите модель для документов')
     await expect(prepareUserContent('', [attachment('archive.zip', 'application/zip')])).rejects.toThrow('нельзя отправить')
   })
 })

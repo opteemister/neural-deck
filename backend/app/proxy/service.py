@@ -6,28 +6,29 @@ It does not duplicate engine lifecycle logic or profile parsing.
 
 from __future__ import annotations
 
-import ast
 import asyncio
 import json
 import logging
-import re
 import time
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import uuid4
 
 import httpx
 
+from ..documents import document_capabilities
 from ..errors import AppError
+from ..reasoning import adapt_reasoning_request, reasoning_capabilities as _reasoning_capabilities
 from ..process.manager import ProcessManager
 from ..process.registry import RegisteredModel
 from ..schemas.instances import Instance
 from ..token_stats import RequestJournalService
 from .decisions import adapt_jev_response, build_jev_request
-from .operations import public_types, supports, upstream_url
+from .operations import OPERATIONS, public_types, supports, upstream_url
+from .openai_connections import OpenAIConnections, RemoteTarget, endpoint
 from .routes import RouteCandidate, RouteInfo, RouteManager, RuntimeModel
 
 _HOP_BY_HOP = {
@@ -67,6 +68,7 @@ class ProxyService:
         client_factory: Callable[[], httpx.AsyncClient] | None = None,
         timeout: float = 120.0,
         image_service: Any | None = None,
+        reasoning_metadata: Callable[[Instance], dict[str, Any]] | None = None,
     ) -> None:
         self.process_manager = process_manager
         self.journal = journal
@@ -74,6 +76,8 @@ class ProxyService:
         self.client_factory = client_factory
         self.timeout = timeout
         self.image_service = image_service
+        self.reasoning_metadata = reasoning_metadata
+        self._connections = OpenAIConnections(route_manager.config.config_dir, client_factory) if route_manager else None
         self._models_lock = asyncio.Lock()
         self._models_cache: dict[str, _ModelsCache] = {}
         # Locks live for this ProxyService's application lifespan. Keeping them
@@ -261,6 +265,7 @@ class ProxyService:
                     }
                 )
             self._append_image_models(result, instances)
+            await self._append_remote_models(result, routes)
             return {"object": "list", "data": result}
         async with self._models_lock:
             # Observe process identities on every request without probing ready engines.
@@ -344,18 +349,22 @@ class ProxyService:
         _, _, _, routes = await self._refresh_route_catalog()
         return {"items": [route.as_dict() for route in routes]}
 
-    async def create_alias(self, name: str, profile_ids: list[str]) -> dict[str, Any]:
+    async def create_alias(self, name: str, profile_ids: list[str], remote: dict[str, str] | None = None, candidates: list[dict[str, str]] | None = None) -> dict[str, Any]:
         if self.route_manager is None:
             raise AppError("route_unavailable", "Управление маршрутами недоступно", status_code=503)
-        await asyncio.to_thread(self.route_manager.create_alias, name, profile_ids)
+        self._validate_remote_alias(remote, profile_ids)
+        self._validate_candidate_targets(candidates, profile_ids, remote)
+        await asyncio.to_thread(self.route_manager.create_alias, name, profile_ids, remote, candidates)
         return await self._route_by_name(name)
 
     async def update_alias(
-        self, current_name: str, name: str, profile_ids: list[str]
+        self, current_name: str, name: str, profile_ids: list[str], remote: dict[str, str] | None = None, candidates: list[dict[str, str]] | None = None
     ) -> dict[str, Any]:
         if self.route_manager is None:
             raise AppError("route_unavailable", "Управление маршрутами недоступно", status_code=503)
-        await asyncio.to_thread(self.route_manager.update_alias, current_name, name, profile_ids)
+        self._validate_remote_alias(remote, profile_ids)
+        self._validate_candidate_targets(candidates, profile_ids, remote)
+        await asyncio.to_thread(self.route_manager.update_alias, current_name, name, profile_ids, remote, candidates)
         return await self._route_by_name(name)
 
     async def delete_alias(self, name: str) -> None:
@@ -363,10 +372,24 @@ class ProxyService:
             raise AppError("route_unavailable", "Управление маршрутами недоступно", status_code=503)
         await asyncio.to_thread(self.route_manager.delete_alias, name)
 
-    async def update_route_order(self, name: str, profile_ids: list[str]) -> dict[str, Any]:
+    async def update_route_order(self, name: str, profile_ids: list[str], candidate_ids: list[str] | None = None) -> dict[str, Any]:
         if self.route_manager is None:
             raise AppError("route_unavailable", "Управление маршрутами недоступно", status_code=503)
-        await asyncio.to_thread(self.route_manager.update_order, name, profile_ids)
+        if candidate_ids is not None:
+            if profile_ids or len(candidate_ids) != len(set(candidate_ids)):
+                raise AppError("route_membership_invalid", "Неверный список кандидатов", status_code=422)
+            route = await self._route_by_name(name)
+            if route["kind"] == "auto":
+                await asyncio.to_thread(self.route_manager.update_order, name, candidate_ids)
+            else:
+                by_id = {item["id"]: item for item in route["candidates"]}
+                if any(key not in by_id for key in candidate_ids):
+                    raise AppError("route_membership_invalid", "Неизвестный кандидат алиаса", status_code=422)
+                targets = [{"connection_id": by_id[key]["connection_id"], "model": by_id[key]["upstream_model"]} if by_id[key]["connection_id"] else {"profile_id": by_id[key]["profile_id"]} for key in candidate_ids]
+                self._validate_candidate_targets(targets, [], None)
+                await asyncio.to_thread(self.route_manager.update_candidates, name, targets)
+        else:
+            await asyncio.to_thread(self.route_manager.update_order, name, profile_ids)
         return await self._route_by_name(name)
 
     async def _route_by_name(self, name: str) -> dict[str, Any]:
@@ -375,6 +398,138 @@ class ProxyService:
             if route.name == name:
                 return route.as_dict()
         raise AppError("route_not_found", "Маршрут не найден", status_code=404)
+
+    def connections(self) -> OpenAIConnections:
+        if self._connections is None:
+            raise AppError("route_unavailable", "Управление подключениями недоступно", status_code=503)
+        return self._connections
+
+    def _validate_remote_alias(self, remote: dict[str, str] | None, profile_ids: list[str]) -> None:
+        if remote is None:
+            return
+        if profile_ids or not remote["model"].strip():
+            raise AppError("route_membership_invalid", "Выберите локальные профили либо удалённую модель", status_code=422)
+        self.connections().get(remote["connection_id"])
+        remote["model"] = remote["model"].strip()
+
+    def _validate_candidate_targets(self, candidates: list[dict[str, str]] | None, profiles: list[str], remote: dict[str, str] | None) -> None:
+        if candidates is None:
+            return
+        if profiles or remote is not None:
+            raise AppError("route_membership_invalid", "Используйте один список кандидатов", status_code=422)
+        assert self.route_manager is not None
+        for target in self.route_manager.config.candidate_targets(candidates):
+            if "connection_id" in target:
+                self.connections().get(target["connection_id"])
+
+    def _remote_candidate_target(self, candidate: RouteCandidate) -> RemoteTarget:
+        assert candidate.connection_id is not None and candidate.upstream_model is not None
+        connection = self.connections().get(candidate.connection_id)
+        return RemoteTarget(candidate.connection_id, candidate.upstream_model, connection["base_url"], connection.get("api_key", ""))
+
+    def _merge_candidates(self, routes: list[RouteInfo]) -> list[RouteInfo]:
+        assert self.route_manager is not None
+        config = self.route_manager.config.load()
+        merged = []
+        for route in routes:
+            targets = config["alias_candidates"].get(route.name)
+            if targets is None and route.name in config["remote_aliases"]:
+                targets = [config["remote_aliases"][route.name]]
+            if targets is None:
+                merged.append(route)
+                continue
+            local = {candidate.profile_id: candidate for candidate in route.candidates}
+            candidates = []
+            for target in targets:
+                if "profile_id" in target:
+                    candidates.append(local[target["profile_id"]])
+                    continue
+                try:
+                    connection = self.connections().get(target["connection_id"])
+                    name, available, reason = connection["name"], True, None
+                except AppError as exc:
+                    if exc.code != "connection_not_found":
+                        raise
+                    name, available, reason = None, False, "connection_not_found"
+                candidates.append(RouteCandidate(
+                    id=self.route_manager.candidate_id(target), profile_id=None,
+                    profile_name=None, instance_id=None, upstream_model=target["model"],
+                    engine_id="openai", port=None, state="configured" if available else "missing",
+                    available=available, reason=reason, metadata={},
+                    connection_id=target["connection_id"], connection_name=name,
+                ))
+            merged.append(replace(route, candidates=tuple(candidates)))
+        return merged
+
+    async def _append_remote_models(self, items: list[dict[str, Any]], routes: list[RouteInfo]) -> None:
+        if self.route_manager is None:
+            return
+        aliases = {route.name: {"connection_id": candidate.connection_id, "model": candidate.upstream_model}
+                   for route in routes if (candidate := next(iter(route.available_candidates()), None)) is not None and candidate.connection_id}
+        async def catalogue(connection_id: str) -> tuple[str, list[dict[str, Any]]]:
+            try:
+                return connection_id, await self.connections().models(connection_id)
+            except AppError as exc:
+                logger.info("Каталог OpenAI-подключения недоступен: connection_id=%s code=%s", connection_id, exc.code)
+                return connection_id, []
+        catalogues = dict(await asyncio.gather(*(catalogue(key) for key in {value["connection_id"] for value in aliases.values()})))
+        for name, target in aliases.items():
+            source = next((item for item in catalogues[target["connection_id"]] if item["id"] == target["model"]), {})
+            metadata = {**_reasoning_capabilities(source), **document_capabilities(source)}
+            for field in ("context_length", "max_model_len", "max_context_length"):
+                if isinstance(source.get(field), int) and not isinstance(source[field], bool) and source[field] > 0:
+                    metadata["context_length"] = source[field]
+                    break
+            types = source.get("types")
+            public = {"id": name, "object": "model", "created": 0, "owned_by": "neural-deck", "engine_id": "openai", **_public_metadata(metadata), "types": types if isinstance(types, list) and types and all(isinstance(value, str) for value in types) else ["text"]}
+            items[:] = [item for item in items if item["id"] != name]
+            items.append(public)
+
+    async def _forward_remote(
+        self, remote: RemoteTarget, route: str, model_name: str, payload: Mapping[str, Any],
+        request_id: str, started: float, force_usage: bool,
+        multipart_data: Mapping[str, Any] | None, multipart_files: Mapping[str, Any] | None,
+    ) -> Any:
+        operation = OPERATIONS.get(route)
+        if operation is None or "openai" not in operation[1]:
+            raise AppError("unsupported_operation", "Операция не относится к OpenAI API", status_code=400)
+        target = endpoint(remote.base_url, route)
+        outgoing = {"x-request-id": request_id}
+        if remote.api_key:
+            outgoing["authorization"] = f"Bearer {remote.api_key}"
+        upstream = {**payload, "model": remote.upstream_model}
+        if route in _STREAMING_TEXT_ROUTES and any(
+            key in payload for key in ("reasoning_effort", "reasoning", "chat_template_kwargs")
+        ):
+            catalogue = await self.connections().models(remote.connection_id)
+            source: dict[str, Any] = next(
+                (item for item in catalogue if item["id"] == remote.upstream_model), {}
+            )
+            upstream = adapt_reasoning_request(upstream, route, source)
+        streaming = bool(payload.get("stream")) and route in _STREAMING_TEXT_ROUTES
+        if streaming and force_usage and route == "/v1/chat/completions" and (upstream.get("stream_options") is None or isinstance(upstream.get("stream_options"), Mapping)):
+            upstream["stream_options"] = {**(upstream.get("stream_options") or {}), "include_usage": True}
+        tracking = _request_tracking.get()
+        if tracking is not None:
+            tracking.update(pid=None, profile_name=None, profile_id=None, instance_id=None, engine_id="openai")
+        client = self.client_factory() if self.client_factory else httpx.AsyncClient(timeout=self.timeout, follow_redirects=False)
+        if multipart_files is not None or route == "/v1/audio/speech":
+            return await self._forward_media(client, target, upstream, outgoing, route, model_name, remote, request_id, started, data={**(multipart_data or {}), "model": remote.upstream_model}, files=multipart_files)
+        if streaming:
+            return await self._forward_stream(client, target, upstream, outgoing, route, model_name, remote, request_id, started)
+        try:
+            response = await client.post(target, json=upstream, headers=outgoing, follow_redirects=False)
+            body = await response.aread()
+            input_tokens, output_tokens = _extract_usage(body, response.headers.get("content-type"))
+            if tracking is not None:
+                tracking.update(_response_metrics(body, streaming=False, engine_id="openai"))
+            await self._journal(request_id=request_id, route=route, model_name=model_name, registered=remote, status_code=response.status_code, started=started, input_tokens=input_tokens, output_tokens=output_tokens, stream=False, error_code="upstream_error" if response.is_error else None)
+            return _passthrough_response(response.status_code, response.headers, body)
+        except httpx.HTTPError as exc:
+            await self._journal(request_id=request_id, route=route, model_name=model_name, registered=remote, status_code=502, started=started, input_tokens=None, output_tokens=None, stream=False, error_code="upstream_unavailable")
+            raise AppError("upstream_unavailable", "OpenAI-сервер недоступен", status_code=502, retryable=_safe_to_retry(exc)) from None
+        finally:
+            await client.aclose()
 
     async def _refresh_route_catalog(
         self,
@@ -427,6 +582,7 @@ class ProxyService:
                 if instance.source == "managed" and (instance.profile_id or instance.profile_name)
             }
             routes = await asyncio.to_thread(self.route_manager.snapshot, profiles, runtime)
+            routes = await asyncio.to_thread(self._merge_candidates, routes)
             return observed, instances, metadata, routes
 
     async def _cached_model_metadata(self, instance: Instance) -> dict[str, dict[str, Any]]:
@@ -447,13 +603,21 @@ class ProxyService:
                 self.process_manager.model_registry().register_instance(
                     instance, upstream_models=list(cached.metadata)
                 )
-                return cached.metadata
+                return await self._runtime_reasoning_metadata(instance, cached.metadata)
         self._models_cache.pop(instance.id, None)
         metadata = await self._model_metadata(instance)
         # Only a nonempty, confirmed engine response starts the ten-minute TTL.
         if metadata:
             self._models_cache[instance.id] = _ModelsCache(identity, time.monotonic(), metadata)
-        return metadata
+        return await self._runtime_reasoning_metadata(instance, metadata)
+
+    async def _runtime_reasoning_metadata(
+        self, instance: Instance, metadata: dict[str, dict[str, Any]],
+    ) -> dict[str, dict[str, Any]]:
+        if not metadata or self.reasoning_metadata is None:
+            return metadata
+        local = await asyncio.to_thread(self.reasoning_metadata, instance)
+        return {name: {**local, **details} for name, details in metadata.items()}
 
     async def _model_metadata(self, instance: Instance) -> dict[str, dict[str, Any]]:
         """Refresh engine model names and their metadata in one HTTP probe."""
@@ -477,7 +641,7 @@ class ProxyService:
                     name = model.get("id")
                     if not isinstance(name, str) or not name:
                         continue
-                    item_details = _reasoning_capabilities(model)
+                    item_details = {**_reasoning_capabilities(model), **document_capabilities(model)}
                     for key in ("dimensions", "embedding_dimensions", "embedding_space"):
                         if key in model:
                             item_details[key] = model[key]
@@ -613,8 +777,8 @@ class ProxyService:
             route_info = next((item for item in routes if item.name == model_name), None)
             if route_info is not None:
                 matching = [candidate for candidate in route_info.candidates
-                            if candidate.instance_id in instances
-                            and supports(instances[candidate.instance_id], route)]
+                            if (candidate.connection_id and route in OPERATIONS and "openai" in OPERATIONS[route][1])
+                            or (candidate.instance_id in instances and supports(instances[candidate.instance_id], route))]
                 if not matching:
                     raise AppError("unsupported_operation", "Модель не поддерживает эту операцию",
                                    status_code=400, details={"model": model_name, "route": route})
@@ -639,6 +803,15 @@ class ProxyService:
                     )
                 last_error: AppError | None = None
                 for candidate in available:
+                    if candidate.connection_id:
+                        try:
+                            remote = await asyncio.to_thread(self._remote_candidate_target, candidate)
+                            return await self._forward_remote(remote, route, model_name, payload, request_id, started, force_usage, multipart_data, multipart_files)
+                        except AppError as exc:
+                            if exc.code != "upstream_unavailable" or not exc.retryable:
+                                raise
+                            last_error = exc
+                            continue
                     registered = RegisteredModel(
                         id=route_info.name,
                         upstream_model=candidate.upstream_model,
@@ -753,6 +926,11 @@ class ProxyService:
         upstream_model = registered.upstream_model or model_name
         upstream_payload = dict(payload)
         upstream_payload["model"] = upstream_model
+        if route in _STREAMING_TEXT_ROUTES and any(
+            key in payload for key in ("reasoning_effort", "reasoning", "chat_template_kwargs")
+        ):
+            model_metadata = (await self._cached_model_metadata(instance)).get(upstream_model, {})
+            upstream_payload = adapt_reasoning_request(upstream_payload, route, model_metadata)
         if route == "/v1/images/generations" and instance.api_protocol == "openai":
             # The MCP schema retains ComfyUI controls. Drop their defaults for
             # OpenAI servers, but report non-default requests instead of
@@ -937,6 +1115,8 @@ class ProxyService:
     async def _validate_embedding_route(
         self, candidates: list[RouteCandidate]
     ) -> None:
+        if len(candidates) > 1 and any(candidate.connection_id for candidate in candidates):
+            raise AppError("embedding_space_unverified", "Для embeddings выберите одного кандидата, если общее пространство моделей не подтверждено", status_code=409)
         profile_ids = tuple(dict.fromkeys(candidate.profile_id for candidate in candidates))
         if self.route_manager is None or len(profile_ids) < 2:
             return
@@ -1270,8 +1450,8 @@ def _safe_to_retry(exc: Exception) -> bool:
 def _public_metadata(metadata: Mapping[str, Any]) -> dict[str, Any]:
     result = {key: metadata[key] for key in ("context_length", "reasoning_capabilities")
               if key in metadata}
-    capabilities = {key: metadata[key] for key in
-                    ("dimensions", "embedding_dimensions", "embedding_space") if key in metadata}
+    capabilities = {**document_capabilities(dict(metadata)).get("capabilities", {}), **{key: metadata[key] for key in
+                    ("dimensions", "embedding_dimensions", "embedding_space") if key in metadata}}
     if capabilities:
         result["capabilities"] = capabilities
     return result
@@ -1353,40 +1533,6 @@ def _usage_values(usage: Any) -> tuple[int | None, int | None]:
         if total is not None and total >= prompt:
             completion = total - prompt
     return prompt, completion
-
-
-def _reasoning_capabilities(metadata: Mapping[str, Any]) -> dict[str, Any]:
-    """Expose only modes explicitly reported or constrained by the served template."""
-    efforts = metadata.get("supported_reasoning_efforts")
-    parameter = "reasoning_effort"
-    template = metadata.get("chat_template")
-    can_disable = metadata.get("supports_enable_thinking") is True
-    if isinstance(template, str):
-        # Inspect Jinja expressions only, not prose or comments in the template.
-        expressions = " ".join(re.findall(r"{%.*?%}|{{.*?}}", template, re.DOTALL))
-        can_disable = can_disable or bool(re.search(r"\benable_thinking\b", expressions))
-        constraint = re.search(r"\breasoning_effort\s+(?:not\s+)?in\s*(\[[^\]]+\])", expressions)
-        if constraint:
-            try:
-                efforts = ast.literal_eval(constraint.group(1))
-                parameter = "chat_template_kwargs"
-            except (ValueError, SyntaxError):
-                pass
-    allowed = {"none", "minimal", "low", "medium", "high", "xhigh"}
-    efforts = (
-        [item for item in efforts if isinstance(item, str) and item in allowed]
-        if isinstance(efforts, list)
-        else []
-    )
-    if not efforts and not can_disable:
-        return {}
-    return {
-        "reasoning_capabilities": {
-            "efforts": efforts,
-            "effort_parameter": parameter,
-            "can_disable_thinking": can_disable,
-        }
-    }
 
 
 def _nonnegative_int(value: Any) -> int | None:

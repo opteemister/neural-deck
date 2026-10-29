@@ -164,10 +164,9 @@ MTP, DFlash, DSpark, image projector) подключаются параметр�
 - [Параметры llama.cpp server](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md).
 - [Speculative decoding в vLLM](https://github.com/vllm-project/vllm/blob/main/docs/features/speculative_decoding/README.md).
 
-Для уже сохранённых профилей backend продолжает поддерживать `model.draft_path`
-и `{{model_draft}}`; форма сохраняет эту привязку при редактировании, чтобы
-существующая пользовательская команда не меняла смысл. Новые профили не
-создают это поле.
+Для draft-модели путь задаётся непосредственно аргументами команды запуска,
+например `--model-draft /models/draft.gguf` или внутри `--speculative-config`.
+Отдельное поле `model.draft_path` и заполнитель `{{model_draft}}` удалены.
 
 `GET /api/v1/models/local` возвращает одну `LocalModel` на модельную папку.
 Помимо старых плоских полей совместимости, модель содержит:

@@ -163,7 +163,7 @@ async def _forward(
                 "error": {
                     "message": exc.message,
                     "type": exc.code,
-                    "param": None,
+                    "param": exc.details.get("field"),
                     "code": exc.code,
                 }
             },

@@ -77,6 +77,9 @@ def instance(profile_name: str, port: int, *, state: str = "ready") -> Instance:
         can_stop=True,
         port=port,
         model_name="public-model",
+        types=["text"],
+        api_protocol="openai",
+        api_base_url=f"http://127.0.0.1:{port}/v1",
         state=state,
         observed_at=datetime.now(UTC),
     )
@@ -153,8 +156,22 @@ def test_alias_order_is_persisted_and_only_duplicate_manual_names_are_rejected(t
         manager.create_alias("public-model", ["second"])
     with pytest.raises(AppError, match="ASCII"):
         manager.create_alias("русский", ["first"])
-    with pytest.raises(AppError, match="хотя бы один"):
-        manager.create_alias("empty", [])
+
+
+def test_empty_alias_can_be_saved_attached_and_emptied_again(tmp_path: Path) -> None:
+    repository = ProfileRepositoryStub([profile("first")])
+    manager = RouteManager(tmp_path, repository)
+    manager.create_alias("empty", [])
+    reloaded = RouteManager(tmp_path, repository)
+    route = reloaded.resolve("empty", repository.list().items, {})
+    assert route is not None
+    assert route.candidate_profile_ids == ()
+    assert route.available is False
+    reloaded.update_alias("empty", "ready", ["first"])
+    assert reloaded.config.load()["aliases"]["ready"] == ["first"]
+    reloaded.update_order("ready", [])
+    reloaded.update_alias("ready", "empty-again", [])
+    assert RouteManager(tmp_path, repository).config.load()["aliases"] == {"empty-again": []}
 
 
 @pytest.mark.asyncio

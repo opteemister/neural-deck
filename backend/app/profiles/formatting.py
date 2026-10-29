@@ -10,7 +10,6 @@ from ..errors import AppError
 PLACEHOLDERS = (
     "{{engine}}",
     "{{model}}",
-    "{{model_draft}}",
     "{{model_name}}",
     "{{base_directory}}",
     "{{port}}",
@@ -23,8 +22,12 @@ _UNSAFE_FORMAT_CHARS = frozenset(r"'\"`$;|&<>()[\]*!?#")
 
 METRICS_FLAGS = {
     "llama.cpp": (("--metrics",),),
-    "vllm": (("--disable-access-log-for-endpoints", "/metrics"), ("--enable-prompt-tokens-details",)),
-    "sglang": (("--enable-metrics",), ("--log-level-http", "warning"), ("--enable-cache-report",)),
+    "vllm": (
+        ("--disable-access-log-for-endpoints", "/metrics"), ("--enable-prompt-tokens-details",)
+    ),
+    "sglang": (
+        ("--enable-metrics",), ("--log-level-http", "warning"), ("--enable-cache-report",)
+    ),
     "freetoken": (("--enable-cache-report",),),
 }
 
@@ -114,6 +117,8 @@ def validate_placeholders(
     A command without a placeholder remains free to use normal shell syntax.
     """
 
+    if "{{model_draft}}" in command:
+        raise PlaceholderError("draft-модель указывается непосредственно в команде запуска")
     placeholders = (*PLACEHOLDERS, *extra_placeholders)
     if "`" in command and any(item in command for item in placeholders):
         raise PlaceholderError("заполнители нельзя использовать в command substitution")
@@ -207,7 +212,6 @@ def substitute_placeholders(
     *,
     engine: str,
     model: str | None,
-    model_draft: str | None = None,
     model_name: str | None = None,
     base_directory: str | None = None,
     port: int | None = None,
@@ -218,17 +222,14 @@ def substitute_placeholders(
     """Substitute validated words with shell-quoted profile values."""
 
     validate_placeholders(command)
-    if "{{model_draft}}" in command and not model_draft:
-        raise AppError(
-            "draft_model_missing", "Выберите draft-модель для {{model_draft}}", status_code=422
-        )
     if "{{model_name}}" in command and not model_name:
         raise AppError(
             "model_name_missing", "Укажите публичное имя модели для {{model_name}}", status_code=422
         )
     if "{{base_directory}}" in command and not base_directory:
         raise AppError(
-            "base_directory_missing", "Для {{base_directory}} не задан runtime-каталог", status_code=422
+            "base_directory_missing", "Для {{base_directory}} не задан runtime-каталог",
+            status_code=422,
         )
     if "{{port}}" in command and port is None:
         raise AppError("port_missing", "Для {{port}} не задан порт профиля", status_code=422)
@@ -259,8 +260,6 @@ def substitute_placeholders(
     }
     if model is not None:
         values["{{model}}"] = shlex.quote(model)
-    if model_draft is not None:
-        values["{{model_draft}}"] = shlex.quote(model_draft)
     if model_name is not None:
         values["{{model_name}}"] = shlex.quote(model_name)
     if target is not None:
@@ -271,7 +270,7 @@ def substitute_placeholders(
         values["{{extra_model_paths_config}}"] = shlex.quote(extra_model_paths_config)
     # Replace only the original placeholders, never placeholder-like text in values.
     return re.sub(
-        r"\{\{(?:engine|model|model_draft|model_name|base_directory|port|target|models_root|extra_model_paths_config)\}\}",
+        r"\{\{(?:engine|model|model_name|base_directory|port|target|models_root|extra_model_paths_config)\}\}",
         lambda match: values[match.group()],
         command,
     )

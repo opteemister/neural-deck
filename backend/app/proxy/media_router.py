@@ -90,32 +90,7 @@ async def _all_models(runtime: AppContainer, result: dict[str, Any]) -> dict[str
     service: ComfyProviderService | None = getattr(runtime, "comfy_service", None)
     if service is None:
         return result
-    config = service.get_settings()
-    available: dict[str, bool] = {}
-    names = {item["id"] for item in result["data"]}
-    items = list(result["data"])
-    for name, model in config["models"].items():
-        source = model["source"]
-        if source not in available:
-            try:
-                catalog = await service.workflows(source)
-                available[source] = catalog["available"]
-            except AppError:
-                available[source] = False
-        if name in names or not available[source] or not model.get("workflows"):
-            continue
-        items.append(
-            {
-                "id": name,
-                "object": "model",
-                "created": 0,
-                "owned_by": "neural-deck",
-                "engine_id": "comfyui",
-                "types": [model["type"]],
-                "capabilities": {"operations": list(model["workflows"])},
-            }
-        )
-    return {**result, "data": items}
+    return await service.extend_models(result)
 
 
 @router.get("/models", response_model=OpenAIModelList, response_model_exclude_none=True)

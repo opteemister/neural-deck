@@ -21,6 +21,9 @@ export type ComfyBindingField =
 
 export type ComfyBinding = { node: string; input: string }
 export type ComfyModel = {
+  max_megapixels?: number
+  max_resolution?: number
+  max_seconds?: number
   source: string
   type: ComfyMediaType
   workflows: Partial<Record<ComfyOperation, string>> & Record<string, unknown>

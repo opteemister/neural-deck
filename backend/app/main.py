@@ -25,6 +25,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.routing import BaseRoute
 
 from .api.dependencies import get_engine, get_runtime
+from .api.chat import router as chat_router
 from .api.instances import router as instances_router
 from .api.logs import router as logs_router
 from .api.management import router as management_router
@@ -32,7 +33,10 @@ from .api.metrics import export_router as metrics_export_router
 from .api.metrics import router as metrics_router
 from .api.profiles import router as profiles_router
 from .api.proxy_routes import router as proxy_routes_router
+from .api.openai_connections import router as openai_connections_router
 from .config import Settings, load_settings
+from .chat.service import ChatService
+from .chat.store import ChatStore
 from .container import AppContainer
 from .db import check_database, create_engine, create_session_factory, migrate_database
 from .engines.service import EngineService
@@ -388,6 +392,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             journal=journal_service,
             route_manager=route_manager,
             image_service=image_service,
+            reasoning_metadata=process_manager.reasoning_metadata,
         )
         import secrets
 
@@ -429,6 +434,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             external_discovery=external_discovery,
             mcp_server=getattr(app.state, "mcp_server", None),
         )
+        runtime.chat_service = ChatService(
+            proxy_service, comfy_service, ChatStore(paths.sqlite_path.with_name("chats.sqlite3"))
+        )
+        await runtime.chat_service.initialize()
         _publish_runtime(app, runtime)
         model_catalogue.prepare_background_scan()
         await model_catalogue.start_update_scheduler()
@@ -564,6 +573,8 @@ def create_app(
     # must be included before the frontend fallback route as well.
     app.include_router(management_router)
     app.include_router(proxy_routes_router)
+    app.include_router(openai_connections_router)
+    app.include_router(chat_router)
     app.include_router(media_management_router)
     app.include_router(internal_media_router)
     app.include_router(internal_proxy_router)

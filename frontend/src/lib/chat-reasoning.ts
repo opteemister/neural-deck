@@ -1,9 +1,9 @@
 import type { OpenAiModel } from '@/types/api'
 
-export type Reasoning = 'auto' | 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
+export type Reasoning = 'auto' | 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 const levels: Array<{ value: Reasoning; label: string }> = [
   { value: 'minimal', label: 'Minimal' }, { value: 'low', label: 'Low' },
-  { value: 'medium', label: 'Medium' }, { value: 'high', label: 'High' }, { value: 'xhigh', label: 'XHigh' },
+  { value: 'medium', label: 'Medium' }, { value: 'high', label: 'High' }, { value: 'xhigh', label: 'XHigh' }, { value: 'max', label: 'Max' },
 ]
 
 export function reasoningChoices(model?: OpenAiModel) {
@@ -19,10 +19,8 @@ export function reasoningRequest(mode: Reasoning, model?: OpenAiModel): {
 } {
   const capabilities = model?.reasoning_capabilities
   if (!capabilities || mode === 'auto') return {}
-  if (mode === 'off' && capabilities.can_disable_thinking) return { chat_template_kwargs: { enable_thinking: false } }
+  if (mode === 'off' && capabilities.can_disable_thinking) return { reasoning_effort: 'none' }
   const effort = mode === 'off' ? 'none' : mode
   if (!capabilities.efforts.includes(effort)) return {}
-  return capabilities.effort_parameter === 'chat_template_kwargs'
-    ? { chat_template_kwargs: { reasoning_effort: effort } }
-    : { reasoning_effort: effort }
+  return { reasoning_effort: effort }
 }

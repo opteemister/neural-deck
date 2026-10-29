@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import math
 import re
 import tempfile
 from collections import defaultdict
@@ -35,7 +36,7 @@ class RuntimeModel:
 
 @dataclass(frozen=True, slots=True)
 class RouteCandidate:
-    profile_id: str
+    profile_id: str | None
     profile_name: str | None
     instance_id: str | None
     upstream_model: str | None
@@ -45,10 +46,23 @@ class RouteCandidate:
     available: bool
     reason: str | None
     metadata: Mapping[str, Any]
+    id: str | None = None
+    connection_id: str | None = None
+    connection_name: str | None = None
+
+    @property
+    def candidate_id(self) -> str:
+        if self.id is not None:
+            return self.id
+        assert self.profile_id is not None
+        return self.profile_id
 
     def as_dict(self) -> dict[str, Any]:
         return {
+            "id": self.candidate_id,
             "profile_id": self.profile_id,
+            "connection_id": self.connection_id,
+            "connection_name": self.connection_name,
             "profile_name": self.profile_name,
             "instance_id": self.instance_id,
             "upstream_model": self.upstream_model,
@@ -77,6 +91,7 @@ class RouteInfo:
             "name": self.name,
             "kind": self.kind,
             "candidate_profile_ids": list(self.candidate_profile_ids),
+            "candidate_ids": [candidate.candidate_id for candidate in self.candidates],
             "candidates": [candidate.as_dict() for candidate in self.candidates],
             "available": self.available,
             "diagnostics": list(self.diagnostics),
@@ -157,6 +172,8 @@ class RouteConfigRepository:
             "schema_version": 1,
             "auto_routes": {},
             "aliases": {},
+            "remote_aliases": {},
+            "alias_candidates": {},
             "comfyui": {"sources": {}, "models": {}},
         }
 
@@ -183,7 +200,39 @@ class RouteConfigRepository:
                 str(name): cls._profile_list(value_item, key, str(name))
                 for name, value_item in value.items()
             }
+        remote_aliases = raw.get("remote_aliases", {})
+        if not isinstance(remote_aliases, Mapping):
+            raise AppError("route_config_invalid", "remote_aliases должен быть объектом", status_code=422)
+        for name, target in remote_aliases.items():
+            if name not in result["aliases"] or not isinstance(target, Mapping) or any(
+                not isinstance(target.get(field), str) or not target[field].strip()
+                for field in ("connection_id", "model")
+            ) or result["aliases"][name]:
+                raise AppError("route_config_invalid", "Неверный удалённый маршрут алиаса", status_code=422)
+            result["remote_aliases"][name] = {field: target[field] for field in ("connection_id", "model")}
+        candidate_sets = raw.get("alias_candidates", {})
+        if not isinstance(candidate_sets, Mapping):
+            raise AppError("route_config_invalid", "alias_candidates должен быть объектом", status_code=422)
+        for name, targets in candidate_sets.items():
+            if name not in result["aliases"] or name in result["remote_aliases"]:
+                raise AppError("route_config_invalid", "Неоднозначные кандидаты алиаса", status_code=422)
+            result["alias_candidates"][name] = cls.candidate_targets(targets)
+            result["aliases"][name] = [item["profile_id"] for item in result["alias_candidates"][name] if "profile_id" in item]
         result["comfyui"] = cls._comfyui(raw.get("comfyui", {}))
+        return result
+
+    @classmethod
+    def candidate_targets(cls, values: Any) -> list[dict[str, str]]:
+        if not isinstance(values, list):
+            raise AppError("route_membership_invalid", "Кандидаты должны быть списком", status_code=422)
+        result = []
+        for value in values:
+            if not isinstance(value, Mapping) or set(value) not in ({"profile_id"}, {"connection_id", "model"}) or any(not isinstance(item, str) or not item.strip() for item in value.values()):
+                raise AppError("route_membership_invalid", "Неверный кандидат алиаса", status_code=422)
+            result.append({key: item.strip() for key, item in value.items()})
+        identities = [RouteManager.candidate_id(value) for value in result]
+        if len(identities) != len(set(identities)):
+            raise AppError("duplicate_route_member", "Кандидат не должен повторяться", status_code=422)
         return result
 
     def load_comfyui(self) -> dict[str, Any]:
@@ -353,6 +402,37 @@ class RouteConfigRepository:
                 "type": model_type,
                 "workflows": workflows,
             }
+            if model_type == "image" and "max_megapixels" in raw_model:
+                megapixels = raw_model["max_megapixels"]
+                if (
+                    isinstance(megapixels, bool)
+                    or not isinstance(megapixels, (int, float))
+                    or not math.isfinite(megapixels)
+                    or not 0.1 <= megapixels <= 128
+                ):
+                    raise AppError(
+                        "route_config_invalid",
+                        "Максимальное разрешение должно быть от 0.1 до 128 МП",
+                        status_code=422,
+                        details={"field": f"comfyui.models.{alias}.max_megapixels"},
+                    )
+                model["max_megapixels"] = megapixels
+            if model_type == "video":
+                for field, minimum, maximum, label in (
+                    ("max_resolution", 32, 16384, "Максимальное разрешение"),
+                    ("max_seconds", 1, 600, "Максимальная длительность"),
+                ):
+                    if field not in raw_model:
+                        continue
+                    limit = raw_model[field]
+                    if isinstance(limit, bool) or not isinstance(limit, int) or not minimum <= limit <= maximum:
+                        raise AppError(
+                            "route_config_invalid",
+                            f"{label}: требуется целое число от {minimum} до {maximum}",
+                            status_code=422,
+                            details={"field": f"comfyui.models.{alias}.{field}"},
+                        )
+                    model[field] = limit
             if "bindings" in raw_model:
                 model["bindings"] = cls._comfy_bindings(raw_model["bindings"], alias)
             models[alias] = model
@@ -499,6 +579,13 @@ class RouteManager:
                 if migrated != refs:
                     config[section][name] = migrated
                     changed = True
+        for targets in config["alias_candidates"].values():
+            for target in targets:
+                if "profile_id" in target:
+                    canonical = by_name.get(target["profile_id"], target["profile_id"])
+                    if canonical != target["profile_id"]:
+                        target["profile_id"] = canonical
+                        changed = True
         if changed:
             self.config.save(config)
 
@@ -527,6 +614,10 @@ class RouteManager:
             if explicit is None:
                 live_refs = [reference for reference in grouped.get(name, []) if reference in runtime]
                 refs = self._ordered(config["auto_routes"].get(name, []), live_refs)
+            elif name in config["remote_aliases"]:
+                refs = []
+            elif name in config["alias_candidates"]:
+                refs = list(explicit)
             else:
                 refs = list(dict.fromkeys(explicit))
                 live_auto = [
@@ -571,7 +662,7 @@ class RouteManager:
             None,
         )
 
-    def create_alias(self, name: str, profile_ids: list[str]) -> None:
+    def create_alias(self, name: str, profile_ids: list[str], remote: Mapping[str, str] | None = None, candidates: list[dict[str, str]] | None = None) -> None:
         profiles = self.profiles()
         self._validate_alias(name, profile_ids, profiles)
         config = self.config.load()
@@ -583,9 +674,13 @@ class RouteManager:
                 details={"name": name},
             )
         config["aliases"][name] = list(profile_ids)
+        if candidates is not None:
+            self._set_candidates(config, name, candidates)
+        if remote is not None:
+            config["remote_aliases"][name] = dict(remote)
         self.config.save(config)
 
-    def update_alias(self, current_name: str, name: str, profile_ids: list[str]) -> None:
+    def update_alias(self, current_name: str, name: str, profile_ids: list[str], remote: Mapping[str, str] | None = None, candidates: list[dict[str, str]] | None = None) -> None:
         config = self.config.load()
         if current_name not in config["aliases"]:
             raise AppError("route_not_found", "Алиас не найден", status_code=404)
@@ -593,7 +688,13 @@ class RouteManager:
             raise AppError("route_conflict", "Алиас с таким именем уже существует", status_code=409)
         self._validate_alias(name, profile_ids, self.profiles(), allow_existing_name=current_name)
         del config["aliases"][current_name]
+        config["remote_aliases"].pop(current_name, None)
+        config["alias_candidates"].pop(current_name, None)
+        if remote is not None:
+            config["remote_aliases"][name] = dict(remote)
         config["aliases"][name] = list(profile_ids)
+        if candidates is not None:
+            self._set_candidates(config, name, candidates)
         self.config.save(config)
 
     def delete_alias(self, name: str) -> None:
@@ -601,6 +702,8 @@ class RouteManager:
         if name not in config["aliases"]:
             raise AppError("route_not_found", "Алиас не найден", status_code=404)
         del config["aliases"][name]
+        config["remote_aliases"].pop(name, None)
+        config["alias_candidates"].pop(name, None)
         self.config.save(config)
 
     def update_order(self, name: str, profile_ids: list[str]) -> None:
@@ -613,7 +716,14 @@ class RouteManager:
             if reference
         }
         if name in config["aliases"]:
-            self._validate_alias_members(profile_ids)
+            if name in config["alias_candidates"]:
+                if any("connection_id" in item for item in config["alias_candidates"][name]):
+                    raise AppError("route_membership_invalid", "Используйте общий список candidate_ids", status_code=422)
+                self._set_candidates(config, name, [{"profile_id": value} for value in profile_ids])
+                self.config.save(config)
+                return
+            if name in config["remote_aliases"]:
+                raise AppError("route_membership_invalid", "Удалённый маршрут изменяется в настройках алиаса", status_code=422)
             self._validate_profile_ids(profile_ids, by_name)
             config["aliases"][name] = list(profile_ids)
         else:
@@ -627,6 +737,26 @@ class RouteManager:
                     status_code=422,
                 )
             config["auto_routes"][name] = list(profile_ids)
+        self.config.save(config)
+
+    @staticmethod
+    def candidate_id(target: Mapping[str, str]) -> str:
+        return target["profile_id"] if "profile_id" in target else f"openai:{target['connection_id']}/{target['model']}"
+
+    def _set_candidates(self, config: dict[str, Any], name: str, candidates: list[dict[str, str]]) -> None:
+        targets = self.config.candidate_targets(candidates)
+        profiles = {ref: profile for profile in self.profiles() for ref in (profile.name, profile.profile_id) if ref}
+        local = [target["profile_id"] for target in targets if "profile_id" in target]
+        self._validate_profile_ids(local, profiles)
+        config["aliases"][name] = local
+        config["alias_candidates"][name] = targets
+        config["remote_aliases"].pop(name, None)
+
+    def update_candidates(self, name: str, candidates: list[dict[str, str]]) -> None:
+        config = self.config.load()
+        if name not in config["aliases"]:
+            raise AppError("route_not_found", "Алиас не найден", status_code=404)
+        self._set_candidates(config, name, candidates)
         self.config.save(config)
 
     def _validate_alias(
@@ -654,17 +784,7 @@ class RouteManager:
                 status_code=409,
                 details={"name": name},
             )
-        self._validate_alias_members(profile_ids)
         self._validate_profile_ids(profile_ids, {ref: profile for profile in profiles for ref in (profile.name, profile.profile_id) if ref})
-
-    @staticmethod
-    def _validate_alias_members(profile_ids: list[str]) -> None:
-        if not profile_ids:
-            raise AppError(
-                "route_membership_invalid",
-                "Алиас должен содержать хотя бы один профиль",
-                status_code=422,
-            )
 
     @staticmethod
     def _validate_profile_ids(profile_ids: list[str], profiles: Mapping[str, ProfileData]) -> None:

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictStr
 
 
 class ProviderJSONRequest(BaseModel):
@@ -37,6 +37,13 @@ class ChatCompletionsRequest(ProviderJSONRequest):
 
     messages: list[dict[str, Any]] | None = None
     stream: bool | None = None
+    reasoning_effort: StrictStr | None = Field(
+        default=None, description="OpenAI reasoning level. Omit for server defaults; supported values are reported in model.reasoning_capabilities.",
+        examples=["low", "medium", "high", "xhigh", "none"],
+    )
+    chat_template_kwargs: dict[str, Any] | None = Field(
+        default=None, description="Native template parameters; reasoning_effort and enable_thinking are also supported for compatibility.",
+    )
 
 
 class ResponsesRequest(ProviderJSONRequest):
@@ -51,6 +58,11 @@ class ResponsesRequest(ProviderJSONRequest):
 
     input: Any = None
     stream: bool | None = None
+    reasoning: dict[str, Any] | None = Field(
+        default=None, description="OpenAI reasoning configuration, including effort; unrelated settings such as summary are preserved.",
+        examples=[{"effort": "low"}],
+    )
+    chat_template_kwargs: dict[str, Any] | None = None
 
 
 class OpenAIEmbeddingsRequest(ProviderJSONRequest):

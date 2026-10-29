@@ -5,6 +5,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import { ProxyConnectionRow } from '@/components/proxy-connection-row'
 import { Label } from '@/components/ui/label'
 import { Select } from '@/components/ui/select'
 import { comfyApi, type ComfyConfig, type ComfyMediaType, type ComfyModel, type ComfyOperation, type ComfySource } from '@/lib/comfy-api'
@@ -13,7 +14,7 @@ const aliasPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
 const operationLabels: Record<ComfyOperation, string> = { generate: 'Generate', edit: 'Edit', edit_masked: 'Mask', variations: 'Variations' }
 type Notice = (tone: 'success' | 'error', message: string) => void
 type SourceDraft = { original?: string; name: string; url: string }
-type AliasDraft = { original?: string; name: string; model: ComfyModel }
+type AliasDraft = { original?: string; name: string; model: ComfyModel; megapixels: string; maxResolution: string; maxSeconds: string }
 
 function useConnection(source: string) {
   return useQuery({ queryKey: ['proxy-comfy-status', source], queryFn: () => comfyApi.getStatus(source), retry: false, staleTime: 10_000, refetchInterval: 15_000 })
@@ -74,9 +75,15 @@ export function ProxyComfyConfig({ config, mediaType, onSave, notify }: {
     if (!aliasPattern.test(name)) return notify('error', 'Укажите алиас: буквы, цифры, точка, дефис или подчёркивание.')
     if (name !== aliasDraft.original && name in config.models) return notify('error', 'Такой алиас уже существует.')
     if (!config.sources[aliasDraft.model.source]) return notify('error', 'Выберите подключение.')
+    const megapixels = Number(aliasDraft.megapixels)
+    if (mediaType === 'image' && (!Number.isFinite(megapixels) || megapixels < 0.1 || megapixels > 128)) return notify('error', 'Укажите максимальное разрешение от 0.1 до 128 МП.')
+    const maxResolution = Number(aliasDraft.maxResolution)
+    const maxSeconds = Number(aliasDraft.maxSeconds)
+    if (mediaType === 'video' && (!Number.isInteger(maxResolution) || maxResolution < 32 || maxResolution > 16384)) return notify('error', 'Укажите максимальное разрешение от 32 до 16384p.')
+    if (mediaType === 'video' && (!Number.isInteger(maxSeconds) || maxSeconds < 1 || maxSeconds > 600)) return notify('error', 'Укажите максимальную длительность от 1 до 600 секунд.')
     const models = { ...config.models }
     if (aliasDraft.original) delete models[aliasDraft.original]
-    models[name] = aliasDraft.model
+    models[name] = { ...aliasDraft.model, ...(mediaType === 'image' ? { max_megapixels: megapixels } : { max_resolution: maxResolution, max_seconds: maxSeconds }) }
     setSaving(true)
     try {
       const paths = [...new Set(Object.values(aliasDraft.model.workflows).filter((path): path is string => typeof path === 'string' && Boolean(path)))]
@@ -111,9 +118,9 @@ export function ProxyComfyConfig({ config, mediaType, onSave, notify }: {
       <div className="divide-y divide-border">{sources.map(([name, source]) => <ConnectionRow key={name} name={name} source={source} disabled={saving} onEdit={() => editSource(name, source)} onDelete={() => void removeSource(name)} />)}</div>
     </section>
     <section aria-label={mediaType === 'image' ? 'Алиасы изображений' : 'Алиасы видео'}>
-      <div className="mb-3 flex items-center justify-between gap-3"><h2 className="text-sm font-medium">Алиасы</h2><Button variant="primary" size="sm" disabled={saving || !sources.length} onClick={() => setAliasDraft({ name: '', model: { source: sources[0]?.[0] ?? '', type: mediaType, workflows: {} } })}><Plus className="size-3.5" />Новый алиас</Button></div>
+      <div className="mb-3 flex items-center justify-between gap-3"><h2 className="text-sm font-medium">Алиасы</h2><Button variant="primary" size="sm" disabled={saving || !sources.length} onClick={() => setAliasDraft({ name: '', megapixels: '4', maxResolution: '768', maxSeconds: '15', model: { source: sources[0]?.[0] ?? '', type: mediaType, workflows: {} } })}><Plus className="size-3.5" />Новый алиас</Button></div>
       {!aliases.length && <p className="py-6 text-center text-xs text-muted-foreground">Алиасов пока нет</p>}
-      <div className="space-y-3">{aliases.map(([alias, model]) => <AliasRow key={alias} alias={alias} model={model} disabled={saving} onEdit={() => setAliasDraft({ original: alias, name: alias, model: { ...model, workflows: { ...model.workflows } } })} onDelete={() => { const models = { ...config.models }; delete models[alias]; void persist({ ...config, models }) }} />)}</div>
+      <div className="space-y-3">{aliases.map(([alias, model]) => <AliasRow key={alias} alias={alias} model={model} disabled={saving} onEdit={() => setAliasDraft({ original: alias, name: alias, megapixels: String(model.max_megapixels ?? 4), maxResolution: String(model.max_resolution ?? 768), maxSeconds: String(model.max_seconds ?? 15), model: { ...model, workflows: { ...model.workflows } } })} onDelete={() => { const models = { ...config.models }; delete models[alias]; void persist({ ...config, models }) }} />)}</div>
     </section>
     <Dialog open={sourceDraft !== null} title={sourceDraft?.original ? 'Изменить подключение' : 'Новое подключение'} dismissible={!saving} onOpenChange={(open) => { if (!open && !saving) setSourceDraft(null) }}>
       {sourceDraft && <form className="space-y-5 p-4" onSubmit={(event) => void saveSource(event)}>
@@ -132,6 +139,11 @@ export function ProxyComfyConfig({ config, mediaType, onSave, notify }: {
         </Select></div>
         </div>
         <WorkflowFields source={aliasDraft.model.source} model={aliasDraft.model} operations={operations} disabled={saving} onChange={setWorkflow} />
+        {mediaType === 'image' && <div className="grid grid-cols-[minmax(0,1fr)_6rem] items-center gap-4 border-t border-border pt-4"><Label htmlFor="comfy-alias-megapixels">Максимум, МП</Label><Input id="comfy-alias-megapixels" type="number" min="0.1" max="128" step="any" required value={aliasDraft.megapixels} disabled={saving} onChange={(event) => setAliasDraft({ ...aliasDraft, megapixels: event.target.value })} /></div>}
+        {mediaType === 'video' && <div className="grid grid-cols-2 gap-4 border-t border-border pt-4">
+          <div><Label className="mb-1.5 block" htmlFor="comfy-video-resolution">Макс. разрешение, p</Label><Input id="comfy-video-resolution" type="number" min="32" max="16384" step="1" required value={aliasDraft.maxResolution} disabled={saving} onChange={(event) => setAliasDraft({ ...aliasDraft, maxResolution: event.target.value })} /></div>
+          <div><Label className="mb-1.5 block" htmlFor="comfy-video-seconds">Макс. длительность, с</Label><Input id="comfy-video-seconds" type="number" min="1" max="600" step="1" required value={aliasDraft.maxSeconds} disabled={saving} onChange={(event) => setAliasDraft({ ...aliasDraft, maxSeconds: event.target.value })} /></div>
+        </div>}
         <div className="flex justify-end gap-2 border-t border-border pt-4"><Button variant="ghost" disabled={saving} onClick={() => setAliasDraft(null)}>Отмена</Button><Button type="submit" variant="primary" disabled={saving}>{saving ? 'Сохраняем…' : 'Сохранить'}</Button></div>
       </form>}
     </Dialog>
@@ -142,12 +154,7 @@ function ConnectionRow({ name, source, disabled, onEdit, onDelete }: { name: str
   const status = useConnection(name)
   const available = status.data?.available === true && !status.isError
   const isLocal = name === 'local' && source.base_url.replace(/\/$/, '') === 'http://127.0.0.1:8188'
-  return <div className="flex min-w-0 flex-wrap items-center gap-2 py-2.5">
-    <span className={`size-2 shrink-0 rounded-full ${available ? 'bg-[#6f9a72]' : 'bg-[#c9974f]'}`} />
-    <span className="text-xs font-medium">{name}</span><span className="text-[11px] text-muted-foreground">{status.isPending ? 'Проверяем…' : available ? 'Подключено' : 'Не подключено'}</span>
-    <span className="min-w-0 truncate font-mono text-[10px] text-muted-foreground" title={source.base_url}>{isLocal ? ':8188' : source.base_url}</span>
-    {!isLocal && <div className="ml-auto flex gap-1"><Button variant="ghost" size="icon-sm" iconOnly disabled={disabled} aria-label={`Изменить подключение ${name}`} title="Изменить подключение" onClick={onEdit}><Pencil className="size-3.5" /></Button><Button variant="ghost" size="icon-sm" iconOnly disabled={disabled} aria-label={`Удалить подключение ${name}`} title="Удалить подключение" onClick={onDelete}><Trash2 className="size-3.5" /></Button></div>}
-  </div>
+  return <ProxyConnectionRow name={name} url={isLocal ? ':8188' : source.base_url} pending={status.isPending} available={available} disabled={disabled} onEdit={isLocal ? undefined : onEdit} onDelete={isLocal ? undefined : onDelete} />
 }
 
 function AliasRow({ alias, model, disabled, onEdit, onDelete }: { alias: string; model: ComfyModel; disabled: boolean; onEdit: () => void; onDelete: () => void }) {

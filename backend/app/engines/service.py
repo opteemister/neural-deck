@@ -340,18 +340,9 @@ class EngineService:
         model_path = profile.model.path if profile.model else None
         model_name = profile.model_name or None
         types = list(definition.types)
-        if profile.types is not None:
-            if not set(profile.types).issubset(types):
-                raise AppError("profile_types_invalid", "Типы профиля не могут расширять определение движка", status_code=422)
-            types = list(profile.types)
         protocol = definition.api.protocol if definition.api else "none"
         base_url = definition.api.base_url if definition.api else None
-        if profile.api is not None:
-            if profile.api.protocol is not None:
-                protocol = profile.api.protocol
-            if "base_url" in profile.api.model_fields_set:
-                base_url = profile.api.base_url
-        ui_url = profile.ui_url if profile.ui_url is not None else definition.ui_url
+        ui_url = definition.ui_url
         environment = {**definition.environment, **profile.environment}
         return ResolvedEngineProfile(
             definition=definition, installation=chosen, executable_path=executable,
@@ -499,7 +490,7 @@ class EngineService:
         template = template.replace("{{models_root}}", shlex.quote(str(self.paths.models_root)))
         return substitute_placeholders(
             template, engine=str(executable), target=str(target), model=None,
-            model_name=None, model_draft=None, port=None, models_root=None,
+            model_name=None, port=None, models_root=None,
             extra_model_paths_config=None,
         )
 

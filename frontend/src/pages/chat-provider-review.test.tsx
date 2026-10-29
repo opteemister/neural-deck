@@ -44,6 +44,7 @@ describe('chat provider flows', () => {
 
     await waitFor(() => expect(screen.getByRole('button', { name: 'Отправить' })).toBeDisabled())
     fireEvent.change(screen.getByLabelText('Сообщение'), { target: { value: 'Продолжи ответ' } })
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Отправить' })).toBeEnabled())
     fireEvent.click(screen.getByRole('button', { name: 'Отправить' }))
     await screen.findByText('text answer')
 

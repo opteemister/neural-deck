@@ -5,21 +5,6 @@ export type ComfySource = {
 
 export type ComfyOperation = 'generate' | 'edit' | 'edit_masked' | 'variations'
 export type ComfyMediaType = 'image' | 'video'
-export type ComfyBindingField =
-  | 'prompt'
-  | 'image'
-  | 'mask'
-  | 'size.width'
-  | 'size.height'
-  | 'n'
-  | 'quality'
-  | 'background'
-  | 'output_format'
-  | 'output_compression'
-  | 'seconds'
-  | 'reference'
-
-export type ComfyBinding = { node: string; input: string }
 export type ComfyModel = {
   max_megapixels?: number
   max_resolution?: number
@@ -27,7 +12,7 @@ export type ComfyModel = {
   source: string
   type: ComfyMediaType
   workflows: Partial<Record<ComfyOperation, string>> & Record<string, unknown>
-  bindings?: Partial<Record<ComfyOperation, Partial<Record<ComfyBindingField, ComfyBinding>>>> & Record<string, unknown>
+  [key: string]: unknown
 }
 export type ComfyConfig = {
   sources: Record<string, ComfySource>
@@ -44,11 +29,6 @@ export type WorkflowListing = {
   cached: boolean
   updated_at: number | null
 }
-
-export const COMFY_BINDING_FIELDS: ComfyBindingField[] = [
-  'prompt', 'image', 'mask', 'size.width', 'size.height', 'n', 'quality', 'background',
-  'output_format', 'output_compression', 'seconds', 'reference',
-]
 
 export const comfyQueryKey = ['proxy-comfyui'] as const
 

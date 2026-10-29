@@ -104,6 +104,6 @@ export function Select({ className, placement = 'bottom', variant = 'default', .
         const selected = optionValue === selectedValue
         return <button key={`${optionValue}-${index}`} type="button" role="option" aria-selected={selected} disabled={option.props.disabled} className={cn('flex min-h-9 w-full items-center gap-2 rounded-sm px-3 text-left text-xs text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50', selected && 'bg-accent')} onClick={() => selectOption(optionValue, option.props.disabled)}><Check className={cn('size-3.5 shrink-0 text-[#78b488]', !selected && 'invisible')} aria-hidden="true" /><span className="min-w-0 flex-1">{option.props.children}</span></button>
       })}
-    </div>, rootRef.current?.closest('[role="dialog"]') ?? document.body)}
+    </div>, document.body)}
   </div>
 }

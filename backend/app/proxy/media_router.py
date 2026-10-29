@@ -8,7 +8,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictInt
 from starlette.datastructures import UploadFile
 
 from ..api.dependencies import get_proxy_service, get_runtime
@@ -42,22 +42,23 @@ class ImageRequest(BaseModel):
         examples=["A green ceramic teapot on a light background"],
         description="Описание изображения.",
     )
-    n: int | None = Field(
+    n: StrictInt | None = Field(
         default=None, ge=1, description="Число изображений; передаётся в batch/count вход workflow."
     )
     size: str | None = Field(
         default=None, description="WIDTHxHEIGHT. Если не задан, используются размеры workflow."
     )
-    quality: str | None = Field(default=None, description="Поддержанный workflow режим качества.")
+    quality: str | None = Field(default="auto", description="auto, low, medium, high используют сохранённый native-режим workflow без изменения сэмплинга.")
     background: Literal["auto", "opaque", "transparent"] | None = Field(
         default=None, description="Режим фона, включая прозрачность. Это не асинхронное исполнение."
     )
     output_format: Literal["png", "jpeg", "webp"] | None = Field(
-        default=None, description="Кодек файла; требуется соответствующий вход workflow."
+        default="png", description="Реальный формат результата; PNG по умолчанию. При необходимости преобразуется после ComfyUI."
     )
-    output_compression: int | None = Field(
-        default=None, ge=0, le=100, description="Сжатие для поддерживающего его кодека."
+    output_compression: StrictInt | None = Field(
+        default=None, ge=0, le=100, description="Качество кодирования JPEG/WebP от 0 до 100, по умолчанию 100. Для PNG не применяется и отклоняется."
     )
+    seed: StrictInt | None = Field(default=None, ge=0, le=2**64 - 1, description="Расширение: seed генератора шума. Без значения — новый случайный seed на каждый запрос.")
     response_format: Literal["url", "b64_json"] | None = Field(
         default=None, description="Доставка результата: URL файла или base64 его байтов."
     )
@@ -247,6 +248,7 @@ _VIDEO_FIELDS: dict[str, Any] = {
         "example": "4",
     },
     "input_reference": {"type": "string", "format": "binary"},
+    "seed": {"type": "integer", "minimum": 0, "description": "Необязательный seed генерации; без значения выбирается новый случайный seed."},
 }
 
 
@@ -301,7 +303,7 @@ async def _image_form(request: Request, runtime: AppContainer, operation: str) -
         raise AppError(
             "invalid_request", "Требуется prompt", status_code=400, details={"field": "prompt"}
         )
-    for field in ("n", "output_compression"):
+    for field in ("n", "output_compression", "seed"):
         if field in body:
             try:
                 body[field] = int(body[field])
@@ -390,6 +392,12 @@ async def image_asset(asset_id: str, runtime: RuntimeDep) -> Any:
 async def video_create(request: Request, runtime: RuntimeDep) -> Any:
     async def create() -> Any:
         body, _, _ = await _form(request)
+        for field in ("seconds", "seed"):
+            if field in body:
+                try:
+                    body[field] = int(body[field])
+                except (TypeError, ValueError) as exc:
+                    raise AppError("invalid_parameter", "Требуется целое число", status_code=400, details={"field": field}) from exc
         service = _service(runtime)
         model = service.get_settings()["models"].get(body.get("model"))
         if not model or model["type"] != "video":

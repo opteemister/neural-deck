@@ -110,7 +110,7 @@ export function ChatPage() {
   }, [])
   const [params, setParams] = useSearchParams()
   const [resumableVideo] = useState<PendingVideo | null>(() => params.has('chat') ? null : readPendingVideo() ?? (params.get('video') ? { id: params.get('video')!, model: params.get('model') ?? '', prompt: 'Генерация видео', createdAt: 0 } : null))
-  const models = useQuery({ queryKey: queryKeys.openAiModels, queryFn: () => api.getOpenAiModels(true), refetchInterval: 15_000 })
+  const models = useQuery({ queryKey: queryKeys.openAiModels, queryFn: () => api.getOpenAiModels(true), staleTime: Infinity, refetchOnWindowFocus: false, refetchOnReconnect: false, retry: false })
   const [draft, setDraft] = useState('')
   const [turns, setTurns] = useState<Turn[]>([])
   const [reasoning, setReasoning] = useState<Reasoning>('auto')
@@ -361,9 +361,11 @@ export function ChatPage() {
       for (const model of allModels) {
         if (chatModelType(model) === 'image') {
           const settings = imageSettingsByModel[model.id] ?? DEFAULT_IMAGE_SETTINGS
+          if (maxImageMegapixels(model) === undefined) continue
           defaults[model.id] = { size: imageRequestSize(settings, maxImageMegapixels(model)), background: settings.transparent ? 'transparent' : 'opaque' }
         } else if (chatModelType(model) === 'video') {
           const settings = normalizeVideoSettings(videoSettingsByModel[model.id] ?? DEFAULT_VIDEO_SETTINGS, model)
+          if (!settings.resolution || !settings.seconds) continue
           defaults[model.id] = { size: videoRequestSize(settings), seconds: settings.seconds }
         }
       }

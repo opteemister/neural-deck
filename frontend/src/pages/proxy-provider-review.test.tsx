@@ -16,11 +16,11 @@ const initialConfig: ComfyConfig = {
 
 afterEach(() => { cleanup(); vi.restoreAllMocks() })
 
-function setup() {
+function setup(config = initialConfig) {
   vi.spyOn(api, 'getProxyRoutes').mockResolvedValue({ items: [] })
   vi.spyOn(api, 'getProxyModelChoices').mockResolvedValue({ items: [], diagnostics: [] })
   vi.spyOn(api, 'getOpenAIConnections').mockResolvedValue({ items: [] })
-  vi.spyOn(comfyApi, 'getConfig').mockResolvedValue(structuredClone(initialConfig))
+  vi.spyOn(comfyApi, 'getConfig').mockResolvedValue(structuredClone(config))
   vi.spyOn(comfyApi, 'getStatus').mockResolvedValue({ available: false })
   const workflows = vi.spyOn(comfyApi, 'getWorkflows').mockResolvedValue({ items: ['workflows/remote.json'], available: false, cached: true, updated_at: 1 })
   const saveSource = vi.spyOn(comfyApi, 'saveSource').mockResolvedValue(initialConfig)
@@ -41,6 +41,17 @@ async function tab(name: 'Изображения' | 'Видео') {
 }
 
 describe('proxy media configuration uses shared backend operations', () => {
+  it('shows only the MP budget directly in the image form', async () => {
+    setup()
+    await tab('Изображения')
+    fireEvent.click(screen.getByRole('button', { name: 'Изменить алиас cached' }))
+    const dialog = screen.getByRole('dialog')
+    expect(within(dialog).getByLabelText('Максимум, МП')).toHaveValue('8')
+    expect(dialog.querySelector('details')).toBeNull()
+    expect(within(dialog).queryByText('Кратность')).not.toBeInTheDocument()
+    expect(within(dialog).queryByText('Seed')).not.toBeInTheDocument()
+  })
+
   it('keeps offline aliases editable and sends only alias fields to the entity API', async () => {
     const { saveAlias } = setup()
     await tab('Изображения')
@@ -48,7 +59,7 @@ describe('proxy media configuration uses shared backend operations', () => {
     expect(screen.queryByText('Generate')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Изменить алиас cached' }))
     let dialog = within(screen.getByRole('dialog'))
-    expect(select('Workflow generate')).toHaveValue('workflows/cached.json')
+    expect(select('Сценарий: Генерация')).toHaveValue('workflows/cached.json')
     fireEvent.click(dialog.getByRole('button', { name: 'Отмена' }))
     expect(saveAlias).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: 'Изменить алиас cached' }))
@@ -63,6 +74,7 @@ describe('proxy media configuration uses shared backend operations', () => {
     await tab('Изображения')
     fireEvent.click(screen.getByRole('button', { name: 'Изменить подключение local' }))
     const dialog = within(screen.getByRole('dialog'))
+    expect(dialog.queryByText('Выполнение workflow')).not.toBeInTheDocument()
     expect(dialog.getByLabelText('URL')).toHaveValue('http://local-comfy:8188/comfy/root')
     fireEvent.change(dialog.getByLabelText('Имя'), { target: { value: 'renamed' } })
     fireEvent.click(dialog.getByRole('button', { name: 'Сохранить' }))
@@ -84,10 +96,12 @@ describe('proxy media configuration uses shared backend operations', () => {
     fireEvent.change(dialog.getByLabelText('Алиас'), { target: { value: 'remote-image' } })
     fireEvent.change(select('Подключение'), { target: { value: 'remote' } })
     await waitFor(() => expect(workflows).toHaveBeenCalledWith('remote'))
-    await waitFor(() => expect(select('Workflow generate').querySelector('option[value="workflows/remote.json"]')).not.toBeNull())
-    fireEvent.change(select('Workflow generate'), { target: { value: 'workflows/remote.json' } })
+    await waitFor(() => expect(select('Сценарий: Генерация').querySelector('option[value="workflows/remote.json"]')).not.toBeNull())
+    fireEvent.change(select('Сценарий: Генерация'), { target: { value: 'workflows/remote.json' } })
+    expect(dialog.getByLabelText('Максимум, МП')).toHaveValue('')
+    fireEvent.change(dialog.getByLabelText('Максимум, МП'), { target: { value: '8' } })
     fireEvent.click(dialog.getByRole('button', { name: 'Сохранить' }))
-    await waitFor(() => expect(saveAlias).toHaveBeenCalledWith({ name: 'remote-image', source: 'remote', type: 'image', workflows: { generate: 'workflows/remote.json' }, max_megapixels: 4 }, undefined))
+    await waitFor(() => expect(saveAlias).toHaveBeenCalledWith({ name: 'remote-image', source: 'remote', type: 'image', workflows: { generate: 'workflows/remote.json' }, max_megapixels: 8 }, undefined))
   })
 
   it('saves video limits without image-only operations', async () => {
@@ -95,7 +109,7 @@ describe('proxy media configuration uses shared backend operations', () => {
     await tab('Видео')
     fireEvent.click(screen.getByRole('button', { name: 'Изменить алиас video' }))
     const dialog = within(screen.getByRole('dialog'))
-    expect(dialog.queryByLabelText('Workflow variations')).not.toBeInTheDocument()
+    expect(dialog.queryByLabelText('Сценарий: Вариации')).not.toBeInTheDocument()
     fireEvent.change(dialog.getByLabelText('Макс. длительность, с'), { target: { value: '45' } })
     fireEvent.click(dialog.getByRole('button', { name: 'Сохранить' }))
     await waitFor(() => expect(saveAlias).toHaveBeenCalledWith({ name: 'video', source: 'local', type: 'video', workflows: { generate: 'workflows/video.json', edit: 'workflows/i2v.json' }, max_resolution: 1080, max_seconds: 45 }, 'video'))
@@ -108,6 +122,6 @@ describe('proxy media configuration uses shared backend operations', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Изменить алиас cached' }))
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Сохранить' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('Требуется API-экспорт workflow')
-    expect(select('Workflow generate')).toHaveValue('workflows/cached.json')
+    expect(select('Сценарий: Генерация')).toHaveValue('workflows/cached.json')
   })
 })

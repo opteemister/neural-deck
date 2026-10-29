@@ -8,8 +8,8 @@ const models = [
     id: 'text-model', object: 'model' as const, types: ['text' as const],
     reasoning_capabilities: { efforts: ['xhigh'], effort_parameter: 'reasoning_effort' as const, can_disable_thinking: true },
   },
-  { id: 'image-model', object: 'model' as const, types: ['image' as const] },
-  { id: 'video-model', object: 'model' as const, types: ['video' as const] },
+  { id: 'image-model', object: 'model' as const, types: ['image' as const], capabilities: { max_megapixels: 4 } },
+  { id: 'video-model', object: 'model' as const, types: ['video' as const], capabilities: { max_resolution: 768, max_seconds: 15 } },
   { id: 'ocr-model', object: 'model' as const, types: ['ocr' as const] },
 ]
 
@@ -19,7 +19,7 @@ function renderOptions(model = 'image-model') {
   const onModel = vi.fn()
   const onReasoning = vi.fn()
   const onImageSettings = vi.fn()
-  const imageSettings = { size: '1024x1024' as const, transparent: false, maxResolution: false }
+  const imageSettings = { size: 'square' as const, transparent: false, maxResolution: false }
   const view = render(<ChatOptions models={models} model={model} reasoning="auto" onModel={onModel} onReasoning={onReasoning} imageSettings={imageSettings} onImageSettings={onImageSettings} videoSettings={DEFAULT_VIDEO_SETTINGS} onVideoSettings={vi.fn()} disabled={false} loading={false} error={false} onOpen={vi.fn()} />)
   return { onModel, onReasoning, onImageSettings, view }
 }
@@ -56,28 +56,28 @@ describe('ChatOptions', () => {
     expect(trigger).not.toHaveTextContent('Прозрачный')
     fireEvent.click(trigger)
 
-    expect(screen.getByRole('radio', { name: 'Квадрат 1472×1472' })).toBeChecked()
-    expect(screen.getByRole('radio', { name: 'Вертикальный 1088×1920' })).toBeInTheDocument()
-    expect(screen.getByRole('radio', { name: 'Горизонтальный 1920×1088' })).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: 'Квадрат 1448×1448' })).toBeChecked()
+    expect(screen.getByRole('radio', { name: 'Вертикальный 1086×1930' })).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: 'Горизонтальный 1930×1086' })).toBeInTheDocument()
     expect(screen.getByRole('checkbox', { name: 'Прозрачный фон' })).not.toBeChecked()
-    fireEvent.click(screen.getByRole('radio', { name: 'Вертикальный 1088×1920' }))
-    expect(onImageSettings).toHaveBeenLastCalledWith({ size: '768x1024', transparent: false, maxResolution: false })
-    view.rerender(<ChatOptions models={models} model="image-model" reasoning="auto" onModel={vi.fn()} onReasoning={vi.fn()} imageSettings={{ size: '768x1024', transparent: false, maxResolution: false }} onImageSettings={onImageSettings} videoSettings={DEFAULT_VIDEO_SETTINGS} onVideoSettings={vi.fn()} disabled={false} loading={false} error={false} onOpen={vi.fn()} />)
+    fireEvent.click(screen.getByRole('radio', { name: 'Вертикальный 1086×1930' }))
+    expect(onImageSettings).toHaveBeenLastCalledWith({ size: 'portrait', transparent: false, maxResolution: false })
+    view.rerender(<ChatOptions models={models} model="image-model" reasoning="auto" onModel={vi.fn()} onReasoning={vi.fn()} imageSettings={{ size: 'portrait', transparent: false, maxResolution: false }} onImageSettings={onImageSettings} videoSettings={DEFAULT_VIDEO_SETTINGS} onVideoSettings={vi.fn()} disabled={false} loading={false} error={false} onOpen={vi.fn()} />)
     fireEvent.click(screen.getByRole('checkbox', { name: 'Прозрачный фон' }))
-    expect(onImageSettings).toHaveBeenLastCalledWith({ size: '768x1024', transparent: true, maxResolution: false })
+    expect(onImageSettings).toHaveBeenLastCalledWith({ size: 'portrait', transparent: true, maxResolution: false })
     fireEvent.click(screen.getByRole('checkbox', { name: 'Макс. разр. (дольше)' }))
-    expect(onImageSettings).toHaveBeenLastCalledWith({ size: '768x1024', transparent: false, maxResolution: true })
-    view.rerender(<ChatOptions models={models} model="image-model" reasoning="auto" onModel={vi.fn()} onReasoning={vi.fn()} imageSettings={{ size: '768x1024', transparent: false, maxResolution: true }} onImageSettings={onImageSettings} videoSettings={DEFAULT_VIDEO_SETTINGS} onVideoSettings={vi.fn()} disabled={false} loading={false} error={false} onOpen={vi.fn()} />)
+    expect(onImageSettings).toHaveBeenLastCalledWith({ size: 'portrait', transparent: false, maxResolution: true })
+    view.rerender(<ChatOptions models={models} model="image-model" reasoning="auto" onModel={vi.fn()} onReasoning={vi.fn()} imageSettings={{ size: 'portrait', transparent: false, maxResolution: true }} onImageSettings={onImageSettings} videoSettings={DEFAULT_VIDEO_SETTINGS} onVideoSettings={vi.fn()} disabled={false} loading={false} error={false} onOpen={vi.fn()} />)
     expect(screen.getByRole('radio', { name: 'Квадрат 2048×2048' })).toBeInTheDocument()
-    expect(screen.getByRole('radio', { name: 'Вертикальный 1536×2752' })).toBeChecked()
-    fireEvent.click(screen.getByRole('radio', { name: 'Горизонтальный 2752×1536' }))
-    expect(onImageSettings).toHaveBeenLastCalledWith({ size: '1024x768', transparent: false, maxResolution: true })
+    expect(screen.getByRole('radio', { name: 'Вертикальный 1536×2730' })).toBeChecked()
+    fireEvent.click(screen.getByRole('radio', { name: 'Горизонтальный 2730×1536' }))
+    expect(onImageSettings).toHaveBeenLastCalledWith({ size: 'landscape', transparent: false, maxResolution: true })
   })
 
   it('does not show image settings for text models', () => {
     renderOptions('text-model')
     fireEvent.click(screen.getByRole('button', { name: 'Выбрать модель' }))
-    expect(screen.queryByRole('radio', { name: 'Квадрат 1472×1472' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('radio', { name: 'Квадрат 1448×1448' })).not.toBeInTheDocument()
     expect(screen.queryByRole('checkbox', { name: 'Прозрачный фон' })).not.toBeInTheDocument()
   })
 
@@ -93,7 +93,7 @@ describe('ChatOptions', () => {
   })
 
   it('keeps the existing automatic reasoning control for text models without advertised effort levels', () => {
-    render(<ChatOptions models={[{ id: 'plain-text', object: 'model', types: ['text'] }]} model="plain-text" reasoning="auto" onModel={vi.fn()} onReasoning={vi.fn()} imageSettings={{ size: '1024x1024', transparent: false, maxResolution: false }} onImageSettings={vi.fn()} videoSettings={DEFAULT_VIDEO_SETTINGS} onVideoSettings={vi.fn()} disabled={false} loading={false} error={false} onOpen={vi.fn()} />)
+    render(<ChatOptions models={[{ id: 'plain-text', object: 'model', types: ['text'] }]} model="plain-text" reasoning="auto" onModel={vi.fn()} onReasoning={vi.fn()} imageSettings={{ size: 'square', transparent: false, maxResolution: false }} onImageSettings={vi.fn()} videoSettings={DEFAULT_VIDEO_SETTINGS} onVideoSettings={vi.fn()} disabled={false} loading={false} error={false} onOpen={vi.fn()} />)
     fireEvent.click(screen.getByRole('button', { name: 'Выбрать модель' }))
     expect(screen.getByText('Reasoning')).toBeInTheDocument()
     expect(screen.getByRole('radio', { name: 'Авто' })).toBeChecked()

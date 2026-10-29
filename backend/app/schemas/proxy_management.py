@@ -45,14 +45,20 @@ class MediaAliasRequest(ManagementInput):
     type: Literal["image", "video"] = Field(description="Тип алиаса: изображение или видео; при изменении сохраняется прежний тип.")
     source: StrictStr = Field(min_length=1, description="Имя сохранённого подключения ComfyUI, включая local.")
     workflows: MediaWorkflows = Field(description="Полный набор операций: отсутствующие или пустые пути отключают операцию.")
-    max_megapixels: float | None = Field(default=None, ge=0.1, le=128, strict=True, allow_inf_nan=False, description="Бюджет image в МП; обычный режим использует половину. При создании по умолчанию 4.")
-    max_resolution: int | None = Field(default=None, ge=32, le=16384, strict=True, description="Максимальная короткая сторона video в пикселях; при создании по умолчанию 768.")
-    max_seconds: int | None = Field(default=None, ge=1, le=600, strict=True, description="Максимальная длительность video в секундах; при создании по умолчанию 15.")
+    max_megapixels: float | None = Field(default=None, gt=0, strict=True, allow_inf_nan=False, description="Максимум изображения в МП; обязателен для image. Обычный размер использует половину бюджета.")
+    max_resolution: int | None = Field(default=None, gt=0, strict=True, description="Максимальная короткая сторона видео, px; обязательна для video.")
+    max_seconds: int | None = Field(default=None, gt=0, strict=True, description="Максимальная длительность видео, секунды; обязательна для video.")
 
     @model_validator(mode="after")
-    def limits(self):
+    def validate_limits(self):
+        if self.type == "image" and self.max_megapixels is None:
+            raise ValueError("Укажите максимум изображения в МП")
+        if self.type == "video" and (self.max_resolution is None or self.max_seconds is None):
+            raise ValueError("Укажите максимальное разрешение и длительность видео")
         if self.type == "image" and (self.max_resolution is not None or self.max_seconds is not None):
-            raise ValueError("Для image используется только max_megapixels")
-        if self.type == "video" and (self.max_megapixels is not None or self.workflows.edit_masked or self.workflows.variations):
-            raise ValueError("Для video доступны generate, edit, max_resolution и max_seconds")
+            raise ValueError("Для изображения используется max_megapixels")
+        if self.type == "video" and self.max_megapixels is not None:
+            raise ValueError("Для видео используются max_resolution и max_seconds")
+        if self.type == "video" and (self.workflows.edit_masked or self.workflows.variations):
+            raise ValueError("Для video доступны generate и edit")
         return self

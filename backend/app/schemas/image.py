@@ -15,7 +15,7 @@ class ImageGenerationRequest(BaseModel):
     n: StrictInt = Field(default=1, ge=1, le=4)
     size: StrictStr = Field(default="1024x1024", min_length=3, max_length=11)
     response_format: Literal["url", "b64_json"] = "url"
-    seed: StrictInt | None = None
+    seed: StrictInt | None = Field(default=None, ge=0, le=2**64 - 1)
     steps: StrictInt = Field(default=25, ge=1, le=100)
     transparent: StrictBool = False
     quality: Literal["auto", "low", "medium", "high"] | None = None

@@ -9,10 +9,10 @@ import { readPendingVideo } from '@/lib/chat-video-job'
 import type { OpenAiModel } from '@/types/api'
 
 const textModel: OpenAiModel = { id: 'text-model', object: 'model', types: ['text'] }
-const imageModel: OpenAiModel = { id: 'image-model', object: 'model', types: ['image'] }
-const videoModel: OpenAiModel = { id: 'video-model', object: 'model', types: ['video'] }
+const imageModel: OpenAiModel = { id: 'image-model', object: 'model', types: ['image'], capabilities: { max_megapixels: 4 } }
+const videoModel: OpenAiModel = { id: 'video-model', object: 'model', types: ['video'], capabilities: { max_resolution: 768, max_seconds: 15 } }
 const ocrModel: OpenAiModel = { id: 'ocr-model', object: 'model', types: ['ocr'] }
-const variationsImageModel: OpenAiModel = { id: 'variations-image-model', object: 'model', types: ['image'], capabilities: { operations: ['variations'] } }
+const variationsImageModel: OpenAiModel = { id: 'variations-image-model', object: 'model', types: ['image'], capabilities: { operations: ['variations'], max_megapixels: 4 } }
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); window.localStorage.clear(); window.sessionStorage.clear() })
 
@@ -97,7 +97,7 @@ describe('universal chat composer', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Отправить' }))
     await screen.findByAltText('Результат 1')
 
-    expect(send.mock.calls[0][1]).toMatchObject({ model: 'image-model', prompt: 'Закат над морем', content: 'Закат над морем', media_defaults: { 'image-model': { size: '1472x1472', background: 'opaque' } } })
+    expect(send.mock.calls[0][1]).toMatchObject({ model: 'image-model', prompt: 'Закат над морем', content: 'Закат над морем', media_defaults: { 'image-model': { size: '1448x1448', background: 'opaque' } } })
   })
 
   it('sends the maximum portrait size and transparent background after closing the model menu', async () => {
@@ -106,7 +106,7 @@ describe('universal chat composer', () => {
 
     await screen.findByText('image-model')
     fireEvent.click(screen.getByRole('button', { name: 'Выбрать модель' }))
-    fireEvent.click(await screen.findByRole('radio', { name: 'Вертикальный 1088×1920' }))
+    fireEvent.click(await screen.findByRole('radio', { name: 'Вертикальный 1086×1930' }))
     fireEvent.click(screen.getByRole('checkbox', { name: 'Макс. разр. (дольше)' }))
     fireEvent.click(screen.getByRole('checkbox', { name: 'Прозрачный фон' }))
     fireEvent.keyDown(document, { key: 'Escape' })
@@ -117,7 +117,7 @@ describe('universal chat composer', () => {
     await screen.findByAltText('Результат 1')
 
     expect(getModels).toHaveBeenCalledWith(true)
-    expect(send.mock.calls[0][1].media_defaults['image-model']).toEqual({ size: '1536x2752', background: 'transparent' })
+    expect(send.mock.calls[0][1].media_defaults['image-model']).toEqual({ size: '1536x2730', background: 'transparent' })
   })
 
   it('keeps image settings independent per alias and restores them after remount', async () => {
@@ -125,21 +125,21 @@ describe('universal chat composer', () => {
     await screen.findByText('image-model')
 
     fireEvent.click(screen.getByRole('button', { name: 'Выбрать модель' }))
-    fireEvent.click(await screen.findByRole('radio', { name: 'Вертикальный 1088×1920' }))
+    fireEvent.click(await screen.findByRole('radio', { name: 'Вертикальный 1086×1930' }))
     fireEvent.click(screen.getByRole('checkbox', { name: 'Макс. разр. (дольше)' }))
     fireEvent.click(screen.getByRole('checkbox', { name: 'Прозрачный фон' }))
     fireEvent.click(screen.getByRole('radio', { name: 'second-image-model' }))
-    expect(screen.getByRole('radio', { name: 'Квадрат 1472×1472' })).toBeChecked()
+    expect(screen.getByRole('radio', { name: 'Квадрат 1448×1448' })).toBeChecked()
     expect(screen.getByRole('checkbox', { name: 'Прозрачный фон' })).not.toBeChecked()
     fireEvent.click(screen.getByRole('radio', { name: 'image-model' }))
-    expect(screen.getByRole('radio', { name: 'Вертикальный 1536×2752' })).toBeChecked()
+    expect(screen.getByRole('radio', { name: 'Вертикальный 1536×2730' })).toBeChecked()
     expect(screen.getByRole('checkbox', { name: 'Прозрачный фон' })).toBeChecked()
 
     view.unmount()
     renderChat([imageModel], '/chat?model=image-model')
     await screen.findByText('image-model')
     fireEvent.click(screen.getByRole('button', { name: 'Выбрать модель' }))
-    await waitFor(() => expect(screen.getByRole('radio', { name: 'Вертикальный 1536×2752' })).toBeChecked())
+    await waitFor(() => expect(screen.getByRole('radio', { name: 'Вертикальный 1536×2730' })).toBeChecked())
     expect(screen.getByRole('checkbox', { name: 'Макс. разр. (дольше)' })).toBeChecked()
     expect(screen.getByRole('checkbox', { name: 'Прозрачный фон' })).toBeChecked()
   })
@@ -149,8 +149,8 @@ describe('universal chat composer', () => {
     renderChat([imageModel], '/chat?model=image-model')
     await screen.findByText('image-model')
     fireEvent.click(screen.getByRole('button', { name: 'Выбрать модель' }))
-    await screen.findByRole('radio', { name: 'Квадрат 1472×1472' })
-    expect(screen.getByRole('radio', { name: 'Квадрат 1472×1472' })).toBeChecked()
+    await screen.findByRole('radio', { name: 'Квадрат 1448×1448' })
+    expect(screen.getByRole('radio', { name: 'Квадрат 1448×1448' })).toBeChecked()
     expect(screen.getByRole('checkbox', { name: 'Прозрачный фон' })).not.toBeChecked()
   })
 
@@ -166,7 +166,7 @@ describe('universal chat composer', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Отправить' }))
     await screen.findByAltText('Результат 1')
 
-    expect(send.mock.calls[0][1]).toMatchObject({ model: 'image-model', image_names: ['house.png'], media_defaults: { 'image-model': { size: '1472x1472', background: 'opaque' } } })
+    expect(send.mock.calls[0][1]).toMatchObject({ model: 'image-model', image_names: ['house.png'], media_defaults: { 'image-model': { size: '1448x1448', background: 'opaque' } } })
     expect(send.mock.calls[0][1].content).toEqual([
       { type: 'text', text: 'Сделай небо розовым' },
       { type: 'image_url', image_url: { url: expect.stringMatching(/^data:image\/png;base64,/) } },
@@ -183,7 +183,7 @@ describe('universal chat composer', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Отправить' }))
     await screen.findByAltText('Результат 1')
 
-    expect(send.mock.calls[0][1]).toMatchObject({ model: 'variations-image-model', media_defaults: { 'variations-image-model': { size: '1472x1472', background: 'opaque' } } })
+    expect(send.mock.calls[0][1]).toMatchObject({ model: 'variations-image-model', media_defaults: { 'variations-image-model': { size: '1448x1448', background: 'opaque' } } })
     expect(send.mock.calls[0][1].content).toEqual([{ type: 'image_url', image_url: { url: expect.stringMatching(/^data:image\/png;base64,/) } }])
   })
 
@@ -235,7 +235,7 @@ describe('universal chat composer', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Отправить' }))
     await screen.findByLabelText('Результат видео')
 
-    expect(send.mock.calls[0][1]).toMatchObject({ model: 'video-model', prompt: 'Камера плавно приближается', image_names: ['reference.png'], media_defaults: { 'video-model': { seconds: 2 } } })
+    expect(send.mock.calls[0][1]).toMatchObject({ model: 'video-model', prompt: 'Камера плавно приближается', image_names: ['reference.png'], media_defaults: { 'video-model': { seconds: 5 } } })
     expect(send.mock.calls[0][1].content).toEqual([
       { type: 'text', text: 'Камера плавно приближается' },
       { type: 'image_url', image_url: { url: expect.stringMatching(/^data:image\/png;base64,/) } },

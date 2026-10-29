@@ -9,6 +9,7 @@ dependencies = [
     "fastapi>=0.115,<1",
     "huggingface-hub>=1.33,<2",
     "mcp==1.27.1",
+    "pillow>=13.0,<14",
     "psutil>=6,<8",
     "prometheus-client>=0.21,<1",
     "pydantic>=2.9,<3",

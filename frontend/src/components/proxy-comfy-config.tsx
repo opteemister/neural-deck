@@ -11,7 +11,7 @@ import { Select } from '@/components/ui/select'
 import { comfyApi, type ComfyConfig, type ComfyMediaType, type ComfyModel, type ComfyOperation, type ComfySource, type MediaAliasInput } from '@/lib/comfy-api'
 
 const aliasPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
-const operationLabels: Record<ComfyOperation, string> = { generate: 'Generate', edit: 'Edit', edit_masked: 'Mask', variations: 'Variations' }
+const operationLabels: Record<ComfyOperation, string> = { generate: 'Генерация', edit: 'Редактирование', edit_masked: 'По маске', variations: 'Вариации' }
 type Notice = (tone: 'success' | 'error', message: string) => void
 type SourceDraft = { original?: string; name: string; url: string }
 type AliasDraft = { original?: string; name: string; model: ComfyModel; megapixels: string; maxResolution: string; maxSeconds: string }
@@ -29,6 +29,7 @@ export function ProxyComfyConfig({ config, mediaType, onSaved, notify }: {
   const operations: ComfyOperation[] = mediaType === 'image' ? ['generate', 'edit', 'edit_masked', 'variations'] : ['generate', 'edit']
   const sources = Object.entries(config.sources).sort(([left], [right]) => Number(right === 'local') - Number(left === 'local'))
   const aliases = Object.entries(config.models).filter(([, model]) => model.type === mediaType)
+  const defaultSource = sourceDraft?.original === 'local' && config.sources.local?.base_url.replace(/\/$/, '') === 'http://127.0.0.1:8188'
 
   async function persist(action: () => Promise<ComfyConfig>) {
     setSaving(true)
@@ -67,12 +68,11 @@ export function ProxyComfyConfig({ config, mediaType, onSaved, notify }: {
     if (!aliasPattern.test(name)) return notify('error', 'Укажите алиас: буквы, цифры, точка, дефис или подчёркивание.')
     if (name !== aliasDraft.original && name in config.models) return notify('error', 'Такой алиас уже существует.')
     if (!config.sources[aliasDraft.model.source]) return notify('error', 'Выберите подключение.')
-    const megapixels = Number(aliasDraft.megapixels)
-    if (mediaType === 'image' && (!Number.isFinite(megapixels) || megapixels < 0.1 || megapixels > 128)) return notify('error', 'Укажите максимальное разрешение от 0.1 до 128 МП.')
+    const megapixels = Number(aliasDraft.megapixels.replace(',', '.'))
     const maxResolution = Number(aliasDraft.maxResolution)
     const maxSeconds = Number(aliasDraft.maxSeconds)
-    if (mediaType === 'video' && (!Number.isInteger(maxResolution) || maxResolution < 32 || maxResolution > 16384)) return notify('error', 'Укажите максимальное разрешение от 32 до 16384p.')
-    if (mediaType === 'video' && (!Number.isInteger(maxSeconds) || maxSeconds < 1 || maxSeconds > 600)) return notify('error', 'Укажите максимальную длительность от 1 до 600 секунд.')
+    if (mediaType === 'image' && (!Number.isFinite(megapixels) || megapixels <= 0)) return notify('error', 'Укажите положительный максимум в МП.')
+    if (mediaType === 'video' && (!Number.isInteger(maxResolution) || maxResolution < 1 || !Number.isInteger(maxSeconds) || maxSeconds < 1)) return notify('error', 'Укажите максимальное разрешение и длительность видео.')
     const alias: MediaAliasInput = { name, type: mediaType, source: aliasDraft.model.source,
       workflows: Object.fromEntries(Object.entries(aliasDraft.model.workflows).filter(([, path]) => typeof path === 'string' && path)),
       ...(mediaType === 'image' ? { max_megapixels: megapixels } : { max_resolution: maxResolution, max_seconds: maxSeconds }) }
@@ -94,31 +94,31 @@ export function ProxyComfyConfig({ config, mediaType, onSaved, notify }: {
       <div className="divide-y divide-border">{sources.map(([name, source]) => <ConnectionRow key={name} name={name} source={source} disabled={saving} onEdit={() => editSource(name, source)} onDelete={() => void removeSource(name)} />)}</div>
     </section>
     <section aria-label={mediaType === 'image' ? 'Алиасы изображений' : 'Алиасы видео'}>
-      <div className="mb-3 flex items-center justify-between gap-3"><h2 className="text-sm font-medium">Алиасы</h2><Button variant="primary" size="sm" disabled={saving || !sources.length} onClick={() => setAliasDraft({ name: '', megapixels: '4', maxResolution: '768', maxSeconds: '15', model: { source: sources[0]?.[0] ?? '', type: mediaType, workflows: {} } })}><Plus className="size-3.5" />Новый алиас</Button></div>
+      <div className="mb-3 flex items-center justify-between gap-3"><h2 className="text-sm font-medium">Алиасы</h2><Button variant="primary" size="sm" disabled={saving || !sources.length} onClick={() => setAliasDraft({ name: '', megapixels: '', maxResolution: '', maxSeconds: '', model: { source: sources[0]?.[0] ?? '', type: mediaType, workflows: {} } })}><Plus className="size-3.5" />Новый алиас</Button></div>
       {!aliases.length && <p className="py-6 text-center text-xs text-muted-foreground">Алиасов пока нет</p>}
-      <div className="space-y-3">{aliases.map(([alias, model]) => <AliasRow key={alias} alias={alias} model={model} disabled={saving} onEdit={() => setAliasDraft({ original: alias, name: alias, megapixels: String(model.max_megapixels ?? 4), maxResolution: String(model.max_resolution ?? 768), maxSeconds: String(model.max_seconds ?? 15), model: { ...model, workflows: { ...model.workflows } } })} onDelete={() => void persist(() => comfyApi.deleteAlias(alias))} />)}</div>
+      <div className="space-y-3">{aliases.map(([alias, model]) => <AliasRow key={alias} alias={alias} model={model} disabled={saving} onEdit={() => setAliasDraft({ original: alias, name: alias, megapixels: String(model.max_megapixels ?? ''), maxResolution: String(model.max_resolution ?? ''), maxSeconds: String(model.max_seconds ?? ''), model: { ...model, workflows: { ...model.workflows } } })} onDelete={() => void persist(() => comfyApi.deleteAlias(alias))} />)}</div>
     </section>
     <Dialog open={sourceDraft !== null} title={sourceDraft?.original ? 'Изменить подключение' : 'Новое подключение'} dismissible={!saving} onOpenChange={(open) => { if (!open && !saving) setSourceDraft(null) }}>
       {sourceDraft && <form className="space-y-5 p-4" onSubmit={(event) => void saveSource(event)}>
-        <div><Label className="mb-1.5 block" htmlFor="comfy-source-name">Имя</Label><Input id="comfy-source-name" autoFocus value={sourceDraft.name} disabled={saving} onChange={(event) => setSourceDraft({ ...sourceDraft, name: event.target.value })} placeholder="studio" /></div>
-        <div><Label className="mb-1.5 block" htmlFor="comfy-source-url">URL</Label><Input id="comfy-source-url" value={sourceDraft.url} disabled={saving} onChange={(event) => setSourceDraft({ ...sourceDraft, url: event.target.value })} placeholder="http://192.168.1.10:8188" /></div>
+        <div><Label className="mb-1.5 block" htmlFor="comfy-source-name">Имя</Label><Input id="comfy-source-name" disabled={saving || defaultSource} autoFocus value={sourceDraft.name} onChange={(event) => setSourceDraft({ ...sourceDraft, name: event.target.value })} placeholder="studio" /></div>
+        <div><Label className="mb-1.5 block" htmlFor="comfy-source-url">URL</Label><Input id="comfy-source-url" readOnly={defaultSource} value={sourceDraft.url} disabled={saving} onChange={(event) => setSourceDraft({ ...sourceDraft, url: event.target.value })} placeholder="http://192.168.1.10:8188" /></div>
         <div className="flex justify-end gap-2 border-t border-border pt-4"><Button variant="ghost" disabled={saving} onClick={() => setSourceDraft(null)}>Отмена</Button><Button type="submit" variant="primary" disabled={saving}>{saving ? 'Сохраняем…' : sourceDraft.original ? 'Сохранить' : 'Добавить подключение'}</Button></div>
       </form>}
     </Dialog>
     <Dialog open={aliasDraft !== null} title={(aliasDraft?.original ? 'Изменить алиас ' : 'Новый алиас ') + (mediaType === 'image' ? 'изображения' : 'видео')} dismissible={!saving} onOpenChange={(open) => { if (!open && !saving) setAliasDraft(null) }}>
       {aliasDraft && <form className="space-y-5 p-4" onSubmit={(event) => void saveAlias(event)}>
         <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,12rem),1fr))] gap-4">
-        <div className="min-w-0"><Label className="mb-1.5 block" htmlFor="comfy-alias-name">Алиас</Label><Input id="comfy-alias-name" autoFocus value={aliasDraft.name} disabled={saving} onChange={(event) => setAliasDraft({ ...aliasDraft, name: event.target.value })} placeholder={mediaType === 'image' ? 'qwen-image-turbo' : 'wan-video'} /></div>
+        <div className="min-w-0"><Label className="mb-1.5 block" htmlFor="comfy-alias-name">Алиас</Label><Input id="comfy-alias-name" autoFocus value={aliasDraft.name} onChange={(event) => setAliasDraft({ ...aliasDraft, name: event.target.value })} placeholder={mediaType === 'image' ? 'qwen-image-turbo' : 'wan-video'} /></div>
         <div className="min-w-0"><Label className="mb-1.5 block" htmlFor="comfy-alias-source">Подключение</Label><Select id="comfy-alias-source" aria-label="Подключение" value={aliasDraft.model.source} disabled={saving} onChange={(event) => setAliasDraft({ ...aliasDraft, model: { ...aliasDraft.model, source: event.target.value } })}>
           {!config.sources[aliasDraft.model.source] && <option value={aliasDraft.model.source}>{aliasDraft.model.source || 'Выберите подключение'}</option>}
           {sources.map(([name]) => <option key={name} value={name}>{name}</option>)}
         </Select></div>
         </div>
         <WorkflowFields source={aliasDraft.model.source} model={aliasDraft.model} operations={operations} disabled={saving} onChange={setWorkflow} />
-        {mediaType === 'image' && <div className="grid grid-cols-[minmax(0,1fr)_6rem] items-center gap-4 border-t border-border pt-4"><Label htmlFor="comfy-alias-megapixels">Максимум, МП</Label><Input id="comfy-alias-megapixels" type="number" min="0.1" max="128" step="any" required value={aliasDraft.megapixels} disabled={saving} onChange={(event) => setAliasDraft({ ...aliasDraft, megapixels: event.target.value })} /></div>}
+        {mediaType === 'image' && <div className="border-t border-border pt-4"><Label className="mb-1.5 block" htmlFor="comfy-alias-megapixels">Максимум, МП</Label><Input id="comfy-alias-megapixels" type="text" inputMode="decimal" required value={aliasDraft.megapixels} disabled={saving} onChange={(event) => setAliasDraft({ ...aliasDraft, megapixels: event.target.value })} /></div>}
         {mediaType === 'video' && <div className="grid grid-cols-2 gap-4 border-t border-border pt-4">
-          <div><Label className="mb-1.5 block" htmlFor="comfy-video-resolution">Макс. разрешение, p</Label><Input id="comfy-video-resolution" type="number" min="32" max="16384" step="1" required value={aliasDraft.maxResolution} disabled={saving} onChange={(event) => setAliasDraft({ ...aliasDraft, maxResolution: event.target.value })} /></div>
-          <div><Label className="mb-1.5 block" htmlFor="comfy-video-seconds">Макс. длительность, с</Label><Input id="comfy-video-seconds" type="number" min="1" max="600" step="1" required value={aliasDraft.maxSeconds} disabled={saving} onChange={(event) => setAliasDraft({ ...aliasDraft, maxSeconds: event.target.value })} /></div>
+          <div><Label className="mb-1.5 block" htmlFor="comfy-video-resolution">Макс. разрешение, p</Label><Input id="comfy-video-resolution" type="number" min="1" step="1" required value={aliasDraft.maxResolution} disabled={saving} onChange={(event) => setAliasDraft({ ...aliasDraft, maxResolution: event.target.value })} /></div>
+          <div><Label className="mb-1.5 block" htmlFor="comfy-video-seconds">Макс. длительность, с</Label><Input id="comfy-video-seconds" type="number" min="1" step="1" required value={aliasDraft.maxSeconds} disabled={saving} onChange={(event) => setAliasDraft({ ...aliasDraft, maxSeconds: event.target.value })} /></div>
         </div>}
         <div className="flex justify-end gap-2 border-t border-border pt-4"><Button variant="ghost" disabled={saving} onClick={() => setAliasDraft(null)}>Отмена</Button><Button type="submit" variant="primary" disabled={saving}>{saving ? 'Сохраняем…' : 'Сохранить'}</Button></div>
       </form>}
@@ -145,8 +145,9 @@ function WorkflowFields({ source, model, operations, disabled, onChange }: { sou
   const workflows = useQuery({ queryKey: ['proxy-comfy-workflows', source], queryFn: () => comfyApi.getWorkflows(source), enabled: Boolean(source), staleTime: 0, refetchOnMount: 'always', retry: false })
   const catalog = workflows.data?.items.map((item) => typeof item === 'string' ? item : item.path ?? item.name ?? '').filter(Boolean) ?? []
   return <div className="space-y-3 border-t border-border pt-5">{operations.map((operation) => {
+    const label = model.type === 'video' && operation === 'generate' ? 'По тексту' : model.type === 'video' && operation === 'edit' ? 'По картинке' : operationLabels[operation]
     const value = typeof model.workflows[operation] === 'string' ? model.workflows[operation] : ''
     const paths = [...new Set([...(value ? [value] : []), ...catalog])]
-    return <div key={operation} className="grid grid-cols-[5rem_minmax(0,1fr)] items-center gap-4"><Label htmlFor={`comfy-workflow-${operation}`}>{operationLabels[operation]}</Label><Select id={`comfy-workflow-${operation}`} aria-label={`Workflow ${operation}`} value={value} disabled={disabled || !source} onChange={(event) => onChange(operation, event.target.value)}><option value="">Не выбран</option>{paths.map((path) => <option key={path} value={path}>{path.replace(/^workflows\//, '')}</option>)}</Select></div>
+    return <div key={operation} className="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-4"><Label htmlFor={`comfy-workflow-${operation}`}>{label}</Label><Select id={`comfy-workflow-${operation}`} aria-label={`Сценарий: ${label}`} value={value} disabled={disabled || !source} onChange={(event) => onChange(operation, event.target.value)}><option value="">Не выбран</option>{paths.map((path) => <option key={path} value={path}>{path.replace(/^workflows\//, '')}</option>)}</Select></div>
   })}</div>
 }

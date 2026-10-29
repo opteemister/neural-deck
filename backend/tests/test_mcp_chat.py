@@ -154,11 +154,11 @@ async def test_real_shared_catalog_keeps_comfy_limits_and_http_parity(tmp_path):
     from app.proxy.comfy_provider import ComfyProviderService
     from app.proxy.media_router import _all_models
     from unittest.mock import AsyncMock
-    comfy = ComfyProviderService({"models": {"image": {"type": "image", "source": "local", "workflows": {"generate": "generate.json"}}}})
+    comfy = ComfyProviderService({"models": {"image": {"type": "image", "source": "local", "max_megapixels": 6.5, "workflows": {"generate": "generate.json"}}}})
     comfy.workflows = AsyncMock(return_value={'available': True})
     try:
         catalog = await comfy.extend_models({'data': []})
-        assert any('max_megapixels' in item['capabilities'] for item in catalog['data'])
+        assert catalog['data'][0]['capabilities']['max_megapixels'] == 6.5
         assert await _all_models(SimpleNamespace(comfy_service=comfy), {'data': []}) == catalog
     finally:
         await comfy.close()

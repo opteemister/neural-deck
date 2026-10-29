@@ -25,11 +25,13 @@ class ProxyConfiguration:
 
     async def save(self, payload: dict[str, Any]) -> dict[str, Any]:
         normalized = RouteConfigRepository._comfyui(payload)
+        current = self.get()
         routes = await self.proxy.route_data()
         collisions = set(normalized["models"]) & {route["name"] for route in routes["items"]}
         if collisions:
             raise AppError("route_conflict", "Имя уже занято маршрутом модели", status_code=409, details={"models": sorted(collisions)})
-        self.get()  # Explicit availability check before writing.
+        if self.get() != current:
+            raise AppError("configuration_changed", "Конфигурация изменилась; повторите сохранение", status_code=409)
         return self.comfy.save_settings(normalized)
 
     def _persist(self, config: dict[str, Any]) -> dict[str, Any]:
@@ -51,7 +53,8 @@ class ProxyConfiguration:
     def save_source(self, payload: ComfySourceRequest, previous_name: str | None = None) -> dict[str, Any]:
         config = self.get()
         previous = self._existing(config["sources"], previous_name)
-        self._local(previous_name, previous)
+        if previous_name == "local" and (payload.name != "local" or payload.base_url.rstrip("/") != previous.get("base_url")):
+            self._local(previous_name, previous)
         if payload.name != previous_name and payload.name in config["sources"]:
             raise AppError("route_conflict", "Подключение уже существует", status_code=409)
         try:
@@ -85,10 +88,6 @@ class ProxyConfiguration:
         # Validate paths before fetching any workflow; no filesystem access.
         normalized = RouteConfigRepository._comfyui({"sources": config["sources"], "models": {payload.name: {"source": payload.source, "type": payload.type, "workflows": workflows}}})
         workflows = normalized["models"][payload.name]["workflows"]
-        for path in set(workflows.values()):
-            check = await self.comfy.validate_workflow(payload.source, path)
-            if check["usable"] is False:
-                raise AppError("workflow_invalid", check.get("message") or "Требуется API-экспорт workflow", status_code=422, details={"path": path})
         routes = await self.proxy.route_data()
         if any(route["name"] == payload.name for route in routes["items"]):
             raise AppError("route_conflict", "Имя уже занято маршрутом модели", status_code=409)
@@ -101,16 +100,9 @@ class ProxyConfiguration:
             raise AppError("route_conflict", "Алиас уже существует", status_code=409)
         if previous and previous["type"] != payload.type:
             raise AppError("validation_error", "Тип существующего алиаса нельзя изменить", status_code=422)
-        model = {**previous, "type": payload.type, "source": payload.source, "workflows": workflows}
-        limits = {"max_megapixels": 4} if payload.type == "image" else {"max_resolution": 768, "max_seconds": 15}
-        for field, default in limits.items():
-            supplied = getattr(payload, field)
-            if supplied is not None:
-                model[field] = supplied
-            elif not previous:
-                model[field] = default
-        if "bindings" in previous:
-            model["bindings"] = {op: binding for op, binding in previous["bindings"].items() if previous["source"] == payload.source and workflows.get(op) == previous["workflows"].get(op) and op in workflows}
+        model = {"type": payload.type, "source": payload.source, "workflows": workflows}
+        fields = ("max_megapixels",) if payload.type == "image" else ("max_resolution", "max_seconds")
+        model.update({field: getattr(payload, field) for field in fields})
         if previous_name:
             del config["models"][previous_name]
         config["models"][payload.name] = model

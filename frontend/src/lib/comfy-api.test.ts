@@ -20,4 +20,11 @@ describe('comfyApi', () => {
 
     await expect(comfyApi.putConfig({ sources: {}, models: {} })).rejects.toThrow('invalid workflow')
   })
+
+  it('saves only the image budget, without technical limits', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ data: { sources: {}, models: {} } })))
+    vi.stubGlobal('fetch', fetchMock)
+    await comfyApi.saveAlias({ name: 'image', type: 'image', source: 'local', workflows: { generate: 'g.json' }, max_megapixels: 6.5 })
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ name: 'image', type: 'image', source: 'local', workflows: { generate: 'g.json' }, max_megapixels: 6.5 })
+  })
 })

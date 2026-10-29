@@ -18,7 +18,7 @@ import logging
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, cast
 from urllib.parse import quote
 from uuid import uuid4
@@ -39,11 +39,6 @@ logger = logging.getLogger(__name__)
 COMFYUI_WORKFLOW_EXPORT_MESSAGE = (
     "Этот workflow сохранён для редактора ComfyUI. Выберите его API-экспорт."
 )
-QWEN_TRANSPARENT_PROMPT = (
-    "This is an RGBA format image with transparency. "
-    "The image has an alpha channel and a transparent background."
-)
-
 
 def _with_default_source(section: Mapping[str, Any]) -> dict[str, Any]:
     """Expose the backend-local source without persisting or overwriting config."""
@@ -718,21 +713,6 @@ class ComfyMediaStore:
 class ComfyUIProvider:
     """Alias/operation adapter for API-format ComfyUI workflows."""
 
-    _PARAM_FIELDS = {
-        "prompt",
-        "image",
-        "mask",
-        "size",
-        "n",
-        "quality",
-        "background",
-        "output_format",
-        "output_compression",
-        "seconds",
-        "reference",
-        "input_reference",
-    }
-
     def __init__(
         self,
         config: RouteConfigRepository | Mapping[str, Any],
@@ -742,7 +722,7 @@ class ComfyUIProvider:
         session_factory: async_sessionmaker[AsyncSession] | None = None,
         timeout: float = 1800.0,
         catalog_timeout: float = 5.0,
-        poll_interval: float = 0.25,
+        poll_interval: float = 2.0,
     ) -> None:
         self.config = config
         self.client_factory = client_factory
@@ -922,6 +902,9 @@ class ComfyUIProvider:
 
     async def load_graph(self, alias: str, operation: str) -> dict[str, Any]:
         client, _source, model = self._client_for_model(alias)
+        return await self._read_graph(client, model, alias, operation)
+
+    async def _read_graph(self, client: ComfyUIClient, model: Mapping[str, Any], alias: str, operation: str) -> dict[str, Any]:
         workflows = model.get("workflows")
         path = workflows.get(operation) if isinstance(workflows, Mapping) else None
         if not isinstance(path, str) or not path:
@@ -965,788 +948,14 @@ class ComfyUIProvider:
             )
         return content
 
-    @staticmethod
-    def _bindings(model: Mapping[str, Any], operation: str) -> Mapping[str, Any]:
-        raw = model.get("bindings", {})
-        if not isinstance(raw, Mapping):
-            return {}
-        shared = {
-            key: value
-            for key, value in raw.items()
-            if key not in {"generate", "edit", "edit_masked", "variations"}
-        }
-        operation_map = raw.get(operation)
-        if isinstance(operation_map, Mapping):
-            shared.update(operation_map)
-        return shared
-
-    @staticmethod
-    def _binding_for(
-        bindings: Mapping[str, Any], field: str, suffix: str | None = None
-    ) -> Mapping[str, str] | None:
-        value = bindings.get(f"{field}.{suffix}" if suffix else field)
-        if value is None and suffix is not None and isinstance(bindings.get(field), Mapping):
-            candidate = bindings[field]
-            value = candidate.get(suffix) if isinstance(candidate, Mapping) else None
-        if isinstance(value, (list, tuple)) and len(value) == 2:
-            value = {"node": value[0], "input": value[1]}
-        if (
-            isinstance(value, Mapping)
-            and isinstance(value.get("node"), (str, int))
-            and isinstance(value.get("input"), str)
-        ):
-            return {"node": str(value["node"]), "input": value["input"]}
-        return None
-
-    @staticmethod
-    def _unique_inferred_binding(
-        graph: Mapping[str, Any],
-        field: str,
-        predicate: Any,
-    ) -> dict[str, str] | None:
-        candidates: list[dict[str, str]] = []
-        for raw_node_id, raw_node in graph.items():
-            if not isinstance(raw_node, Mapping) or not isinstance(raw_node.get("inputs"), Mapping):
-                continue
-            node_id = str(raw_node_id)
-            input_name = predicate(raw_node)
-            if isinstance(input_name, str):
-                candidates.append({"node": node_id, "input": input_name})
-        if len(candidates) > 1:
-            raise AppError(
-                "comfyui_binding_ambiguous",
-                f"Невозможно однозначно определить binding для {field}",
-                status_code=400,
-                details={"field": field, "candidates": [item["node"] for item in candidates]},
-            )
-        return candidates[0] if candidates else None
-
-    @staticmethod
-    def _qwen_prompt_binding(
-        graph: Mapping[str, Any], node_id: str, encoder: Mapping[str, Any]
-    ) -> dict[str, str] | None:
-        """Resolve the known Qwen edit prompt route without generic traversal.
-
-        The exported Qwen graph uses ``TextEncodeQwenImage21.prompt`` ->
-        ``PreviewAny.source`` -> ``ComfySwitchNode``.  The false branch is a
-        literal default prompt; the true branch is the known ``TextGenerate``
-        node.  Only these exact node types and inputs are accepted.
-        """
-
-        encoder_inputs = encoder.get("inputs")
-        if not isinstance(encoder_inputs, Mapping) or "prompt" not in encoder_inputs:
-            return None
-
-        def linked_node_id(value: Any) -> str | None:
-            if (
-                isinstance(value, (list, tuple))
-                and len(value) >= 2
-                and isinstance(value[0], (str, int))
-                and value[1] == 0
-            ):
-                return str(value[0])
-            return None
-
-        def switch_binding(switch_id: str, switch: Mapping[str, Any]) -> dict[str, str] | None:
-            switch_inputs = switch.get("inputs")
-            if not isinstance(switch_inputs, Mapping):
-                return None
-            enabled = switch_inputs.get("switch")
-            if not isinstance(enabled, bool):
-                return None
-            if not enabled:
-                return (
-                    {"node": switch_id, "input": "on_false"}
-                    if isinstance(switch_inputs.get("on_false"), str)
-                    else None
-                )
-            true_id = linked_node_id(switch_inputs.get("on_true"))
-            true_node = graph.get(true_id) if true_id is not None else None
-            true_inputs = true_node.get("inputs") if isinstance(true_node, Mapping) else None
-            if (
-                isinstance(true_node, Mapping)
-                and true_node.get("class_type") == "TextGenerate"
-                and isinstance(true_inputs, Mapping)
-                and "prompt" in true_inputs
-                and true_id is not None
-            ):
-                return {"node": true_id, "input": "prompt"}
-            return None
-
-        prompt = encoder_inputs["prompt"]
-        if isinstance(prompt, str):
-            return {"node": node_id, "input": "prompt"}
-        switch_id = linked_node_id(prompt)
-        switch = graph.get(switch_id) if switch_id is not None else None
-        if (
-            switch_id is not None
-            and isinstance(switch, Mapping)
-            and switch.get("class_type") == "ComfySwitchNode"
-        ):
-            return switch_binding(switch_id, switch)
-        if isinstance(switch, Mapping) and switch.get("class_type") == "PreviewAny":
-            preview_inputs = switch.get("inputs")
-            upstream_id = (
-                linked_node_id(preview_inputs.get("source"))
-                if isinstance(preview_inputs, Mapping)
-                else None
-            )
-            upstream = graph.get(upstream_id) if upstream_id is not None else None
-            if (
-                upstream_id is not None
-                and isinstance(upstream, Mapping)
-                and upstream.get("class_type") == "ComfySwitchNode"
-            ):
-                return switch_binding(upstream_id, upstream)
-        return None
-
-    @staticmethod
-    def _qwen_custom_size_bindings(graph: Mapping[str, Any]) -> dict[str, Any] | None:
-        """Find the known Qwen edit/variation custom-size switch.
-
-        These exports route ``ComfySwitchNode.on_false`` to the encoder's
-        native latent and ``on_true`` to ``EmptyLatentImage``.  Only this
-        exact shape enables the explicit width/height path.
-        """
-
-        qwen_ids = {
-            str(node_id)
-            for node_id, node in graph.items()
-            if isinstance(node, Mapping) and node.get("class_type") == "TextEncodeQwenImage21"
-        }
-        latent_ids = {
-            str(node_id)
-            for node_id, node in graph.items()
-            if isinstance(node, Mapping) and node.get("class_type") == "EmptyLatentImage"
-        }
-
-        def linked_node_id(value: Any) -> str | None:
-            if isinstance(value, (list, tuple)) and value and isinstance(value[0], (str, int)):
-                return str(value[0])
-            return None
-
-        candidates: list[tuple[str, str]] = []
-        for raw_id, node in graph.items():
-            if not isinstance(node, Mapping) or node.get("class_type") != "ComfySwitchNode":
-                continue
-            inputs = node.get("inputs")
-            if not isinstance(inputs, Mapping) or not isinstance(inputs.get("switch"), bool):
-                continue
-            true_id = linked_node_id(inputs.get("on_true"))
-            false_id = linked_node_id(inputs.get("on_false"))
-            if true_id in latent_ids and false_id in qwen_ids:
-                candidates.append((str(raw_id), true_id))
-        if len(candidates) > 1:
-            raise AppError(
-                "comfyui_binding_ambiguous",
-                "Невозможно однозначно определить custom size workflow",
-                status_code=400,
-                details={"field": "size", "candidates": [item[0] for item in candidates]},
-            )
-        if not candidates:
-            return None
-        switch_id, latent_id = candidates[0]
-        latent = graph.get(latent_id)
-        if not isinstance(latent, Mapping) or not isinstance(latent.get("inputs"), Mapping):
-            return None
-        latent_inputs = latent["inputs"]
-        if "width" not in latent_inputs or "height" not in latent_inputs:
-            return None
-        return {
-            "width": {"node": latent_id, "input": "width"},
-            "height": {"node": latent_id, "input": "height"},
-            "switch": {"node": switch_id, "input": "switch"},
-        }
-
-    @staticmethod
-    def _qwen_masked_resize_nodes(
-        graph: Mapping[str, Any], *, field: str = "size"
-    ) -> dict[str, str] | None:
-        """Find the exact Qwen masked-edit image/mask wiring we support."""
-
-        def linked_node_id(value: Any) -> str | None:
-            if (
-                isinstance(value, (list, tuple))
-                and len(value) >= 2
-                and isinstance(value[0], (str, int))
-                and value[1] == 0
-            ):
-                return str(value[0])
-            return None
-
-        qwen_refs: list[tuple[str, str]] = []
-        for raw_id, node in graph.items():
-            if not isinstance(node, Mapping) or node.get("class_type") != "TextEncodeQwenImage21":
-                continue
-            inputs = node.get("inputs")
-            image_id = (
-                linked_node_id(inputs.get("images.image_1"))
-                if isinstance(inputs, Mapping)
-                else None
-            )
-            if image_id is not None:
-                qwen_refs.append((str(raw_id), image_id))
-        if not qwen_refs:
-            return None
-        if len(qwen_refs) > 1:
-            raise AppError(
-                "comfyui_binding_ambiguous",
-                "Невозможно однозначно определить masked Qwen image input",
-                status_code=400,
-                details={"field": field, "candidates": [item[0] for item in qwen_refs]},
-            )
-        qwen_id, image_id = qwen_refs[0]
-
-        composite_refs: list[tuple[str, str]] = []
-        for raw_id, node in graph.items():
-            if not isinstance(node, Mapping) or node.get("class_type") != "ImageCompositeMasked":
-                continue
-            inputs = node.get("inputs")
-            if not isinstance(inputs, Mapping):
-                continue
-            destination_id = linked_node_id(inputs.get("destination"))
-            mask_id = linked_node_id(inputs.get("mask"))
-            if destination_id == image_id and mask_id is not None:
-                composite_refs.append((str(raw_id), mask_id))
-        if len(composite_refs) != 1:
-            raise AppError(
-                "comfyui_parameter_unsupported",
-                "Workflow не поддерживает безопасное изменение размера masked image",
-                status_code=400,
-                details={"field": field, "node": qwen_id},
-            )
-        composite_id, mask_id = composite_refs[0]
-        mask_node = graph.get(mask_id)
-        if not isinstance(mask_node, Mapping) or mask_node.get("class_type") != "LoadImageMask":
-            raise AppError(
-                "comfyui_parameter_unsupported",
-                "Workflow не поддерживает безопасное изменение размера masked image",
-                status_code=400,
-                details={"field": field, "node": composite_id},
-            )
-        return {"qwen": qwen_id, "image": image_id, "mask": mask_id, "composite": composite_id}
-
-    @classmethod
-    def _apply_qwen_masked_resize(
-        cls, graph: dict[str, Any], width: int, height: int, *, preserve_alpha: bool = False
-    ) -> None:
-        nodes = cls._qwen_masked_resize_nodes(graph)
-        if nodes is None:
-            raise cls._unsupported("size")
-        resize_image_id = "__nd_qwen_mask_resize_image"
-        mask_to_image_id = "__nd_qwen_mask_to_image"
-        resize_mask_id = "__nd_qwen_mask_resize_mask"
-        image_to_mask_id = "__nd_qwen_image_to_mask"
-        alpha_ids = {
-            "dest_split": "__nd_qwen_mask_dest_split",
-            "dest_join": "__nd_qwen_mask_dest_join",
-            "source_split": "__nd_qwen_mask_source_split",
-            "source_join": "__nd_qwen_mask_source_join",
-        }
-        if (
-            resize_image_id in graph
-            or mask_to_image_id in graph
-            or resize_mask_id in graph
-            or image_to_mask_id in graph
-            or any(node_id in graph for node_id in alpha_ids.values())
-        ):
-            raise cls._unsupported("size")
-        graph[resize_image_id] = {
-            "class_type": "ImageScale",
-            "inputs": {
-                "image": [nodes["image"], 0],
-                "upscale_method": "lanczos",
-                "width": width,
-                "height": height,
-                "crop": "disabled",
-            },
-        }
-        graph[mask_to_image_id] = {
-            "class_type": "MaskToImage",
-            "inputs": {"mask": [nodes["mask"], 0]},
-        }
-        graph[resize_mask_id] = {
-            "class_type": "ImageScale",
-            "inputs": {
-                "image": [mask_to_image_id, 0],
-                "upscale_method": "lanczos",
-                "width": width,
-                "height": height,
-                "crop": "disabled",
-            },
-        }
-        graph[image_to_mask_id] = {
-            "class_type": "ImageToMask",
-            "inputs": {"image": [resize_mask_id, 0], "channel": "red"},
-        }
-        composite_inputs = graph[nodes["composite"]]["inputs"]
-        qwen_inputs = graph[nodes["qwen"]]["inputs"]
-        if not isinstance(qwen_inputs, dict) or not isinstance(composite_inputs, dict):
-            raise cls._unsupported("size")
-        source_ref = composite_inputs.get("source")
-        if not isinstance(source_ref, (list, tuple)) or len(source_ref) < 2 or source_ref[1] != 0:
-            raise cls._unsupported("size")
-        qwen_inputs["images.image_1"] = [resize_image_id, 0]
-        composite_inputs["mask"] = [image_to_mask_id, 0]
-        if not preserve_alpha:
-            composite_inputs["destination"] = [resize_image_id, 0]
-            return
-        graph[alpha_ids["dest_split"]] = {
-            "class_type": "SplitImageWithAlpha",
-            "inputs": {"image": [resize_image_id, 0]},
-        }
-        graph[alpha_ids["dest_join"]] = {
-            "class_type": "JoinImageWithAlpha",
-            "inputs": {
-                "image": [alpha_ids["dest_split"], 0],
-                "alpha": [alpha_ids["dest_split"], 1],
-            },
-        }
-        graph[alpha_ids["source_split"]] = {
-            "class_type": "SplitImageWithAlpha",
-            "inputs": {"image": [str(source_ref[0]), 0]},
-        }
-        graph[alpha_ids["source_join"]] = {
-            "class_type": "JoinImageWithAlpha",
-            "inputs": {
-                "image": [alpha_ids["source_split"], 0],
-                "alpha": [alpha_ids["source_split"], 1],
-            },
-        }
-        composite_inputs["destination"] = [alpha_ids["dest_join"], 0]
-        composite_inputs["source"] = [alpha_ids["source_join"], 0]
-
-    @classmethod
-    def _apply_qwen_masked_alpha(cls, graph: dict[str, Any]) -> None:
-        nodes = cls._qwen_masked_resize_nodes(graph, field="background")
-        if nodes is None:
-            raise cls._unsupported("background")
-        alpha_ids = {
-            "dest_split": "__nd_qwen_mask_dest_split",
-            "dest_join": "__nd_qwen_mask_dest_join",
-            "source_split": "__nd_qwen_mask_source_split",
-            "source_join": "__nd_qwen_mask_source_join",
-        }
-        if any(node_id in graph for node_id in alpha_ids.values()):
-            raise cls._unsupported("background")
-        composite_inputs = graph[nodes["composite"]]["inputs"]
-        if not isinstance(composite_inputs, dict):
-            raise cls._unsupported("background")
-        destination_ref = composite_inputs.get("destination")
-        source_ref = composite_inputs.get("source")
-
-        def reference_id(value: Any) -> str | None:
-            if (
-                isinstance(value, (list, tuple))
-                and len(value) >= 2
-                and isinstance(value[0], (str, int))
-                and value[1] == 0
-            ):
-                return str(value[0])
-            return None
-
-        destination_id = reference_id(destination_ref)
-        source_id = reference_id(source_ref)
-        if destination_id is None or source_id is None:
-            raise cls._unsupported("background")
-        graph[alpha_ids["dest_split"]] = {
-            "class_type": "SplitImageWithAlpha",
-            "inputs": {"image": [destination_id, 0]},
-        }
-        graph[alpha_ids["dest_join"]] = {
-            "class_type": "JoinImageWithAlpha",
-            "inputs": {
-                "image": [alpha_ids["dest_split"], 0],
-                "alpha": [alpha_ids["dest_split"], 1],
-            },
-        }
-        graph[alpha_ids["source_split"]] = {
-            "class_type": "SplitImageWithAlpha",
-            "inputs": {"image": [source_id, 0]},
-        }
-        graph[alpha_ids["source_join"]] = {
-            "class_type": "JoinImageWithAlpha",
-            "inputs": {
-                "image": [alpha_ids["source_split"], 0],
-                "alpha": [alpha_ids["source_split"], 1],
-            },
-        }
-        composite_inputs["destination"] = [alpha_ids["dest_join"], 0]
-        composite_inputs["source"] = [alpha_ids["source_join"], 0]
-
-    @classmethod
-    def _infer_bindings(
-        cls,
-        graph: Mapping[str, Any],
-        explicit: Mapping[str, Any],
-        fields: set[str],
-    ) -> dict[str, Any]:
-        inferred: dict[str, Any] = {}
-        canonical_fields = {
-            "reference" if field == "input_reference" else field for field in fields
-        }
-
-        def missing(field: str) -> bool:
-            if field != "size":
-                return cls._binding_for(explicit, field) is None
-            return not any(
-                cls._binding_for(explicit, "size", suffix) is not None
-                for suffix in (None, "width", "height")
-            )
-
-        if "prompt" in canonical_fields and missing("prompt"):
-            qwen_types = {"TextEncodeQwenImage21"}
-            qwen_candidates = {
-                str(node_id): node
-                for node_id, node in graph.items()
-                if isinstance(node, Mapping) and node.get("class_type") in qwen_types
-            }
-            if len(qwen_candidates) > 1:
-                raise AppError(
-                    "comfyui_binding_ambiguous",
-                    "Невозможно однозначно определить binding для prompt",
-                    status_code=400,
-                    details={"field": "prompt", "candidates": sorted(qwen_candidates)},
-                )
-            if qwen_candidates:
-                qwen_id, qwen_node = next(iter(qwen_candidates.items()))
-                qwen_binding = cls._qwen_prompt_binding(graph, qwen_id, qwen_node)
-                if qwen_binding is None:
-                    raise cls._unsupported("prompt")
-                inferred["prompt"] = qwen_binding
-            else:
-                prompt_types = {
-                    "CLIPTextEncode",
-                    "CLIPTextEncodeSDXL",
-                    "CLIPTextEncodeSDXLRefiner",
-                }
-                prompt_candidates = {
-                    str(node_id): node
-                    for node_id, node in graph.items()
-                    if isinstance(node, Mapping)
-                    and isinstance(node.get("inputs"), Mapping)
-                    and node.get("class_type") in prompt_types
-                    and "text" in node["inputs"]
-                }
-                positive_ids: set[str] = set()
-                negative_ids: set[str] = set()
-                for node in graph.values():
-                    if not isinstance(node, Mapping) or not isinstance(node.get("inputs"), Mapping):
-                        continue
-                    for role, ids in (("positive", positive_ids), ("negative", negative_ids)):
-                        link = node["inputs"].get(role)
-                        if (
-                            isinstance(link, (list, tuple))
-                            and link
-                            and str(link[0]) in prompt_candidates
-                        ):
-                            ids.add(str(link[0]))
-                prompt_binding: dict[str, str] | None
-                if len(positive_ids) == 1:
-                    prompt_binding = {"node": next(iter(positive_ids)), "input": "text"}
-                elif len(positive_ids) > 1:
-                    raise AppError(
-                        "comfyui_binding_ambiguous",
-                        "Невозможно однозначно определить binding для prompt",
-                        status_code=400,
-                        details={"field": "prompt", "candidates": sorted(positive_ids)},
-                    )
-                elif negative_ids:
-                    # A negative encoder is never a safe prompt fallback.  The
-                    # positive conditioner may be a custom node that we do not
-                    # understand, so leave the parameter explicitly unsupported.
-                    prompt_binding = None
-                else:
-                    prompt_binding = cls._unique_inferred_binding(
-                        graph,
-                        "prompt",
-                        lambda node: (
-                            "text"
-                            if node.get("class_type") in prompt_types and "text" in node["inputs"]
-                            else None
-                        ),
-                    )
-                if prompt_binding is not None:
-                    inferred["prompt"] = prompt_binding
-
-        def load_image_input(node: Mapping[str, Any]) -> str | None:
-            if node.get("class_type") == "LoadImage" and "image" in node["inputs"]:
-                return "image"
-            return None
-
-        if "image" in canonical_fields and missing("image"):
-            image_binding = cls._unique_inferred_binding(graph, "image", load_image_input)
-            if image_binding is not None:
-                inferred["image"] = image_binding
-        if "reference" in canonical_fields and missing("reference"):
-            reference_binding = cls._unique_inferred_binding(graph, "reference", load_image_input)
-            if reference_binding is not None:
-                inferred["reference"] = reference_binding
-
-        if "mask" in canonical_fields and missing("mask"):
-            mask_binding = cls._unique_inferred_binding(
-                graph,
-                "mask",
-                lambda node: (
-                    "image"
-                    if node.get("class_type") == "LoadImageMask" and "image" in node["inputs"]
-                    else None
-                ),
-            )
-            if mask_binding is not None:
-                inferred["mask"] = mask_binding
-
-        latent_types = {
-            "EmptyLatentImage",
-            "EmptySD3LatentImage",
-            "EmptyLatentVideo",
-            "EmptyMochiLatentVideo",
-        }
-
-        def latent_input(name: str) -> Any:
-            return lambda node: (
-                name if node.get("class_type") in latent_types and name in node["inputs"] else None
-            )
-
-        custom_size = cls._qwen_custom_size_bindings(graph) if "size" in canonical_fields else None
-        if "size" in canonical_fields and missing("size"):
-            if custom_size is not None:
-                inferred["size"] = custom_size
-            else:
-                width = cls._unique_inferred_binding(graph, "size.width", latent_input("width"))
-                height = cls._unique_inferred_binding(graph, "size.height", latent_input("height"))
-                if width is not None and height is not None and width["node"] == height["node"]:
-                    inferred["size"] = {"width": width, "height": height}
-        elif (
-            custom_size is not None
-            and cls._binding_for(explicit, "size", "switch") is None
-            and cls._binding_for(explicit, "size") is None
-        ):
-            # Keep explicit width/height bindings authoritative while filling
-            # the known custom-size switch they otherwise cannot activate.
-            inferred["size.switch"] = custom_size["switch"]
-        if "n" in canonical_fields and missing("n"):
-            n_binding = cls._unique_inferred_binding(graph, "n", latent_input("batch_size"))
-            if n_binding is not None:
-                inferred["n"] = n_binding
-        return inferred
-
-    @staticmethod
-    def _set(graph: dict[str, Any], binding: Mapping[str, str], value: Any, field: str) -> None:
-        node_id, input_name = binding["node"], binding["input"]
-        node = graph.get(node_id)
-        if not isinstance(node, Mapping) or not isinstance(node.get("inputs"), Mapping):
-            raise AppError(
-                "comfyui_binding_invalid",
-                f"Binding {field} указывает на неизвестный node",
-                status_code=400,
-                details={"field": field},
-            )
-        # Graph nodes are copied from JSON and each input map is mutable.
-        inputs = cast(dict[str, Any], node["inputs"])
-        if input_name not in inputs:
-            raise AppError(
-                "comfyui_binding_invalid",
-                f"Binding {field} указывает на отсутствующий вход workflow",
-                status_code=400,
-                details={"field": field},
-            )
-        inputs[input_name] = value
-
-    @staticmethod
-    def _unsupported(field: str) -> AppError:
-        return AppError(
-            "comfyui_parameter_unsupported",
-            f"Workflow не поддерживает параметр {field}",
-            status_code=400,
-            details={"field": field},
-        )
-
-    @staticmethod
-    def _validate_param(field: str, value: Any) -> Any:
-        if field == "prompt" and (not isinstance(value, str) or not value.strip()):
-            raise AppError(
-                "comfyui_parameter_invalid",
-                "prompt должен быть непустой строкой",
-                status_code=400,
-                details={"field": field},
-            )
-        if field == "n" and (not isinstance(value, int) or isinstance(value, bool) or value < 1):
-            raise AppError(
-                "comfyui_parameter_invalid",
-                "n должен быть положительным целым числом",
-                status_code=400,
-                details={"field": field},
-            )
-        if field == "quality" and value not in {"auto", "low", "medium", "high", "standard", "hd"}:
-            raise AppError(
-                "comfyui_parameter_invalid",
-                "quality имеет недопустимое значение",
-                status_code=400,
-                details={"field": field},
-            )
-        if field == "background" and value not in {"auto", "transparent", "opaque"}:
-            raise AppError(
-                "comfyui_parameter_invalid",
-                "background имеет недопустимое значение",
-                status_code=400,
-                details={"field": field},
-            )
-        if field == "output_format" and value not in {"png", "jpeg", "webp"}:
-            raise AppError(
-                "comfyui_parameter_invalid",
-                "output_format имеет недопустимое значение",
-                status_code=400,
-                details={"field": field},
-            )
-        if field == "output_compression" and (
-            not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= 100
-        ):
-            raise AppError(
-                "comfyui_parameter_invalid",
-                "output_compression должен быть целым числом от 0 до 100",
-                status_code=400,
-                details={"field": field},
-            )
-        if field == "seconds" and (
-            not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= 600
-        ):
-            if isinstance(value, str) and value.strip().isdigit():
-                value = int(value.strip())
-            else:
-                raise AppError(
-                    "comfyui_parameter_invalid",
-                    "seconds должен быть целым числом от 1 до 600",
-                    status_code=400,
-                    details={"field": field},
-                )
-            if not 1 <= value <= 600:
-                raise AppError(
-                    "comfyui_parameter_invalid",
-                    "seconds должен быть целым числом от 1 до 600",
-                    status_code=400,
-                    details={"field": field},
-                )
-        return value
-
     def patch_graph(
-        self,
-        graph: Mapping[str, Any],
-        model: Mapping[str, Any],
-        operation: str,
-        params: Mapping[str, Any],
-        *,
-        uploaded_inputs: Mapping[str, str] | None = None,
+        self, graph: Mapping[str, Any], model: Mapping[str, Any], operation: str,
+        params: Mapping[str, Any], *, uploaded_inputs: Mapping[str, str] | None = None,
         provided_fields: set[str] | None = None,
     ) -> dict[str, Any]:
-        result = copy.deepcopy(dict(graph))
-        bindings = dict(self._bindings(model, operation))
-        uploaded = uploaded_inputs or {}
-        fields = set(provided_fields if provided_fields is not None else set(params))
-        qwen_graph = any(
-            isinstance(node, Mapping) and node.get("class_type") == "TextEncodeQwenImage21"
-            for node in result.values()
-        )
-        background_value = params.get("background") if "background" in fields else None
-        explicit_background = self._binding_for(bindings, "background")
-        transparent_requested = qwen_graph and background_value == "transparent"
-        transparent_prompt = transparent_requested and explicit_background is None
-        if transparent_prompt:
-            # Variations may omit prompt; patch the known default prompt with
-            # the native Qwen alpha instruction instead of requiring prompt.
-            fields.add("prompt")
-        elif qwen_graph and background_value == "opaque" and explicit_background is None:
-            # Opaque is the Qwen default and deliberately has no synthetic
-            # background binding.
-            fields.discard("background")
-        if transparent_requested and operation == "edit_masked" and "size" not in fields:
-            self._apply_qwen_masked_alpha(result)
-        for field, binding in self._infer_bindings(result, bindings, fields).items():
-            bindings.setdefault(field, binding)
-        for field in sorted(fields):
-            if field in {"model", "response_format"}:
-                continue
-            elif field not in self._PARAM_FIELDS and field not in {"seed", "steps", "transparent"}:
-                raise self._unsupported(field)
-            value = uploaded.get(field, params.get(field))
-            if field == "prompt" and value is None and transparent_prompt:
-                prompt_binding = self._binding_for(bindings, "prompt")
-                if prompt_binding is not None:
-                    prompt_node = result.get(prompt_binding["node"])
-                    prompt_inputs = (
-                        prompt_node.get("inputs") if isinstance(prompt_node, Mapping) else None
-                    )
-                    if isinstance(prompt_inputs, Mapping):
-                        value = prompt_inputs.get(prompt_binding["input"])
-            if field == "input_reference":
-                field = "reference"
-                value = uploaded.get("reference", params.get("input_reference"))
-            if field != "size":
-                value = self._validate_param(field, value)
-            if field == "background" and qwen_graph and explicit_background is None:
-                if value in {"transparent", "opaque"}:
-                    continue
-            if field == "prompt" and transparent_prompt:
-                if not isinstance(value, str):
-                    raise self._unsupported("background")
-                if QWEN_TRANSPARENT_PROMPT.casefold() not in value.casefold():
-                    value = f"{value.rstrip()}\n\n{QWEN_TRANSPARENT_PROMPT}"
-            if field == "size":
-                raw_size = value
-                if raw_size == "auto":
-                    automatic = self._binding_for(bindings, "size")
-                    if automatic is None:
-                        raise self._unsupported("size")
-                    self._set(result, automatic, raw_size, "size")
-                    continue
-                if not isinstance(raw_size, str) or "x" not in raw_size.lower():
-                    raise AppError(
-                        "invalid_image_size",
-                        "Размер должен иметь вид WIDTHxHEIGHT",
-                        status_code=400,
-                        details={"field": "size"},
-                    )
-                try:
-                    width, height = (int(part) for part in raw_size.lower().split("x", 1))
-                except ValueError as exc:
-                    raise AppError(
-                        "invalid_image_size",
-                        "Размер должен иметь вид WIDTHxHEIGHT",
-                        status_code=400,
-                        details={"field": "size"},
-                    ) from exc
-                if width < 1 or height < 1:
-                    raise AppError(
-                        "invalid_image_size",
-                        "Ширина и высота должны быть положительными числами",
-                        status_code=400,
-                        details={"field": "size"},
-                    )
-                if operation == "edit_masked" and qwen_graph:
-                    self._apply_qwen_masked_resize(
-                        result, width, height, preserve_alpha=transparent_requested
-                    )
-                width_binding = self._binding_for(bindings, "size", "width")
-                height_binding = self._binding_for(bindings, "size", "height")
-                direct_binding = self._binding_for(bindings, "size")
-                switch_binding = self._binding_for(bindings, "size", "switch")
-                if width_binding and height_binding:
-                    self._set(result, width_binding, width, "size.width")
-                    self._set(result, height_binding, height, "size.height")
-                    if switch_binding:
-                        self._set(result, switch_binding, True, "size.switch")
-                elif direct_binding:
-                    self._set(result, direct_binding, raw_size, "size")
-                    if switch_binding:
-                        self._set(result, switch_binding, True, "size.switch")
-                else:
-                    raise self._unsupported("size")
-                continue
-            binding = self._binding_for(bindings, field)
-            if binding is None:
-                raise self._unsupported(field)
-            self._set(result, binding, value, field)
-        return result
+        from .comfy_contract import WorkflowContract
+        contract = WorkflowContract.parse(graph, model, operation)
+        return contract.patch(graph, params, set(provided_fields if provided_fields is not None else params), uploaded_inputs or {})
 
     async def _upload_inputs(
         self, client: ComfyUIClient, params: Mapping[str, Any], fields: set[str]
@@ -1773,14 +982,15 @@ class ComfyUIProvider:
         provided_fields: set[str] | None = None,
     ) -> tuple[ComfyUIClient, str, Mapping[str, Any]]:
         client, source, model = self._client_for_model(alias)
-        graph = await self.load_graph(alias, operation)
+        model = copy.deepcopy(dict(model))
+        graph = await self._read_graph(client, model, alias, operation)
         fields = set(provided_fields if provided_fields is not None else params)
+        from .comfy_contract import WorkflowContract
+        contract = WorkflowContract.parse(graph, model, operation)
         uploaded = await self._upload_inputs(client, params, fields)
-        patched = self.patch_graph(
-            graph, model, operation, params, uploaded_inputs=uploaded, provided_fields=fields
-        )
+        patched = contract.patch(graph, params, fields, uploaded)
         prompt_id = await client.prompt(patched, client_id=request_id)
-        return client, source, {"model": model, "prompt_id": prompt_id, "graph": patched}
+        return client, source, {"model": model, "prompt_id": prompt_id, "graph": patched, "contract": contract}
 
     @staticmethod
     def _history_entry(payload: Any, prompt_id: str) -> Mapping[str, Any] | None:
@@ -1804,10 +1014,22 @@ class ComfyUIProvider:
         return False
 
     @staticmethod
-    def _outputs(entry: Mapping[str, Any]) -> list[dict[str, str]]:
+    def _outputs(entry: Mapping[str, Any], output_node: str | None = None) -> list[dict[str, str]]:
         outputs = entry.get("outputs")
         if not isinstance(outputs, Mapping):
             return []
+        # ComfyUI history contains the submitted graph, an immutable job
+        # snapshot. Recover its marker, never consult the current alias.
+        prompt = entry.get("prompt")
+        history_graph = prompt[2] if isinstance(prompt, list) and len(prompt) > 2 else None
+        if output_node is None and isinstance(history_graph, Mapping):
+            selected = [str(node_id) for node_id, node in history_graph.items() if isinstance(node, Mapping) and isinstance(node.get("_meta"), Mapping) and node["_meta"].get("title") == "ND.v1.output"]
+            if len(selected) == 1:
+                output_node = selected[0]
+        if output_node is None:
+            from .comfy_contract import invalid
+            raise invalid("история задания не содержит однозначного ND.v1.output")
+        outputs = {output_node: outputs.get(output_node)}
         result: list[dict[str, str]] = []
         seen: set[tuple[str, str, str]] = set()
         for node_output in outputs.values():
@@ -1831,7 +1053,7 @@ class ComfyUIProvider:
                         result.append(item)
         return result
 
-    async def wait_outputs(self, client: ComfyUIClient, prompt_id: str) -> list[dict[str, str]]:
+    async def wait_outputs(self, client: ComfyUIClient, prompt_id: str, output_node: str | None = None) -> list[dict[str, str]]:
         deadline = time.monotonic() + self.timeout
         while time.monotonic() < deadline:
             payload = await client.history(prompt_id)
@@ -1849,8 +1071,8 @@ class ComfyUIProvider:
                         status_code=502,
                         details={"status": dict(status)},
                     )
-                result = self._outputs(entry)
-                if result:
+                result = self._outputs(entry, output_node)
+                if result and isinstance(status, Mapping) and status.get("status_str") == "success":
                     return result
                 if isinstance(status, Mapping) and status.get("status_str") == "success":
                     raise AppError(
@@ -1897,7 +1119,8 @@ class ComfyUIProvider:
         client, _source, submitted = await self.submit(
             alias, operation, params, request_id=request_id, provided_fields=provided_fields
         )
-        outputs = await self.wait_outputs(client, str(submitted["prompt_id"]))
+        contract = submitted["contract"]
+        outputs = await self.wait_outputs(client, str(submitted["prompt_id"]), contract.output)
         return await self.download_outputs(client, outputs)
 
     async def create_video(
@@ -1909,35 +1132,13 @@ class ComfyUIProvider:
         provided_fields: set[str] | None = None,
     ) -> ComfyVideoJob:
         model = self._model(alias)
-        if params.get("seconds") is not None and "max_seconds" in model:
-            requested_seconds = self._validate_param("seconds", params["seconds"])
-            if requested_seconds > model["max_seconds"]:
-                raise AppError(
-                    "comfyui_parameter_invalid",
-                    f"Максимальная длительность этого алиаса — {model['max_seconds']} с",
-                    status_code=400,
-                    details={"field": "seconds"},
-                )
-        if params.get("size") is not None and "max_resolution" in model:
-            raw_size = params["size"]
-            try:
-                width, height = (int(part) for part in raw_size.lower().split("x"))
-                if width < 1 or height < 1:
-                    raise ValueError
-            except (AttributeError, TypeError, ValueError) as exc:
-                raise AppError("invalid_image_size", "Размер должен иметь вид WIDTHxHEIGHT", status_code=400, details={"field": "size"}) from exc
-            maximum = model["max_resolution"]
-            if min(width, height) > maximum or max(width, height) > maximum * 16 / 9:
-                raise AppError(
-                    "comfyui_parameter_invalid",
-                    f"Максимальное разрешение этого алиаса — {maximum}p",
-                    status_code=400,
-                    details={"field": "size"},
-                )
         workflows = model.get("workflows")
         has_reference = (
             params.get("reference") is not None or params.get("input_reference") is not None
         )
+        if has_reference and not (isinstance(workflows, Mapping) and workflows.get("edit")):
+            from .comfy_contract import parameter
+            raise parameter("input_reference", "Для алиаса не настроен workflow Edit")
         operation = (
             "edit"
             if has_reference and isinstance(workflows, Mapping) and workflows.get("edit")
@@ -1946,9 +1147,10 @@ class ComfyUIProvider:
         client, source, submitted = await self.submit(
             alias, operation, params, request_id=request_id, provided_fields=provided_fields
         )
-        raw_seconds = params.get("seconds")
+        contract = submitted["contract"]
+        raw_seconds = contract.value(submitted["graph"], "seconds")
         seconds = str(raw_seconds) if raw_seconds is not None else None
-        raw_size = params.get("size")
+        raw_size = f"{contract.value(submitted['graph'], 'width')}x{contract.value(submitted['graph'], 'height')}"
         size = raw_size if isinstance(raw_size, str) else None
         job = ComfyVideoJob(
             id=f"video_{uuid4().hex}",
@@ -1986,6 +1188,10 @@ class ComfyUIProvider:
         payload = await client.history(job.prompt_id)
         entry = self._history_entry(payload, job.prompt_id)
         if not entry:
+            # Queue membership matters until execution starts. Afterwards the
+            # history result is sufficient; keep the confirmed running state.
+            if job.status == "in_progress":
+                return job
             queue = await client.queue()
             if self._queue_has_prompt(queue, "queue_running", job.prompt_id):
                 updated = replace(job, status="in_progress")
@@ -2016,7 +1222,7 @@ class ComfyUIProvider:
                     "message": "ComfyUI execution failed",
                 },
             )
-        elif result:
+        elif result and isinstance(status_value, Mapping) and status_value.get("status_str") == "success":
             updated = replace(job, status="completed", result=tuple(result))
         else:
             updated = job
@@ -2070,6 +1276,23 @@ class ComfyUIProvider:
         )
         return asset_id
 
+    async def persist_image_output(self, output: ComfyOutput) -> ComfyOutput:
+        """Keep encoded URL results in ComfyUI, just like native outputs."""
+        if output.source_url is None:
+            raise AppError("comfyui_output_unavailable", "У результата отсутствует источник", status_code=502)
+        client = ComfyUIClient(
+            output.source_url, user_context=output.user_context,
+            client_factory=self.client_factory, timeout=self.timeout,
+        )
+        filename = f"neural-deck-output-{uuid4().hex}{PurePosixPath(output.filename).suffix}"
+        uploaded = PurePosixPath(await client.upload_image(
+            output.content, filename=filename, content_type=output.media_type,
+        ))
+        return replace(
+            output, filename=uploaded.name,
+            subfolder="" if str(uploaded.parent) == "." else str(uploaded.parent), output_type="input",
+        )
+
     async def asset(self, asset_id: str) -> tuple[bytes, str, str]:
         item = await self.media_store.get(asset_id)
         if item is None:
@@ -2080,10 +1303,10 @@ class ComfyUIProvider:
             client_factory=self.client_factory,
             timeout=self.timeout,
         )
-        content, media_type = await client.view(
+        content, _media_type = await client.view(
             {"filename": item.filename, "subfolder": item.subfolder, "type": item.output_type}
         )
-        return content, media_type, item.filename
+        return content, item.media_type, item.filename
 
     async def close(self) -> None:
         return None
@@ -2102,7 +1325,7 @@ class ComfyProviderService:
         cache_path: Path | None = None,
         timeout: float = 1800.0,
         catalog_timeout: float = 5.0,
-        poll_interval: float = 0.25,
+        poll_interval: float = 2.0,
     ) -> None:
         self.repository = repository
         self._owned_engine: Any | None = None
@@ -2153,12 +1376,16 @@ class ComfyProviderService:
                     "types": [model["type"]],
                     "capabilities": {
                         "operations": list(model["workflows"]),
-                        **({"max_megapixels": model.get("max_megapixels", 4)} if model["type"] == "image" else {}),
-                        **({"max_resolution": model.get("max_resolution", 768), "max_seconds": model.get("max_seconds", 15)} if model["type"] == "video" else {}),
+                        **self.model_capabilities(model),
                     },
                 }
             )
         return {**result, "data": items}
+
+    @staticmethod
+    def model_capabilities(model: Mapping[str, Any]) -> dict[str, Any]:
+        fields = ("max_megapixels",) if model["type"] == "image" else ("max_resolution", "max_seconds")
+        return {"workflow_contract": "ND.v1", **{field: model[field] for field in fields if field in model}}
 
     def get_settings(self) -> dict[str, Any]:
         repository = cast(Any, self.repository)

@@ -77,7 +77,7 @@ export function ChatOptions({ models, model, reasoning, onModel, onReasoning, im
         <div className="mt-1.5 grid grid-cols-3 gap-1.5">
           {IMAGE_SIZES.map((size) => {
             const Icon = size.aspect === 'square' ? Square : size.aspect === 'portrait' ? RectangleVertical : RectangleHorizontal
-            const dimensions = (showVideoSettings ? videoRequestSize({ ...videoSettings, aspect: size.aspect }) : imageRequestSize({ size: size.value, maxResolution: imageSettings.maxResolution }, maxImageMegapixels(selectedModel))).replace('x', '×')
+            const dimensions = (showVideoSettings ? videoRequestSize({ ...videoSettings, aspect: size.aspect }) : imageRequestSize({ size: size.value, maxResolution: imageSettings.maxResolution }, maxImageMegapixels(selectedModel))).replace('x', '×') || '—'
             const checked = showVideoSettings ? videoSettings.aspect === size.aspect : imageSettings.size === size.value
             return <label key={size.value} className={`relative flex cursor-pointer flex-col items-center gap-1 rounded-xl border px-1 py-2 text-center transition-colors focus-within:ring-1 focus-within:ring-copper ${checked ? 'border-copper/50 bg-accent text-foreground' : 'border-transparent text-muted-foreground hover:bg-accent'}`}>
               <input type="radio" name={`${id}-media-size`} checked={checked} aria-label={`${size.label} ${dimensions}`} onChange={() => showVideoSettings ? onVideoSettings({ ...videoSettings, aspect: size.aspect }) : onImageSettings({ ...imageSettings, size: size.value })} className="sr-only" />

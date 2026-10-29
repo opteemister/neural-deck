@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import math
 import re
 import tempfile
 from collections import defaultdict
@@ -402,121 +401,18 @@ class RouteConfigRepository:
                 "type": model_type,
                 "workflows": workflows,
             }
-            if model_type == "image" and "max_megapixels" in raw_model:
-                megapixels = raw_model["max_megapixels"]
-                if (
-                    isinstance(megapixels, bool)
-                    or not isinstance(megapixels, (int, float))
-                    or not math.isfinite(megapixels)
-                    or not 0.1 <= megapixels <= 128
-                ):
-                    raise AppError(
-                        "route_config_invalid",
-                        "Максимальное разрешение должно быть от 0.1 до 128 МП",
-                        status_code=422,
-                        details={"field": f"comfyui.models.{alias}.max_megapixels"},
-                    )
-                model["max_megapixels"] = megapixels
-            if model_type == "video":
-                for field, minimum, maximum, label in (
-                    ("max_resolution", 32, 16384, "Максимальное разрешение"),
-                    ("max_seconds", 1, 600, "Максимальная длительность"),
-                ):
-                    if field not in raw_model:
-                        continue
-                    limit = raw_model[field]
-                    if isinstance(limit, bool) or not isinstance(limit, int) or not minimum <= limit <= maximum:
-                        raise AppError(
-                            "route_config_invalid",
-                            f"{label}: требуется целое число от {minimum} до {maximum}",
-                            status_code=422,
-                            details={"field": f"comfyui.models.{alias}.{field}"},
-                        )
-                    model[field] = limit
-            if "bindings" in raw_model:
-                model["bindings"] = cls._comfy_bindings(raw_model["bindings"], alias)
+            from .comfy_contract import maximum
+            fields = ("max_megapixels",) if model_type == "image" else ("max_resolution", "max_seconds")
+            for field in fields:
+                if field in raw_model:
+                    try:
+                        model[field] = maximum(raw_model, field)
+                    except AppError as exc:
+                        raise AppError("route_config_invalid", exc.message, status_code=422, details={"field": f"comfyui.models.{alias}.{field}"}) from exc
             models[alias] = model
 
         return {"sources": sources, "models": models}
 
-    @staticmethod
-    def _comfy_bindings(value: Any, alias: str) -> dict[str, Any]:
-        """Validate the deliberately small ``{node, input}`` binding shape.
-
-        Bindings may be supplied per operation (``bindings.generate.prompt``)
-        or as a mapping shared by all operations.  The provider resolves the
-        operation-specific map first.  Lists are accepted as a compact
-        ``[node, input]`` spelling but no expressions or node discovery are
-        performed.
-        """
-
-        if not isinstance(value, Mapping):
-            raise AppError(
-                "route_config_invalid",
-                f"comfyui.models.{alias}.bindings должен быть объектом",
-                status_code=422,
-            )
-        result: dict[str, Any] = {}
-        operations = {"generate", "edit", "edit_masked", "variations"}
-        for key, item in value.items():
-            key = str(key)
-            # Operation maps are one level deeper; field maps are validated by
-            # the same helper below.
-            if key in operations:
-                result[key] = RouteConfigRepository._comfy_binding_map(item, alias, key)
-            else:
-                result[key] = RouteConfigRepository._comfy_binding(item, alias, key)
-        return result
-
-    @staticmethod
-    def _comfy_binding_map(value: Any, alias: str, operation: str) -> dict[str, Any]:
-        if not isinstance(value, Mapping):
-            raise AppError(
-                "route_config_invalid",
-                f"comfyui.models.{alias}.bindings.{operation} должен быть объектом",
-                status_code=422,
-            )
-        return {
-            str(field): RouteConfigRepository._comfy_binding(item, alias, str(field))
-            for field, item in value.items()
-        }
-
-    @staticmethod
-    def _comfy_binding(value: Any, alias: str, field: str) -> dict[str, Any]:
-        if isinstance(value, (list, tuple)) and len(value) == 2:
-            value = {"node": value[0], "input": value[1]}
-        if not isinstance(value, Mapping):
-            raise AppError(
-                "route_config_invalid",
-                f"comfyui.models.{alias}.bindings.{field} должен иметь node и input",
-                status_code=422,
-            )
-        node = value.get("node")
-        input_name = value.get("input")
-        if node is None and input_name is None:
-            if not value:
-                raise AppError(
-                    "route_config_invalid",
-                    f"comfyui.models.{alias}.bindings.{field} не может быть пустым",
-                    status_code=422,
-                )
-            return {
-                str(key): RouteConfigRepository._comfy_binding(item, alias, f"{field}.{key}")
-                for key, item in value.items()
-            }
-        if not isinstance(node, (str, int)) or not str(node):
-            raise AppError(
-                "route_config_invalid",
-                f"comfyui.models.{alias}.bindings.{field}.node должен быть строкой/числом",
-                status_code=422,
-            )
-        if not isinstance(input_name, str) or not input_name.strip():
-            raise AppError(
-                "route_config_invalid",
-                f"comfyui.models.{alias}.bindings.{field}.input должен быть непустой строкой",
-                status_code=422,
-            )
-        return {"node": str(node), "input": input_name.strip()}
 
     @staticmethod
     def _profile_list(value: Any, section: str, name: str) -> list[str]:

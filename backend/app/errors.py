@@ -129,7 +129,7 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
     if _is_openai_route(request):
         return openai_error_response(
             message="Invalid request body",
-            status_code=422,
+            status_code=400 if request.url.path.startswith("/v1/images/") else 422,
             error_type="invalid_request_error",
             code="invalid_request_error",
         )
@@ -137,7 +137,7 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
         request,
         code="validation_error",
         message="Ошибка проверки входных данных",
-        status_code=422,
+        status_code=400 if request.url.path.startswith("/api/proxy/images/") else 422,
         details={"errors": jsonable_encoder(errors)},
     )
 

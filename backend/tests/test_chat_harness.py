@@ -38,9 +38,9 @@ async def harness(tmp_path):
     proxy = SimpleNamespace(forward=AsyncMock(return_value=reply()), models=AsyncMock(return_value={"data": []}))
     comfy = SimpleNamespace(
         get_settings=lambda: {"models": {
-            "image": {"type": "image", "max_megapixels": 4,
+            "image": {"type": "image", "max_megapixels": 8,
                       "workflows": {"generate": "g.json", "edit": "e.json"}},
-            "video": {"type": "video", "max_seconds": 15, "max_resolution": 768,
+            "video": {"type": "video", "max_resolution": 768, "max_seconds": 15,
                       "workflows": {"generate": "v.json"}},
         }},
         images=SimpleNamespace(generate=AsyncMock(return_value={

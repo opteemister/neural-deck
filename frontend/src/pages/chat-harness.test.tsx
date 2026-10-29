@@ -24,7 +24,7 @@ function Navigate() {
 function setup(path = '/chat?model=llm') {
   vi.spyOn(api, 'getOpenAiModels').mockResolvedValue({ items: [
     { id: 'llm', object: 'model', types: ['text'], context_length: 1000 },
-    { id: 'image', object: 'model', types: ['image'] },
+    { id: 'image', object: 'model', types: ['image'], capabilities: { max_megapixels: 4 } },
   ] })
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   render(<StrictMode><QueryClientProvider client={client}><MemoryRouter initialEntries={[path]}>
@@ -48,7 +48,7 @@ describe('chat media harness', () => {
     await screen.findByAltText('Результат 1')
     expect(screen.getByText('Вот изображение')).toBeInTheDocument()
     expect(send.mock.calls[0][1].model).toBe('llm')
-    expect(send.mock.calls[0][1].media_defaults.image).toEqual({ size: '1472x1472', background: 'opaque' })
+    expect(send.mock.calls[0][1].media_defaults.image).toEqual({ size: '1448x1448', background: 'opaque' })
     expect(raw).not.toHaveBeenCalled()
     expect(screen.getByRole('button', { name: 'Выбрать модель' })).toHaveTextContent('llm')
   })

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import time
 from collections.abc import Mapping
@@ -10,6 +11,7 @@ from typing import Any
 from ..errors import AppError
 from ..proxy.comfy_provider import ComfyOutput, ComfyUIProvider
 from ..schemas.image import ImageGenerationRequest
+from .output import ImageOutputOptions
 
 
 class ComfyImageService:
@@ -31,6 +33,10 @@ class ComfyImageService:
             fields = set(params)
         else:
             raise AppError("invalid_request", "Некорректное тело image-запроса", status_code=400)
+        for field in ("size", "n", "quality", "background", "output_format", "output_compression", "response_format", "seed"):
+            if params.get(field) is None:
+                params.pop(field, None)
+                fields.discard(field)
         if not params.get("model"):
             raise AppError(
                 "comfyui_model_required",
@@ -54,14 +60,18 @@ class ComfyImageService:
         response_format: str,
         url_prefix: str,
         prompt: str,
+        options: ImageOutputOptions,
     ) -> dict[str, Any]:
         data: list[dict[str, Any]] = []
         for output in outputs:
+            encoded = await asyncio.to_thread(options.encode, output)
             item: dict[str, Any] = {"revised_prompt": prompt}
             if response_format == "b64_json":
-                item["b64_json"] = base64.b64encode(output.content).decode("ascii")
+                item["b64_json"] = base64.b64encode(encoded.content).decode("ascii")
             else:
-                asset_id = await self.provider.register_asset(output)
+                if encoded.content != output.content or encoded.filename != output.filename:
+                    encoded = await self.provider.persist_image_output(encoded)
+                asset_id = await self.provider.register_asset(encoded)
                 item["url"] = f"{url_prefix}/images/{asset_id}"
             data.append(item)
         return {"created": int(time.time()), "data": data}
@@ -75,6 +85,7 @@ class ComfyImageService:
         operation: str | None = None,
     ) -> dict[str, Any]:
         params, fields = self._params(request)
+        options = ImageOutputOptions.from_request(params)
         selected_operation = operation or (
             "edit_masked"
             if params.get("mask") is not None
@@ -87,13 +98,14 @@ class ComfyImageService:
             selected_operation,
             params,
             request_id=request_id,
-            provided_fields=fields,
+            provided_fields=fields - {"output_format", "output_compression"},
         )
         return await self._response(
             outputs,
             response_format=str(params.get("response_format", "url")),
             url_prefix=url_prefix,
             prompt=str(params.get("prompt", "")),
+            options=options,
         )
 
     async def create_video(

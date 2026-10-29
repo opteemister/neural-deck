@@ -120,7 +120,7 @@ def register_proxy_tools(server, call, paged, readonly, mutation, destructive):
     async def get_proxy_media_config():
         return await call("get_proxy_media_config")
 
-    @server.tool(name="nd_save_comfy_source", description="Создать или изменить ComfyUI-подключение; переименование обновляет ссылки алиасов. Стандартный local неизменяем.", annotations=mutation)
+    @server.tool(name="nd_save_comfy_source", description="Сохранить имя и URL ComfyUI-подключения. Переименование обновляет алиасы; имя и URL стандартного local фиксированы.", annotations=mutation)
     async def save_comfy_source(
         source: Annotated[ComfySourceRequest, Field(description="Имя и URL подключения ComfyUI.")],
         previous_name: Annotated[str | None, Field(description="Текущее имя изменяемого подключения; null создаёт новое.")] = None,
@@ -150,7 +150,7 @@ def register_proxy_tools(server, call, paged, readonly, mutation, destructive):
     ):
         return await call("validate_comfy_workflow", source, path)
 
-    @server.tool(name="nd_save_media_alias", description="Создать или изменить image/video алиас с workflow и лимитами. Операции заменяются целиком; пропущенные лимиты при изменении сохраняются. Offline-сохранение разрешено.", annotations=mutation)
+    @server.tool(name="nd_save_media_alias", description="Сохранить image/video алиас: операции ND.v1 и максимум МП для image либо разрешение/секунды для video. Максимумы задаются явно; workflow исполняется как чёрный ящик.", annotations=mutation)
     async def save_media_alias(
         alias: Annotated[MediaAliasRequest, Field(description="Тип, имя, подключение, workflow операций и пределы генерации.")],
         previous_name: Annotated[str | None, Field(description="Текущее имя изменяемого алиаса; null создаёт новый.")] = None,

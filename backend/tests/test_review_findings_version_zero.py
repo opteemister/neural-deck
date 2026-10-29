@@ -258,6 +258,10 @@ def test_journal_failure_is_visible_without_breaking_proxy_success() -> None:
             port=1919,
             model_name="public",
             state="ready",
+            identity_verified=True,
+            types=["text"],
+            api_protocol="openai",
+            api_base_url="http://127.0.0.1:1919/v1",
             observed_at=datetime.now(UTC),
         )
 
@@ -507,9 +511,10 @@ def test_external_logs_report_unavailable_source_instead_of_empty_success(
     manager.refresh = _empty_refresh.__get__(manager, ProcessManager)  # type: ignore[method-assign]
 
     async def run() -> None:
-        with pytest.raises(Exception) as error:
-            await manager.logs(instance.id)
-        assert getattr(error.value, "code", None) == "logs_unavailable"
+        logs = await manager.logs(instance.id)
+        assert logs.available is False
+        assert logs.lines == []
+        assert logs.instance_id == instance.id
 
     asyncio.run(run())
 
@@ -535,6 +540,10 @@ def test_proxy_covers_embeddings_model_missing_upstream_error_and_journal(tmp_pa
             port=1919,
             model_name="public",
             state="ready",
+            identity_verified=True,
+            types=["text", "embeddings"],
+            api_protocol="openai",
+            api_base_url="http://127.0.0.1:1919/v1",
             observed_at=datetime.now(UTC),
         )
 

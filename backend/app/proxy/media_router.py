@@ -19,7 +19,8 @@ from ..schemas.media_responses import IMAGE_RESPONSES, VIDEO_RESPONSES
 from ..schemas.proxy import OpenAIModel, OpenAIModelList
 from .comfy_provider import ComfyProviderService
 from .router import _forward
-from .routes import RouteConfigRepository
+from .configuration import ProxyConfiguration
+from ..schemas.proxy_management import ComfySourceRequest, MediaAliasRequest
 from .service import ProxyService
 
 router = APIRouter(prefix="/v1", tags=["media"])
@@ -136,17 +137,37 @@ async def settings(request: Request, runtime: RuntimeDep) -> JSONResponse:
 async def save_settings(
     request: Request, payload: dict[str, Any], runtime: RuntimeDep
 ) -> JSONResponse:
-    payload = RouteConfigRepository._comfyui(payload)
-    text_routes = await runtime.proxy_service.route_data()
-    collisions = set(payload.get("models", {})) & {item["name"] for item in text_routes["items"]}
-    if collisions:
-        raise AppError(
-            "route_conflict",
-            "Имя уже занято маршрутом модели",
-            status_code=409,
-            details={"models": sorted(collisions)},
-        )
-    return success(request, _service(runtime).save_settings(payload))
+    return success(request, await ProxyConfiguration(runtime.proxy_service, _service(runtime)).save(payload))
+
+
+@management_router.post("/comfyui/sources")
+async def create_source(request: Request, payload: ComfySourceRequest, runtime: RuntimeDep):
+    return success(request, ProxyConfiguration(runtime.proxy_service, _service(runtime)).save_source(payload))
+
+
+@management_router.patch("/comfyui/sources/{source}")
+async def update_source(request: Request, source: str, payload: ComfySourceRequest, runtime: RuntimeDep):
+    return success(request, ProxyConfiguration(runtime.proxy_service, _service(runtime)).save_source(payload, source))
+
+
+@management_router.delete("/comfyui/sources/{source}")
+async def delete_source(request: Request, source: str, runtime: RuntimeDep):
+    return success(request, ProxyConfiguration(runtime.proxy_service, _service(runtime)).delete_source(source))
+
+
+@management_router.post("/comfyui/aliases")
+async def create_media_alias(request: Request, payload: MediaAliasRequest, runtime: RuntimeDep):
+    return success(request, await ProxyConfiguration(runtime.proxy_service, _service(runtime)).save_alias(payload))
+
+
+@management_router.patch("/comfyui/aliases/{name}")
+async def update_media_alias(request: Request, name: str, payload: MediaAliasRequest, runtime: RuntimeDep):
+    return success(request, await ProxyConfiguration(runtime.proxy_service, _service(runtime)).save_alias(payload, name))
+
+
+@management_router.delete("/comfyui/aliases/{name}")
+async def delete_media_alias(request: Request, name: str, runtime: RuntimeDep):
+    return success(request, ProxyConfiguration(runtime.proxy_service, _service(runtime)).delete_alias(name))
 
 
 @management_router.get("/comfyui/sources/{source}/workflows")

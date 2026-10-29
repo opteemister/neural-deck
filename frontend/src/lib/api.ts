@@ -1,3 +1,4 @@
+import type { ProxyModelChoices } from '@/types/api'
 import type {
   ApiErrorResponse,
   ApiSuccess,
@@ -13,6 +14,7 @@ import type {
   Installation,
   InstallationCreateRequest,
   LocalModelsData,
+  ModelFileUpdates,
   LogData,
   LogSourceData,
   ModelRegistryData,
@@ -247,11 +249,14 @@ export const api = {
   getHfRepo: (namespace: string, name: string, revision?: string) => request<HfRepoData>(`/api/v1/models/hf/repos/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}${revision ? `?revision=${encodeURIComponent(revision)}` : ''}`),
   getHfQuantizations: (namespace: string, name: string) => request<import('@/types/api').HfSearchData>(`/api/v1/models/hf/repos/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/quantizations`),
   getHfFiles: (namespace: string, name: string, revision?: string) => request<HfRepoData>(`/api/v1/models/hf/repos/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/files${revision ? `?revision=${encodeURIComponent(revision)}` : ''}`),
+  getModelFileUpdates: (id: string) => request<ModelFileUpdates>(`/api/v1/models/local/${encodeURIComponent(id)}/updates`),
+  updateModelFiles: (id: string, files: string[] | null) => request<Operation>(`/api/v1/models/local/${encodeURIComponent(id)}/updates`, json({ files })),
   downloadModels: (body: DownloadRequest) => request<Operation>('/api/v1/models/downloads', json(body)),
   getProfiles: () => request<ProfileListData>('/api/v1/profiles'),
   getProfileSummary: () => request<ProfileSummaryData>('/api/v1/profiles/summary'),
   getDailyMetricRuns: () => request<{ items: Array<{ profile_name: string; model_name: string | null; engine_id: string }> }>('/api/v1/metrics/runs'),
   getProfile: (name: string) => request<ProfileData>(`/api/v1/profiles/${encodeURIComponent(name)}`),
+  getProxyModelChoices: (routeName?: string, refresh = false) => request<ProxyModelChoices>(`/api/v1/proxy/routes/choices?${new URLSearchParams({ ...(routeName ? { route_name: routeName } : {}), refresh: String(refresh) })}`),
   getProxyRoutes: () => request<ProxyRoutesData>('/api/v1/proxy/routes'),
   getOpenAIConnections: () => request<{ items: OpenAIConnection[] }>('/api/v1/proxy/openai/connections'),
   createOpenAIConnection: (body: { name: string; base_url: string; api_key?: string }) => request<OpenAIConnection>('/api/v1/proxy/openai/connections', json(body)),

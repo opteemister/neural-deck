@@ -128,13 +128,14 @@ class FakeUnits(SystemdLauncher):
         self.units = {}
         self.stopped = []
 
-    async def start(self, unit, command, env, log):
+    async def start(self, unit, command, env, log, *, working_directory=None):
         with log.open("ab") as output:
             child = await asyncio.create_subprocess_exec(
                 "/bin/bash",
                 "-c",
                 command,
                 env=env,
+                cwd=working_directory,
                 start_new_session=True,
                 stdout=output,
                 stderr=output,
@@ -348,13 +349,13 @@ async def test_loading_status_survives_refresh_until_models_are_available(
             probed.set()
         if available.is_set():
             ready_response.set()
-            return ["actual-model"]
-        return []
+            return True, ["actual-model"]
+        return False, []
 
-    monkeypatch.setattr("app.process.manager.query_models", models)
+    monkeypatch.setattr("app.process.manager.query_readiness", models)
     monkeypatch.setattr("app.process.manager.START_PROBE_INTERVAL", 0.01)
     managed = manager(tmp_path, store)
-    instance = await managed.start_profile(profile(), "/bin/echo")
+    instance = await managed.start_profile(profile().model_copy(update={"port": 8013}), "/bin/echo")
     try:
         async with asyncio.timeout(2):
             await probed.wait()
@@ -378,11 +379,11 @@ async def test_readiness_response_cannot_overwrite_stop(tmp_path, store, monkeyp
     async def models(*args, **kwargs):
         probing.set()
         await release.wait()
-        return ["actual-model"]
+        return True, ["actual-model"]
 
-    monkeypatch.setattr("app.process.manager.query_models", models)
+    monkeypatch.setattr("app.process.manager.query_readiness", models)
     managed = manager(tmp_path, store)
-    instance = await managed.start_profile(profile(), "/bin/echo")
+    instance = await managed.start_profile(profile().model_copy(update={"port": 8013}), "/bin/echo")
     try:
         async with asyncio.timeout(2):
             await probing.wait()

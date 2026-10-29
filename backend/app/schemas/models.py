@@ -210,6 +210,41 @@ class HfRepoData(BaseModel):
     quantizations: list[HfSearchItem] = Field(default_factory=list)
 
 
+class ModelFileUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    files: list[str] | None = Field(default=None, min_length=1)
+
+    @field_validator("files")
+    @classmethod
+    def validate_files(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        return list(dict.fromkeys(ensure_safe_relative_path(item) for item in value))
+
+
+class ModelFileVersion(BaseModel):
+    size: int | None = None
+    file_date: str | None = None
+    hash: str | None = None
+    hash_kind: str | None = None
+
+
+class ModelFileUpdate(BaseModel):
+    path: str
+    status: Literal["changed", "added", "removed", "local_divergence"]
+    local: ModelFileVersion
+    remote: ModelFileVersion
+
+
+class ModelFileUpdates(BaseModel):
+    model_id: str
+    repo_id: str
+    revision: str | None = None
+    checked_at: str | None = None
+    items: list[ModelFileUpdate]
+
+
 class DownloadRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

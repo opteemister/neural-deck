@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ChatMediaResult } from '@/components/chat-media-result'
 import { api } from '@/lib/api'
 import { ChatPage } from '@/pages/chat'
+import type { ChatConversation, HarnessTurn } from '@/lib/chat-harness'
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
@@ -19,14 +20,17 @@ function stubObjectUrls() {
 }
 
 describe('chat provider flows', () => {
-  it('keeps multimodal history when switching back to text streaming', async () => {
+  it('keeps multimodal history when continuing the persistent conversation', async () => {
     const getModels = vi.spyOn(api, 'getOpenAiModels').mockResolvedValue({ items: [{ id: 'vision-model', object: 'model', types: ['text'] }] })
-    const requests: Array<{ messages: Array<{ role: string; content: unknown }> }> = []
-    let call = 0
-    vi.spyOn(api, 'streamChat').mockImplementation(async (request, onChunk) => {
-      requests.push(request as typeof requests[number])
-      onChunk({ done: false, content: call++ === 0 ? 'vision answer' : 'text answer' })
+    let conversation: ChatConversation = { id: '', busy: false, turns: [] }
+    const send = vi.spyOn(api, 'sendChat').mockImplementation(async (id, request) => {
+      const turn: HarnessTurn = { id: request.id, model: request.model, prompt: request.prompt,
+        answer: conversation.turns.length === 0 ? 'vision answer' : 'text answer', reasoning: '',
+        attachments: request.image_names.map((name) => ({ name, type: 'image/png', previewUrl: '/api/v1/chat/assets/image' })), results: [], state: 'complete' }
+      conversation = { id, busy: false, turns: [...conversation.turns, turn] }
+      return conversation
     })
+    vi.spyOn(api, 'getChat').mockImplementation(async () => conversation)
     stubObjectUrls()
     const view = renderChat('/chat?model=vision-model&operation=vision')
     const textbox = await screen.findByLabelText('Сообщение')
@@ -38,29 +42,32 @@ describe('chat provider flows', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Отправить' }))
     await screen.findByText('vision answer')
 
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Отправить' })).toBeDisabled())
     fireEvent.change(screen.getByLabelText('Сообщение'), { target: { value: 'Продолжи ответ' } })
     fireEvent.click(screen.getByRole('button', { name: 'Отправить' }))
     await screen.findByText('text answer')
 
-    expect(requests).toHaveLength(2)
-    expect(requests[1].messages.slice(0, 2)).toEqual([
-      { role: 'user', content: [
-        { type: 'text', text: 'Что на картинке?' },
-        { type: 'image_url', image_url: { url: expect.stringMatching(/^data:image\/png;base64,/) } },
-      ] },
-      { role: 'assistant', content: 'vision answer' },
+    expect(send).toHaveBeenCalledTimes(2)
+    expect(send.mock.calls[1][0]).toBe(send.mock.calls[0][0])
+    expect(send.mock.calls[0][1].content).toEqual([
+      { type: 'text', text: 'Что на картинке?' },
+      { type: 'image_url', image_url: { url: expect.stringMatching(/^data:image\/png;base64,/) } },
     ])
-    expect(requests[1].messages.at(-1)).toEqual({ role: 'user', content: 'Продолжи ответ' })
+    expect(send.mock.calls[1][1].content).toBe('Продолжи ответ')
+    expect(screen.getByText('vision answer')).toBeInTheDocument()
+    expect(screen.getByText('Что на картинке?')).toBeInTheDocument()
+    expect(screen.getByAltText('house.png')).toBeInTheDocument()
   })
 
   it('uses the first attached image as source and the second as mask in edit mode', async () => {
     const getModels = vi.spyOn(api, 'getOpenAiModels').mockResolvedValue({ items: [{ id: 'image-model', object: 'model', types: ['image'] }] })
-    const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) => {
-      const url = String(input)
-      if (url.endsWith('/api/proxy/images/edits')) return Promise.resolve(new Response(JSON.stringify({ data: [{ b64_json: 'abc' }] }), { status: 200 }))
-      return Promise.resolve(new Response(JSON.stringify({ error: { message: 'unexpected' } }), { status: 404 }))
+    let conversation: ChatConversation
+    const sendChat = vi.spyOn(api, 'sendChat').mockImplementation(async (id, request) => {
+      conversation = { id, busy: false, turns: [{ id: request.id, model: request.model, prompt: request.prompt,
+        answer: '', reasoning: '', attachments: [], state: 'complete', results: [{ kind: 'image', assets: [{ b64_json: 'abc' }] }] }] }
+      return conversation
     })
-    vi.stubGlobal('fetch', fetchMock)
+    vi.spyOn(api, 'getChat').mockImplementation(async () => conversation)
     stubObjectUrls()
     const view = renderChat('/chat?model=image-model&operation=image-edit')
     await screen.findByText('image-model')
@@ -81,11 +88,13 @@ describe('chat provider flows', () => {
     fireEvent.click(send)
     await screen.findByAltText('Результат 1')
 
-    const request = fetchMock.mock.calls.find(([input]) => String(input).endsWith('/api/proxy/images/edits'))
-    expect(request).toBeDefined()
-    const body = request?.[1]?.body as FormData
-    expect((body.get('image') as File).name).toBe('source.png')
-    expect((body.get('mask') as File).name).toBe('mask.png')
+    const request = sendChat.mock.calls[0][1]
+    expect(request.image_names).toEqual(['source.png', 'mask.png'])
+    expect(request.content).toEqual([
+      { type: 'text', text: 'Измени фон' },
+      { type: 'image_url', image_url: { url: 'data:image/png;base64,aW1hZ2U=' } },
+      { type: 'image_url', image_url: { url: 'data:image/png;base64,bWFzaw==' } },
+    ])
   })
 
   it('downloads a displayed image without calling a generation endpoint again', async () => {
@@ -105,7 +114,7 @@ describe('chat provider flows', () => {
     stubObjectUrls()
     vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined)
     render(<ChatMediaResult result={{ kind: 'video', id: 'video-1', url: 'blob:video', downloadUrl: 'blob:video' }} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Скачать' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Скачать видео' }))
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('blob:video', { credentials: 'same-origin' }))
     expect(fetchMock.mock.calls.some(([input]) => String(input).includes('/videos'))).toBe(false)
   })

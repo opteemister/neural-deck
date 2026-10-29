@@ -187,6 +187,26 @@ export interface SettingsData {
   openai_port: number
 }
 
+export interface ModelFileVersion {
+  size: number | null
+  file_date: string | null
+  hash: string | null
+  hash_kind: string | null
+}
+export interface ModelFileUpdate {
+  path: string
+  status: 'changed' | 'added' | 'removed' | 'local_divergence'
+  local: ModelFileVersion
+  remote: ModelFileVersion
+}
+export interface ModelFileUpdates {
+  model_id: string
+  repo_id: string
+  revision: string | null
+  checked_at: string | null
+  items: ModelFileUpdate[]
+}
+
 export interface LocalModelArtifact {
   id: string
   path: string
@@ -694,3 +714,6 @@ export interface TokenHistoryData {
   bucket_minutes: number
   source: string
 }
+
+export type ProxyModelChoice = { id: string; title: string; detail: string; target: AliasCandidateTarget }
+export type ProxyModelChoices = { items: ProxyModelChoice[]; diagnostics: Array<{ connection_id: string; code: string; message: string }> }

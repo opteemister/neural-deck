@@ -24,6 +24,7 @@ from ..schemas.models import DownloadRequest
 from ..schemas.profiles import ProfileData
 from ..system import collect_status, collect_system_data
 from .server import _decode_cursor, _encode_cursor, _value
+from .proxy_management import build_proxy_operations
 
 CAPABILITY_TYPE_NOTE = (
     "types описывает основную задачу и результат движка, а не все модальности входа. "
@@ -697,6 +698,15 @@ def build_operations(app: Any) -> dict[str, Any]:
         request = DownloadRequest(repo_id=repo_id, revision=revision, files=files, label=label)
         return _operation_summary(await app.state.runtime.model_catalogue.download(request))
 
+    async def get_model_file_updates(model_id: str) -> Any:
+        return await asyncio.to_thread(app.state.runtime.model_catalogue.file_updates, model_id)
+
+    async def update_model_files(model_id: str, files: list[str] | None) -> Any:
+        from ..schemas.models import ModelFileUpdateRequest
+
+        request = ModelFileUpdateRequest(files=files)
+        return _operation_summary(await app.state.runtime.model_catalogue.update_files(model_id, request.files))
+
     async def scan_local_models(verify_hashes: bool) -> Any:
         async def worker(operation: dict[str, Any]) -> None:
             items = await asyncio.to_thread(
@@ -1059,6 +1069,7 @@ def build_operations(app: Any) -> dict[str, Any]:
                 "kind": item.get("kind"),
                 "available": item.get("available"),
                 "candidate_profile_ids": item.get("candidate_profile_ids", []),
+                "candidate_ids": item.get("candidate_ids", []),
                 "candidate_count": len(item.get("candidates", [])),
                 "diagnostic_count": len(item.get("diagnostics", [])),
             }
@@ -1083,19 +1094,19 @@ def build_operations(app: Any) -> dict[str, Any]:
             raise AppError("route_not_found", "Маршрут прокси не найден", status_code=404)
         return [{"message": message} for message in route.get("diagnostics", [])]
 
-    async def set_proxy_route_order(route_name: str, profile_ids: list[str]) -> Any:
-        return await app.state.runtime.proxy_service.update_route_order(route_name, profile_ids)
+    async def set_proxy_route_order(route_name: str, profile_ids: list[str], candidate_ids: list[str] | None = None) -> Any:
+        return await app.state.runtime.proxy_service.update_route_order(route_name, profile_ids, candidate_ids)
 
     async def save_proxy_alias(
-        mode: str, name: str, profile_ids: list[str], previous_name: str | None
+        mode: str, name: str, profile_ids: list[str], previous_name: str | None, candidates: list[dict[str, str]] | None = None
     ) -> Any:
         if mode == "create":
-            return await app.state.runtime.proxy_service.create_alias(name, profile_ids)
+            return await app.state.runtime.proxy_service.create_alias(name, profile_ids, candidates=candidates)
         if mode == "update":
             if previous_name is None:
                 previous_name = name
             return await app.state.runtime.proxy_service.update_alias(
-                previous_name, name, profile_ids
+                previous_name, name, profile_ids, candidates=candidates
             )
         raise AppError("validation_error", "mode должен быть create или update", status_code=422)
 
@@ -1170,6 +1181,8 @@ def build_operations(app: Any) -> dict[str, Any]:
         "read_model_readme": read_model_readme,
         "list_hub_model_contents": list_hub_model_contents,
         "download_model": download_model,
+        "get_model_file_updates": get_model_file_updates,
+        "update_model_files": update_model_files,
         "scan_local_models": scan_local_models,
         "check_model_updates": check_model_updates,
         "list_model_updates": list_model_updates,
@@ -1192,6 +1205,7 @@ def build_operations(app: Any) -> dict[str, Any]:
         "set_proxy_route_order": set_proxy_route_order,
         "save_proxy_alias": save_proxy_alias,
         "delete_proxy_alias": delete_proxy_alias,
+        **build_proxy_operations(app),
         "get_settings": get_settings,
         "update_settings": update_settings,
     }

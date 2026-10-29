@@ -16,7 +16,7 @@ class Proxy:
         self.calls.append("models")
         return {"object": "list", "data": [{
             "id": "public-model", "object": "model", "created": 0,
-            "owned_by": "neural-deck", "engine_id": "vllm",
+            "owned_by": "neural-deck", "engine_id": "vllm", "types": ["text"],
         }]}
 
     async def forward(self, **kwargs):
@@ -34,7 +34,8 @@ def test_internal_and_external_routes_share_proxy_and_preserve_wire_responses(tm
     proxy = Proxy()
     internal = create_app(settings)
     internal.dependency_overrides[get_proxy_service] = lambda: proxy
-    external = create_proxy_app(SimpleNamespace(settings=settings, proxy_service=proxy))
+    internal.state.runtime = SimpleNamespace(settings=settings, proxy_service=proxy)
+    external = create_proxy_app(SimpleNamespace(settings=settings, proxy_service=proxy, comfy_service=None))
     external.dependency_overrides[get_proxy_service] = lambda: proxy
     internal_client = TestClient(internal, base_url="https://ai.example.com")
     external_client = TestClient(external, base_url="http://127.0.0.1:8080")

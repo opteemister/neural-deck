@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Plus } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
@@ -13,8 +13,9 @@ export const openAIConnectionsKey = ['openai-connections'] as const
 export const connectionModelsKey = (id: string) => ['openai-connection-models', id] as const
 
 function Connection({ connection, disabled, onEdit, onDelete }: { connection: OpenAIConnection; disabled: boolean; onEdit: () => void; onDelete: () => void }) {
+  const queryClient = useQueryClient()
   const models = useQuery({ queryKey: connectionModelsKey(connection.id), queryFn: () => api.getConnectionModels(connection.id, true), retry: false, staleTime: 30_000 })
-  return <ProxyConnectionRow name={connection.name} url={connection.base_url} pending={models.isFetching} available={models.isSuccess} detail={models.error?.message} disabled={disabled} onRefresh={() => { void models.refetch({ cancelRefetch: false }) }} refreshing={models.isFetching} onEdit={onEdit} onDelete={onDelete} />
+  return <ProxyConnectionRow name={connection.name} url={connection.base_url} pending={models.isFetching} available={models.isSuccess} detail={models.error?.message} disabled={disabled} onRefresh={() => { void models.refetch({ cancelRefetch: false }).then(() => queryClient.invalidateQueries({ queryKey: ['proxy-model-choices'] })) }} refreshing={models.isFetching} onEdit={onEdit} onDelete={onDelete} />
 }
 
 export function ProxyOpenAIConnections({ connections, onChanged, notify }: { connections: OpenAIConnection[]; onChanged: () => void; notify: (tone: 'success' | 'error', message: string) => void }) {

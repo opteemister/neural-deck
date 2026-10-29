@@ -45,4 +45,3 @@ export function writeImageSettings(settings: ImageSettingsByModel): boolean {
   try { window.localStorage.setItem(storageKey, JSON.stringify(settings)); return true }
   catch { return false }
 }
-

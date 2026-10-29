@@ -712,34 +712,7 @@ class ModelCatalogue:
                 full_snapshot=request.files is None,
                 revision_date=repo.revision_date,
             )
-            # A child process keeps the Hub library's blocking I/O off the API
-            # loop and lets operation cancellation stop all download threads.
-            descriptor, plan_path = tempfile.mkstemp(prefix="neural-deck-download-", suffix=".json")
-            try:
-                with os.fdopen(descriptor, "w", encoding="utf-8") as plan:
-                    json.dump({
-                        "repo_id": request.repo_id,
-                        "revision": repo.revision,
-                        "destination": str(destination),
-                        "files": [{"path": item.path, "size": item.size} for item in wanted],
-                    }, plan)
-
-                def report(line: str) -> None:
-                    operation["progress"] = json.loads(line)
-
-                code, _, stderr = await run_command(
-                    [sys.executable, "-m", "app.models.hf_download", plan_path],
-                    cwd=str(_DOWNLOAD_WORKING_DIR),
-                    timeout_seconds=7 * 24 * 3600,
-                    on_stdout_line=report,
-                )
-                operation["stderr"] = stderr
-                if code:
-                    raise RuntimeError(f"Загрузчик Hugging Face завершился с кодом {code}: {stderr}")
-                operation["stdout"] += "".join(f"downloaded {item.path}\n" for item in wanted)
-            finally:
-                await asyncio.to_thread(Path(plan_path).unlink, missing_ok=True)
-            operation["progress"]["current_file"] = None
+            await self._download_files(repo, wanted, destination, operation)
             # Re-read and merge once more because another quantization from
             # the same repository may have completed while this task ran.
             await self._merge_download_manifest(
@@ -756,6 +729,195 @@ class ModelCatalogue:
 
         operation = await self.operations.create("download", target_id, worker)
         operation["label"] = request.label or request.repo_id
+        return operation
+
+    async def _download_files(
+        self,
+        repo: HfRepoData,
+        wanted: list[HfFile],
+        destination: Path,
+        operation: dict[str, Any],
+        *,
+        force: bool = False,
+    ) -> None:
+        operation["progress"] = {
+            "files_total": len(wanted),
+            "files_completed": 0,
+            "bytes_total": sum(item.size or 0 for item in wanted),
+            "bytes_completed": 0,
+            "current_file": None,
+        }
+        descriptor, plan_path = tempfile.mkstemp(prefix="neural-deck-download-", suffix=".json")
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as plan:
+                json.dump(
+                    {
+                        "repo_id": repo.repo_id,
+                        "revision": repo.revision,
+                        "destination": str(destination),
+                        "force": force,
+                        "files": [{"path": item.path, "size": item.size} for item in wanted],
+                    },
+                    plan,
+                )
+
+            def report(line: str) -> None:
+                operation["progress"] = json.loads(line)
+
+            code, _, stderr = await run_command(
+                [sys.executable, "-m", "app.models.hf_download", plan_path],
+                cwd=str(_DOWNLOAD_WORKING_DIR),
+                timeout_seconds=7 * 24 * 3600,
+                on_stdout_line=report,
+            )
+            operation["stderr"] = stderr
+            if code:
+                raise RuntimeError(f"Загрузчик Hugging Face завершился с кодом {code}: {stderr}")
+            operation["stdout"] += "".join(f"downloaded {item.path}\n" for item in wanted)
+        finally:
+            await asyncio.to_thread(Path(plan_path).unlink, missing_ok=True)
+        operation["progress"]["current_file"] = None
+
+    def _update_model(self, model_id: str) -> tuple[LocalModel, dict[str, Any]]:
+        model = next((item for item in self.items() if item.id == model_id), None)
+        if model is None:
+            raise AppError("model_not_found", "Локальная модель не найдена", status_code=404)
+        manifest = _read_manifest(model.path)
+        if manifest is None:
+            raise AppError("model_not_tracked", "Для модели не сохранён источник HF", status_code=409)
+        return model, manifest
+
+    def file_updates(self, model_id: str) -> dict[str, Any]:
+        model, manifest = self._update_model(model_id)
+        entries = {item["path"]: item for item in manifest["files"]}
+        hashes = self.cached_file_hashes(model.path, list(entries))
+        changes = {item["path"]: item for item in manifest.get("changed_paths", [])}
+        for item in model.hf_match.local_differences:
+            changes.setdefault(item.path, {"path": item.path, "status": "local_divergence"})
+        rows = []
+        for relative, change in changes.items():
+            relative = ensure_safe_relative_path(relative)
+            entry = entries.get(relative, {})
+            cached = hashes.get(relative, {})
+            local = cached.get("local") or {}
+            downloaded = cached.get("downloaded") or {}
+            remote = {} if change["status"] == "removed" else entry.get("remote_snapshot") or {}
+            target = model.path / relative if model.path.is_dir() else model.path
+            try:
+                size = target.stat().st_size if target.is_file() else None
+            except OSError:
+                size = None
+            rows.append(
+                {
+                    "path": relative,
+                    "status": change["status"],
+                    "local": {
+                        "size": size,
+                        "file_date": change.get("downloaded_file_date") or downloaded.get("file_date"),
+                        "hash": local.get("sha256") or downloaded.get("hash"),
+                        "hash_kind": "sha256" if local.get("sha256") else downloaded.get("kind"),
+                    },
+                    "remote": {
+                        "size": remote.get("size"),
+                        "file_date": change.get("remote_file_date") or remote.get("file_date"),
+                        "hash": remote.get("hash") or remote.get("sha256") or remote.get("etag"),
+                        "hash_kind": remote.get("hash_kind"),
+                    },
+                }
+            )
+        check = manifest.get("remote_check") or {}
+        return {
+            "model_id": model.id,
+            "repo_id": manifest["repo_id"],
+            "revision": check.get("current_revision"),
+            "checked_at": check.get("last_successful_at"),
+            "items": rows,
+        }
+
+    async def update_files(self, model_id: str, files: list[str] | None) -> dict[str, Any]:
+        model, manifest = self._update_model(model_id)
+        changes = self.file_updates(model_id)
+        available = {item["path"] for item in changes["items"] if item["status"] != "removed"}
+        selected = list(dict.fromkeys(files)) if files is not None else sorted(available)
+        if not selected or not set(selected) <= available:
+            raise AppError(
+                "invalid_update_files", "Выберите изменённые файлы, доступные на HF", status_code=422
+            )
+        for relative in selected:
+            ensure_safe_relative_path(relative)
+        revision = changes["revision"]
+        if not revision:
+            raise AppError("remote_check_required", "Сначала выполните сверку с HF", status_code=409)
+
+        async def worker(operation: dict[str, Any]) -> None:
+            root = self.paths.models_root.resolve(strict=True)
+            model.path.resolve(strict=True).relative_to(root)
+            if model.path.is_symlink():
+                raise ValueError("Нельзя обновлять модель через symlink")
+            repo = await self.hf_repo(manifest["repo_id"], revision)
+            wanted = [item for item in repo.files if item.path in selected]
+            if len(wanted) != len(selected) or any(item.size is None for item in wanted):
+                raise RuntimeError("HF не вернул выбранные файлы или их размеры")
+            if model.kind == "directory":
+                destination = model.path
+                for item in wanted:
+                    _safe_hf_path(destination.resolve(strict=True), item.path)
+                await self._download_files(repo, wanted, destination, operation, force=True)
+            else:
+                # Keep a standalone model's name and location, even if its HF path differs.
+                if len(wanted) != 1 or selected != [manifest["files"][0]["path"]]:
+                    raise ValueError("Для отдельной модели выберите её единственный файл")
+                with tempfile.TemporaryDirectory(
+                    prefix=".nd-update-", dir=model.path.parent
+                ) as temporary:
+                    destination = Path(temporary)
+                    await self._download_files(repo, wanted, destination, operation, force=True)
+                    await asyncio.to_thread(os.replace, destination / wanted[0].path, model.path)
+
+            def commit() -> None:
+                # Preserve the baseline of every file that was not selected for update.
+                with self._manifest_lock:
+                    current = _read_manifest(model.path)
+                    if current is None:
+                        raise RuntimeError("Manifest модели недоступен после обновления")
+                    entries = {item["path"]: item for item in current["files"]}
+                    for item in wanted:
+                        entries[item.path] = {
+                            **item.model_dump(mode="json"),
+                            "downloaded_remote_hash": item.sha256 or item.etag,
+                            "downloaded_remote_hash_kind": "lfs_sha256"
+                            if item.sha256
+                            else item.hash_kind,
+                            "downloaded_file_date": item.file_date,
+                        }
+                    current["files"] = list(entries.values())
+                    sidecar = (
+                        model.path / SIDECAR_DIR
+                        if model.path.is_dir()
+                        else Path(f"{model.path}{SIDECAR_DIR}")
+                    )
+                    _atomic_write_text_sync(sidecar, yaml.safe_dump(current, sort_keys=False))
+                    _refresh_local_hash_cache(model.path)
+                    tree = {item.path: item.model_dump(mode="json") for item in repo.files}
+                    _apply_remote_snapshot(
+                        model.path,
+                        current,
+                        current.get("tracking_ref", "main"),
+                        repo.revision,
+                        repo.revision_date,
+                        tree,
+                        utc_now().isoformat(),
+                    )
+
+            operation["progress"]["current_file"] = "Проверяем файлы"
+            await asyncio.to_thread(commit)
+            self._items = await asyncio.to_thread(
+                lambda: [self._describe(item.path) for item in self.items()]
+            )
+            operation["checked_at"] = utc_now()
+
+        operation = await self.operations.create("download", f"hf-update:{model_id}", worker)
+        operation["label"] = f"Обновление {manifest['repo_id']}"
         return operation
 
     async def check_updates(self) -> list[LocalModel]:
@@ -1267,6 +1429,9 @@ def _model_directories(root: Path, directories: list[Path]) -> list[Path]:
             relative = path.relative_to(root)
         except ValueError:
             continue
+        # Hugging Face cache snapshots are separate revisions, not quant groups.
+        if path.name == "snapshots" and path.parent.name.startswith("models--"):
+            continue
         if len(relative.parts) != 2 or not _contains_model_file(path):
             continue
         selected = [candidate for candidate in selected if not (path == candidate or path in candidate.parents)]
@@ -1574,7 +1739,10 @@ def _refresh_manifest_hashes(path: Path) -> None:
     updated = dict(manifest)
     updated.update({"schema_version": 2, "repo_id": repo_id, "revision": revision, "files": refreshed})
     try:
-        _atomic_write_text_sync(path / SIDECAR_DIR, yaml.safe_dump(updated, sort_keys=False))
+        _atomic_write_text_sync(
+            path / SIDECAR_DIR if path.is_dir() else Path(f"{path}{SIDECAR_DIR}"),
+            yaml.safe_dump(updated, sort_keys=False),
+        )
     except OSError:
         return
 
@@ -1941,7 +2109,10 @@ def _apply_remote_snapshot(
         if repo_date:
             updated["remote_check"]["repository_date"] = repo_date
         updated["files"] = files
-        _atomic_write_text_sync(path / SIDECAR_DIR, yaml.safe_dump(updated, sort_keys=False))
+        _atomic_write_text_sync(
+            path / SIDECAR_DIR if path.is_dir() else Path(f"{path}{SIDECAR_DIR}"),
+            yaml.safe_dump(updated, sort_keys=False),
+        )
 
 
 def _record_remote_failure(path: Path, manifest: dict[str, Any] | None, attempted_at: str, error: str) -> None:
@@ -1961,7 +2132,10 @@ def _record_remote_failure(path: Path, manifest: dict[str, Any] | None, attempte
             "stale": True,
         }
         try:
-            _atomic_write_text_sync(path / SIDECAR_DIR, yaml.safe_dump(updated, sort_keys=False))
+            _atomic_write_text_sync(
+            path / SIDECAR_DIR if path.is_dir() else Path(f"{path}{SIDECAR_DIR}"),
+            yaml.safe_dump(updated, sort_keys=False),
+        )
         except OSError:
             return
 

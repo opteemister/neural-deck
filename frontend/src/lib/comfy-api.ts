@@ -34,6 +34,9 @@ export type ComfyConfig = {
   models: Record<string, ComfyModel>
 }
 
+export type ComfySourceInput = { name: string; base_url: string }
+export type MediaAliasInput = { name: string; type: ComfyMediaType; source: string; workflows: Partial<Record<ComfyOperation, string>>; max_megapixels?: number; max_resolution?: number; max_seconds?: number }
+
 export type WorkflowItem = string | { path?: string; name?: string; [key: string]: unknown }
 export type WorkflowListing = {
   items: WorkflowItem[]
@@ -75,6 +78,10 @@ async function comfyRequest<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const comfyApi = {
+  saveSource: (source: ComfySourceInput, previousName?: string) => comfyRequest<ComfyConfig>(`/api/v1/proxy/comfyui/sources${previousName ? `/${encodeURIComponent(previousName)}` : ''}`, { method: previousName ? 'PATCH' : 'POST', body: JSON.stringify(source) }),
+  deleteSource: (name: string) => comfyRequest<ComfyConfig>(`/api/v1/proxy/comfyui/sources/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+  saveAlias: (alias: MediaAliasInput, previousName?: string) => comfyRequest<ComfyConfig>(`/api/v1/proxy/comfyui/aliases${previousName ? `/${encodeURIComponent(previousName)}` : ''}`, { method: previousName ? 'PATCH' : 'POST', body: JSON.stringify(alias) }),
+  deleteAlias: (name: string) => comfyRequest<ComfyConfig>(`/api/v1/proxy/comfyui/aliases/${encodeURIComponent(name)}`, { method: 'DELETE' }),
   validateWorkflow: (source: string, path: string) => comfyRequest<{ path: string; usable: boolean | null; message?: string }>(`/api/v1/proxy/comfyui/sources/${encodeURIComponent(source)}/workflows/validate?${new URLSearchParams({ path })}`),
   getStatus: (source: string) => comfyRequest<{ available: boolean }>(`/api/v1/proxy/comfyui/sources/${encodeURIComponent(source)}/status`),
   getConfig: () => comfyRequest<ComfyConfig>('/api/v1/proxy/comfyui'),

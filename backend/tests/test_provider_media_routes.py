@@ -5,6 +5,7 @@ import warnings
 from types import SimpleNamespace
 from typing import Any
 
+from app.proxy.comfy_provider import ComfyProviderService
 from app.config import Settings
 from app.errors import (
     AppError,
@@ -33,6 +34,9 @@ class FakeImages:
 
 
 class FakeComfy:
+    # Exercise the production catalogue merger over stubbed ComfyUI I/O.
+    extend_models = ComfyProviderService.extend_models
+
     def __init__(self, settings: dict[str, Any]) -> None:
         self.settings = copy.deepcopy(settings)
         self.full_config: dict[str, Any] = {

@@ -68,7 +68,7 @@ describe('Dashboard workflow', () => {
     const tab = await screen.findByRole('tab', { name: /stopped-qwen/ })
     expect(tab).toHaveAttribute('aria-selected', 'true')
     expect(tab.querySelector('[data-run-status="inactive"]')).toBeInTheDocument()
-    expect(await screen.findByText('сохранённые метрики за сегодня')).toBeInTheDocument()
+    expect(await screen.findByText(/сохранённые метрики за сегодня/)).toBeInTheDocument()
     await waitFor(() => expect(fetchMock.mock.calls.some(([input]) => String(input).includes('profile_name=stopped-qwen'))).toBe(true))
   })
 
@@ -192,13 +192,13 @@ describe('Dashboard workflow', () => {
     render(<QueryClientProvider client={dashboardClient()}><MemoryRouter initialEntries={['/?instance=managed%2Fselected%2F2-20']}><DashboardPage /><LocationProbe /></MemoryRouter></QueryClientProvider>)
     expect(await screen.findByText('selected-model')).toBeInTheDocument()
     expect(screen.getByTestId('location-state')).toHaveTextContent('instance=managed%2Fselected%2F2-20')
-    const decode = screen.getByText('Decode').parentElement!
-    expect(within(decode).getByText('—')).toBeInTheDocument()
+    const decode = screen.getByText('Decode', { selector: 'p' }).closest<HTMLElement>('[data-metric]')!
+    expect(within(decode).getByText('0', { selector: 'p.text-xl', exact: false })).toBeInTheDocument()
     expect(within(decode).queryByText('12')).not.toBeInTheDocument()
-    const queue = screen.getByText('Queue').parentElement!
-    expect(within(queue).getByText('—')).toBeInTheDocument()
-    expect(within(queue).getByText('ожидание —')).toBeInTheDocument()
-    expect(within(screen.getByText('Requests', { selector: 'p' }).parentElement!).getByText('0')).toBeInTheDocument()
+    const queue = screen.getByText('Queue', { selector: 'p' }).closest<HTMLElement>('[data-metric]')!
+    expect(within(queue).getByText('0', { selector: 'p.text-xl', exact: false })).toBeInTheDocument()
+    expect(within(queue).getByText('ожидание 0 ms')).toBeInTheDocument()
+    expect(within(screen.getByText('Requests', { selector: 'p' }).closest<HTMLElement>('[data-metric]')!).getByText('0')).toBeInTheDocument()
     expect(screen.getAllByText('недоступно').length).toBeGreaterThan(0)
     expect(screen.queryByText('Статистика токенов')).not.toBeInTheDocument()
     const fullLogs = screen.getByRole('button', { name: 'Полные логи' })

@@ -5,6 +5,7 @@ from threading import Event
 
 import pytest
 from app.config import Settings
+from app.db import migrate_database
 from app.engines.service import EngineService
 from app.main import create_app
 from app.models.catalogue import ModelCatalogue
@@ -25,8 +26,8 @@ def test_lifespan_composes_one_runtime_and_runs_discovery(
     calls: list[str] = []
 
     async def fake_migrate(settings: Settings, paths: object) -> None:
-        del settings, paths
         calls.append("migrate")
+        await migrate_database(settings, paths)
 
     def fake_engine_scan(self: EngineService) -> None:
         del self
@@ -55,7 +56,7 @@ def test_lifespan_composes_one_runtime_and_runs_discovery(
     monkeypatch.setattr(ProcessManager, "refresh", fake_process_refresh)
     monkeypatch.setattr(ProfileService, "autostart_once", fake_autostart)
 
-    settings = Settings(data_root=tmp_path / "data", host="127.0.0.1", port=8080)
+    settings = Settings(data_root=tmp_path / "data", host="127.0.0.1", port=3000, openai_port=8080)
     app = create_app(settings, frontend_dist=tmp_path / "missing-dist")
     with TestClient(app) as client:
         runtime = app.state.runtime
@@ -65,7 +66,7 @@ def test_lifespan_composes_one_runtime_and_runs_discovery(
         assert runtime.process_manager is app.state.process_manager
         client.portal.call(wait_for_startup_scan, app)
 
-    assert calls == ["migrate", "engines", "models", "processes", "autostart"]
+    assert calls == ["migrate", "engines", "processes", "autostart", "models"]
 
 
 @pytest.mark.version_zero
@@ -74,7 +75,7 @@ def test_failed_optional_scanners_are_reported_as_degraded(
 ) -> None:
     # spec: version-zero
     async def fake_migrate(settings: Settings, paths: object) -> None:
-        del settings, paths
+        await migrate_database(settings, paths)
 
     def fail_engine_scan(self: EngineService) -> None:
         del self
@@ -95,7 +96,7 @@ def test_failed_optional_scanners_are_reported_as_degraded(
     monkeypatch.setattr(ModelCatalogue, "scan", fail_model_scan)
     monkeypatch.setattr(ProcessManager, "refresh", fake_process_refresh)
 
-    settings = Settings(data_root=tmp_path / "data", host="127.0.0.1", port=8080)
+    settings = Settings(data_root=tmp_path / "data", host="127.0.0.1", port=3000, openai_port=8080)
     app = create_app(settings, frontend_dist=tmp_path / "missing-dist")
     with TestClient(app) as client:
         client.portal.call(wait_for_startup_scan, app)
@@ -122,7 +123,7 @@ def test_slow_startup_scan_does_not_block_health_or_trigger_another_scan(
 
     monkeypatch.setattr(EngineService, "scan", lambda self: None)
     monkeypatch.setattr(ModelCatalogue, "scan", slow_scan)
-    settings = Settings(data_root=tmp_path / "data", host="127.0.0.1", port=8080)
+    settings = Settings(data_root=tmp_path / "data", host="127.0.0.1", port=3000, openai_port=8080)
     app = create_app(settings, frontend_dist=tmp_path / "missing-dist")
 
     with TestClient(app) as client:
@@ -146,7 +147,7 @@ def test_frontend_fallback_serves_assets_and_preserves_api_prefixes(tmp_path: Pa
     (dist / "assets").mkdir(parents=True)
     (dist / "index.html").write_text("<html>neural-deck</html>", encoding="utf-8")
     (dist / "assets" / "app.js").write_text("console.log('ok')", encoding="utf-8")
-    settings = Settings(data_root=tmp_path / "data", host="127.0.0.1", port=8080)
+    settings = Settings(data_root=tmp_path / "data", host="127.0.0.1", port=3000, openai_port=8080)
     app = create_app(settings, frontend_dist=dist)
 
     with TestClient(app) as client:
@@ -165,7 +166,7 @@ def test_composed_services_and_mcp_mount_are_available_before_spa_fallback(
     tmp_path: Path,
 ) -> None:
     # spec: version-zero
-    settings = Settings(data_root=tmp_path / "data", host="127.0.0.1", port=8080)
+    settings = Settings(data_root=tmp_path / "data", host="127.0.0.1", port=3000, openai_port=8080)
     app = create_app(settings, frontend_dist=tmp_path / "missing-dist")
 
     with TestClient(app) as client:
@@ -174,7 +175,8 @@ def test_composed_services_and_mcp_mount_are_available_before_spa_fallback(
         assert app.state.proxy_service is runtime.proxy_service
         assert app.state.metrics_service is runtime.metrics_service
 
-        assert client.get("/v1/models").status_code == 200
+        assert client.get("/api/proxy/models").status_code == 200
+        assert client.get("/v1/models").status_code == 404
         assert client.get("/api/v1/token-stats").status_code == 200
 
         api_paths = app.openapi()["paths"]

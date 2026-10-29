@@ -355,7 +355,7 @@ class ProxyService:
         self._validate_remote_alias(remote, profile_ids)
         self._validate_candidate_targets(candidates, profile_ids, remote)
         await asyncio.to_thread(self.route_manager.create_alias, name, profile_ids, remote, candidates)
-        return await self._route_by_name(name)
+        return await self.get_route(name)
 
     async def update_alias(
         self, current_name: str, name: str, profile_ids: list[str], remote: dict[str, str] | None = None, candidates: list[dict[str, str]] | None = None
@@ -365,7 +365,7 @@ class ProxyService:
         self._validate_remote_alias(remote, profile_ids)
         self._validate_candidate_targets(candidates, profile_ids, remote)
         await asyncio.to_thread(self.route_manager.update_alias, current_name, name, profile_ids, remote, candidates)
-        return await self._route_by_name(name)
+        return await self.get_route(name)
 
     async def delete_alias(self, name: str) -> None:
         if self.route_manager is None:
@@ -378,7 +378,7 @@ class ProxyService:
         if candidate_ids is not None:
             if profile_ids or len(candidate_ids) != len(set(candidate_ids)):
                 raise AppError("route_membership_invalid", "Неверный список кандидатов", status_code=422)
-            route = await self._route_by_name(name)
+            route = await self.get_route(name)
             if route["kind"] == "auto":
                 await asyncio.to_thread(self.route_manager.update_order, name, candidate_ids)
             else:
@@ -390,9 +390,9 @@ class ProxyService:
                 await asyncio.to_thread(self.route_manager.update_candidates, name, targets)
         else:
             await asyncio.to_thread(self.route_manager.update_order, name, profile_ids)
-        return await self._route_by_name(name)
+        return await self.get_route(name)
 
-    async def _route_by_name(self, name: str) -> dict[str, Any]:
+    async def get_route(self, name: str) -> dict[str, Any]:
         _, _, _, routes = await self._refresh_route_catalog()
         for route in routes:
             if route.name == name:
@@ -403,6 +403,49 @@ class ProxyService:
         if self._connections is None:
             raise AppError("route_unavailable", "Управление подключениями недоступно", status_code=503)
         return self._connections
+
+    def delete_connection(self, connection_id: str) -> None:
+        config = self.route_manager.config.load() if self.route_manager else {}
+        targets = list(config.get("remote_aliases", {}).values()) + [
+            target for candidates in config.get("alias_candidates", {}).values() for target in candidates
+        ]
+        if any(target.get("connection_id") == connection_id for target in targets):
+            raise AppError("connection_in_use", "Сначала уберите подключение из его алиасов", status_code=409)
+        self.connections().delete(connection_id)
+
+    async def model_choices(self, route_name: str | None = None, refresh: bool = False) -> dict[str, Any]:
+        if self.route_manager is None:
+            raise AppError("route_unavailable", "Управление маршрутами недоступно", status_code=503)
+        profiles = await asyncio.to_thread(self.route_manager.profiles)
+        items = [{"id": p.profile_id or p.name, "title": p.model_name, "detail": p.name,
+                  "target": {"profile_id": p.profile_id or p.name}} for p in profiles]
+        connections = self.connections().list()
+
+        async def catalogue(connection):
+            try:
+                return connection, await self.connections().models(connection["id"], refresh=refresh), None
+            except AppError as exc:
+                return connection, [], {"connection_id": connection["id"], "code": exc.code, "message": exc.message}
+
+        diagnostics = []
+        for connection, models, error in await asyncio.gather(*(catalogue(c) for c in connections)):
+            if error is not None:
+                diagnostics.append(error)
+            for model in models:
+                target = {"connection_id": connection["id"], "model": model["id"]}
+                items.append({"id": self.route_manager.candidate_id(target), "title": model["id"], "detail": connection["name"], "target": target})
+        if route_name is not None:
+            route = await self.get_route(route_name)
+            known = {item["id"] for item in items}
+            for candidate in route["candidates"]:
+                if candidate["id"] in known:
+                    continue
+                target = ({"connection_id": candidate["connection_id"], "model": candidate["upstream_model"]}
+                          if candidate["connection_id"] else {"profile_id": candidate["profile_id"]})
+                items.append({"id": candidate["id"], "title": candidate["upstream_model"] or candidate["profile_name"] or candidate["id"],
+                              "detail": candidate["connection_name"] or candidate["profile_name"] or "Недоступен", "target": target})
+        items.sort(key=lambda item: (item["title"], item["detail"]))
+        return {"items": items, "diagnostics": diagnostics}
 
     def _validate_remote_alias(self, remote: dict[str, str] | None, profile_ids: list[str]) -> None:
         if remote is None:

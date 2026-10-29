@@ -178,6 +178,8 @@ async def test_cancelled_install_writes_broken_marker_and_rescans(
     entered = asyncio.Event()
 
     async def blocked_command(*_args, **_kwargs):
+        # The installer creates its target before a later command is cancelled.
+        (paths.venvs_dir / "cancelled").mkdir(exist_ok=True)
         entered.set()
         await asyncio.Event().wait()
 
@@ -245,6 +247,7 @@ async def test_failed_install_rescans_and_keeps_broken_candidate(
     service = EngineService(settings, paths)
 
     async def failed_command(*_args, **_kwargs):
+        (paths.venvs_dir / "failed-install").mkdir()
         return 1, "", "install failed"
 
     monkeypatch.setattr(service_module, "run_command", failed_command)

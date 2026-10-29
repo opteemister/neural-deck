@@ -8,7 +8,7 @@ import { Input } from '@/components/ui/input'
 import { ProxyConnectionRow } from '@/components/proxy-connection-row'
 import { Label } from '@/components/ui/label'
 import { Select } from '@/components/ui/select'
-import { comfyApi, type ComfyConfig, type ComfyMediaType, type ComfyModel, type ComfyOperation, type ComfySource } from '@/lib/comfy-api'
+import { comfyApi, type ComfyConfig, type ComfyMediaType, type ComfyModel, type ComfyOperation, type ComfySource, type MediaAliasInput } from '@/lib/comfy-api'
 
 const aliasPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
 const operationLabels: Record<ComfyOperation, string> = { generate: 'Generate', edit: 'Edit', edit_masked: 'Mask', variations: 'Variations' }
@@ -20,8 +20,8 @@ function useConnection(source: string) {
   return useQuery({ queryKey: ['proxy-comfy-status', source], queryFn: () => comfyApi.getStatus(source), retry: false, staleTime: 10_000, refetchInterval: 15_000 })
 }
 
-export function ProxyComfyConfig({ config, mediaType, onSave, notify }: {
-  config: ComfyConfig; mediaType: ComfyMediaType; onSave: (next: ComfyConfig) => Promise<unknown>; notify: Notice
+export function ProxyComfyConfig({ config, mediaType, onSaved, notify }: {
+  config: ComfyConfig; mediaType: ComfyMediaType; onSaved: (next: ComfyConfig) => void; notify: Notice
 }) {
   const [sourceDraft, setSourceDraft] = useState<SourceDraft | null>(null)
   const [aliasDraft, setAliasDraft] = useState<AliasDraft | null>(null)
@@ -30,9 +30,9 @@ export function ProxyComfyConfig({ config, mediaType, onSave, notify }: {
   const sources = Object.entries(config.sources).sort(([left], [right]) => Number(right === 'local') - Number(left === 'local'))
   const aliases = Object.entries(config.models).filter(([, model]) => model.type === mediaType)
 
-  async function persist(next: ComfyConfig) {
+  async function persist(action: () => Promise<ComfyConfig>) {
     setSaving(true)
-    try { await onSave(next); return true }
+    try { onSaved(await action()); return true }
     catch (error) { notify('error', error instanceof Error ? error.message : 'Не удалось сохранить изменения.'); return false }
     finally { setSaving(false) }
   }
@@ -53,19 +53,11 @@ export function ProxyComfyConfig({ config, mediaType, onSave, notify }: {
       url = new URL(rawUrl.trim())
       if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error()
     } catch { return notify('error', 'Укажите полный HTTP/HTTPS адрес, например http://192.168.1.10:8188.') }
-    const nextSources = { ...config.sources }
-    const previous = original ? config.sources[original] : undefined
-    if (original) delete nextSources[original]
-    nextSources[name] = { ...previous, base_url: url.toString().replace(/\/$/, '') }
-    const models = Object.fromEntries(Object.entries(config.models).map(([alias, model]) => [alias, original && model.source === original ? { ...model, source: name } : model]))
-    if (await persist({ sources: nextSources, models })) setSourceDraft(null)
+    if (await persist(() => comfyApi.saveSource({ name, base_url: url.toString().replace(/\/$/, '') }, original))) setSourceDraft(null)
   }
 
   async function removeSource(name: string) {
-    if (Object.values(config.models).some((model) => model.source === name)) return notify('error', 'Подключение используется алиасом. Сначала выберите для него другое подключение.')
-    const nextSources = { ...config.sources }
-    delete nextSources[name]
-    await persist({ ...config, sources: nextSources })
+    await persist(() => comfyApi.deleteSource(name))
   }
 
   async function saveAlias(event: FormEvent) {
@@ -81,35 +73,19 @@ export function ProxyComfyConfig({ config, mediaType, onSave, notify }: {
     const maxSeconds = Number(aliasDraft.maxSeconds)
     if (mediaType === 'video' && (!Number.isInteger(maxResolution) || maxResolution < 32 || maxResolution > 16384)) return notify('error', 'Укажите максимальное разрешение от 32 до 16384p.')
     if (mediaType === 'video' && (!Number.isInteger(maxSeconds) || maxSeconds < 1 || maxSeconds > 600)) return notify('error', 'Укажите максимальную длительность от 1 до 600 секунд.')
-    const models = { ...config.models }
-    if (aliasDraft.original) delete models[aliasDraft.original]
-    models[name] = { ...aliasDraft.model, ...(mediaType === 'image' ? { max_megapixels: megapixels } : { max_resolution: maxResolution, max_seconds: maxSeconds }) }
-    setSaving(true)
-    try {
-      const paths = [...new Set(Object.values(aliasDraft.model.workflows).filter((path): path is string => typeof path === 'string' && Boolean(path)))]
-      const checks = await Promise.all(paths.map((path) => comfyApi.validateWorkflow(aliasDraft.model.source, path)))
-      const invalid = checks.find((check) => check.usable === false)
-      if (invalid) {
-        const operation = operations.find((operation) => aliasDraft.model.workflows[operation] === invalid.path)
-        return notify('error', (operation ? operationLabels[operation] + ': ' : '') + (invalid.message || 'Выберите API-экспорт workflow из ComfyUI.'))
-      }
-      if (await persist({ ...config, models })) setAliasDraft(null)
-    } catch (error) { notify('error', error instanceof Error ? error.message : 'Не удалось проверить workflow.') }
-    finally { setSaving(false) }
+    const alias: MediaAliasInput = { name, type: mediaType, source: aliasDraft.model.source,
+      workflows: Object.fromEntries(Object.entries(aliasDraft.model.workflows).filter(([, path]) => typeof path === 'string' && path)),
+      ...(mediaType === 'image' ? { max_megapixels: megapixels } : { max_resolution: maxResolution, max_seconds: maxSeconds }) }
+    if (await persist(() => comfyApi.saveAlias(alias, aliasDraft.original))) setAliasDraft(null)
   }
 
   function setWorkflow(operation: ComfyOperation, path: string) {
     if (!aliasDraft) return
     const model = aliasDraft.model
     const workflows = { ...model.workflows }
-    const bindings = { ...model.bindings }
     if (path) workflows[operation] = path
     else delete workflows[operation]
-    // Explicit legacy bindings belong to the original saved graph.
-    const original = aliasDraft.original ? config.models[aliasDraft.original] : undefined
-    if (original?.source === model.source && original.workflows[operation] === path && original.bindings?.[operation]) bindings[operation] = original.bindings[operation]
-    else if (path !== model.workflows[operation]) delete bindings[operation]
-    setAliasDraft({ ...aliasDraft, model: { ...model, workflows, ...(model.bindings ? { bindings } : {}) } })
+    setAliasDraft({ ...aliasDraft, model: { ...model, workflows } })
   }
 
   return <div className="space-y-6">
@@ -120,7 +96,7 @@ export function ProxyComfyConfig({ config, mediaType, onSave, notify }: {
     <section aria-label={mediaType === 'image' ? 'Алиасы изображений' : 'Алиасы видео'}>
       <div className="mb-3 flex items-center justify-between gap-3"><h2 className="text-sm font-medium">Алиасы</h2><Button variant="primary" size="sm" disabled={saving || !sources.length} onClick={() => setAliasDraft({ name: '', megapixels: '4', maxResolution: '768', maxSeconds: '15', model: { source: sources[0]?.[0] ?? '', type: mediaType, workflows: {} } })}><Plus className="size-3.5" />Новый алиас</Button></div>
       {!aliases.length && <p className="py-6 text-center text-xs text-muted-foreground">Алиасов пока нет</p>}
-      <div className="space-y-3">{aliases.map(([alias, model]) => <AliasRow key={alias} alias={alias} model={model} disabled={saving} onEdit={() => setAliasDraft({ original: alias, name: alias, megapixels: String(model.max_megapixels ?? 4), maxResolution: String(model.max_resolution ?? 768), maxSeconds: String(model.max_seconds ?? 15), model: { ...model, workflows: { ...model.workflows } } })} onDelete={() => { const models = { ...config.models }; delete models[alias]; void persist({ ...config, models }) }} />)}</div>
+      <div className="space-y-3">{aliases.map(([alias, model]) => <AliasRow key={alias} alias={alias} model={model} disabled={saving} onEdit={() => setAliasDraft({ original: alias, name: alias, megapixels: String(model.max_megapixels ?? 4), maxResolution: String(model.max_resolution ?? 768), maxSeconds: String(model.max_seconds ?? 15), model: { ...model, workflows: { ...model.workflows } } })} onDelete={() => void persist(() => comfyApi.deleteAlias(alias))} />)}</div>
     </section>
     <Dialog open={sourceDraft !== null} title={sourceDraft?.original ? 'Изменить подключение' : 'Новое подключение'} dismissible={!saving} onOpenChange={(open) => { if (!open && !saving) setSourceDraft(null) }}>
       {sourceDraft && <form className="space-y-5 p-4" onSubmit={(event) => void saveSource(event)}>

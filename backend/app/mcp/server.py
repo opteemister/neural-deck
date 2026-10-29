@@ -18,13 +18,17 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
+
+from pydantic import Field
 from uuid import uuid4
 
 from ..chat.service import ChatTurnRequest
 from ..errors import AppError
 from ..schemas.engines import EngineDefinition, InstallationCreate
 from ..schemas.profiles import ProfileData
+from ..schemas.proxy_management import CandidateTarget
+from .proxy_management import Cursor, PageSize, register_proxy_tools
 
 AsyncOperation = Callable[..., Awaitable[Any]]
 
@@ -854,6 +858,22 @@ def create_mcp_server(
         )
 
     @server.tool(
+        name="nd_get_model_file_updates",
+        description="Показать изменённые файлы локальной модели, версии и хэши из сохранённой сверки HF.",
+        annotations=readonly,
+    )
+    async def nd_get_model_file_updates(model_id: str) -> Any:
+        return await invoke(_operation(dependencies, "get_model_file_updates"), model_id)
+
+    @server.tool(
+        name="nd_update_model_files",
+        description="Обновить выбранные файлы локальной модели из HF. Без files — все изменённые.",
+        annotations=destructive,
+    )
+    async def nd_update_model_files(model_id: str, files: list[str] | None = None) -> Any:
+        return await invoke(_operation(dependencies, "update_model_files"), model_id, files)
+
+    @server.tool(
         name="nd_scan_local_models",
         description="Сканировать локальный каталог моделей.",
         annotations=mutation,
@@ -1081,7 +1101,7 @@ def create_mcp_server(
         description="Постраничный список маршрутов и алиасов прокси.",
         annotations=readonly,
     )
-    async def nd_list_proxy_routes(page_size: int | None = None, cursor: str | None = None) -> Any:
+    async def nd_list_proxy_routes(page_size: PageSize = None, cursor: Cursor = None) -> Any:
         return await invoke(
             _paged_operation(dependencies, "list_proxy_routes", page_size, cursor, cursor_snapshots)
         )
@@ -1092,7 +1112,7 @@ def create_mcp_server(
         annotations=readonly,
     )
     async def nd_list_proxy_candidates(
-        route_name: str, page_size: int | None = None, cursor: str | None = None
+        route_name: Annotated[str, Field(description="Имя маршрута из nd_list_proxy_routes.")], page_size: PageSize = None, cursor: Cursor = None
     ) -> Any:
         return await invoke(
             _paged_operation(
@@ -1107,7 +1127,7 @@ def create_mcp_server(
         annotations=readonly,
     )
     async def nd_read_proxy_diagnostics(
-        route_name: str, page_size: int | None = None, cursor: str | None = None
+        route_name: Annotated[str, Field(description="Имя маршрута из nd_list_proxy_routes.")], page_size: PageSize = None, cursor: Cursor = None
     ) -> Any:
         return await invoke(
             _paged_operation(
@@ -1118,33 +1138,43 @@ def create_mcp_server(
 
     @server.tool(
         name="nd_set_proxy_route_order",
-        description="Изменить порядок профилей маршрута.",
+        description="Задать порядок и состав кандидатов маршрута. candidate_ids поддерживает локальные и OpenAI-модели; для auto требуется полный состав.",
         annotations=mutation,
     )
-    async def nd_set_proxy_route_order(route_name: str, profile_ids: list[str]) -> Any:
+    async def nd_set_proxy_route_order(
+        route_name: Annotated[str, Field(description="Имя маршрута из nd_list_proxy_routes.")],
+        profile_ids: Annotated[list[str] | None, Field(description="Упорядоченные ID локальных профилей; используйте либо это поле, либо candidate_ids.")] = None,
+        candidate_ids: Annotated[list[str] | None, Field(description="Упорядоченные ID из nd_get_proxy_route; пустой список очищает ручной алиас.")] = None,
+    ) -> Any:
+        if (profile_ids is None) == (candidate_ids is None):
+            async def invalid():
+                raise AppError("validation_error", "Укажите profile_ids либо candidate_ids", status_code=422)
+            return await invoke(invalid)
         return await invoke(
-            _operation(dependencies, "set_proxy_route_order"), route_name, profile_ids
+            _operation(dependencies, "set_proxy_route_order"), route_name, profile_ids or [], candidate_ids
         )
 
     @server.tool(
         name="nd_save_proxy_alias",
-        description="Создать или изменить алиас прокси.",
+        description="Создать или переименовать текстовый алиас и заменить полный список его кандидатов. Разрешены локальные и OpenAI-модели, включая пустой состав.",
         annotations=mutation,
     )
     async def nd_save_proxy_alias(
-        mode: Literal["create", "update"],
-        name: str,
-        profile_ids: list[str],
-        previous_name: str | None = None,
+        mode: Annotated[Literal["create", "update"], Field(description="Создать новый алиас или изменить существующий.")],
+        name: Annotated[str, Field(description="Публичное имя алиаса, уникальное среди всех моделей.")],
+        profile_ids: Annotated[list[str] | None, Field(description="Локальные профили в порядке выбора; для смешанного списка используйте candidates.")] = None,
+        previous_name: Annotated[str | None, Field(description="Имя до переименования; для update без переименования можно пропустить.")] = None,
+        candidates: Annotated[list[CandidateTarget] | None, Field(description="Полный упорядоченный список target из nd_list_proxy_model_choices; [] создаёт пустой алиас.")] = None,
     ) -> Any:
         return await invoke(
-            _operation(dependencies, "save_proxy_alias"), mode, name, profile_ids, previous_name
+            _operation(dependencies, "save_proxy_alias"), mode, name, profile_ids or [], previous_name,
+            [target.model_dump(exclude_none=True) for target in candidates] if candidates is not None else None,
         )
 
     @server.tool(
         name="nd_delete_proxy_alias", description="Удалить алиас прокси.", annotations=destructive
     )
-    async def nd_delete_proxy_alias(name: str) -> Any:
+    async def nd_delete_proxy_alias(name: Annotated[str, Field(description="Имя ручного текстового алиаса из nd_list_proxy_routes.")]) -> Any:
         return await invoke(_operation(dependencies, "delete_proxy_alias"), name)
 
     @server.tool(
@@ -1163,6 +1193,13 @@ def create_mcp_server(
     async def nd_update_settings(models_root: str) -> Any:
         return await invoke(_operation(dependencies, "update_settings"), models_root)
 
+    async def call_proxy(operation_name, *args):
+        return await invoke(_operation(dependencies, operation_name), *args)
+
+    async def paged_proxy(operation_name, page_size, cursor, *args):
+        return await invoke(_paged_operation(dependencies, operation_name, page_size, cursor, cursor_snapshots), *args)
+
+    register_proxy_tools(server, call_proxy, paged_proxy, readonly, mutation, destructive)
     return server
 
 

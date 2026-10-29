@@ -1,5 +1,5 @@
 import { useMemo, useState, type DragEvent } from 'react'
-import { useMutation, useQuery, useQueries, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useSearchParams } from 'react-router-dom'
 import { AlertTriangle, GripVertical, Pencil, Plus, RefreshCw, Trash2, X } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
@@ -8,14 +8,14 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Dialog } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { ProxyOpenAIConnections, openAIConnectionsKey, connectionModelsKey } from '@/components/proxy-openai-connections'
+import { ProxyOpenAIConnections, openAIConnectionsKey } from '@/components/proxy-openai-connections'
 import { PageHeader } from '@/components/page-header'
 import { QueryError, QueryLoading } from '@/components/query-state'
 import { NotificationToast } from '@/components/ui/notification-toast'
 import { RunTabs } from '@/components/ui/run-tabs'
 import { api, queryKeys } from '@/lib/api'
 import { comfyApi, comfyQueryKey, type ComfyConfig } from '@/lib/comfy-api'
-import type { ProxyRoute, ProxyRouteCandidate, AliasCandidateTarget } from '@/types/api'
+import type { ProxyRoute, ProxyRouteCandidate, AliasCandidateTarget, ProxyModelChoice } from '@/types/api'
 import { ProxyComfyConfig } from '@/components/proxy-comfy-config'
 
 const aliasPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
@@ -27,13 +27,12 @@ export function ProxyPage() {
   const tab = requestedTab === 'images' || requestedTab === 'video' ? requestedTab : 'models'
   const [toast, setToast] = useState<{ tone: 'success' | 'error'; message: string } | null>(null)
   const routes = useQuery({ queryKey: queryKeys.proxyRoutes, queryFn: api.getProxyRoutes, refetchInterval: 10_000 })
-  const profiles = useQuery({ queryKey: queryKeys.profiles, queryFn: api.getProfiles })
   const comfy = useQuery({ queryKey: comfyQueryKey, queryFn: comfyApi.getConfig, retry: false })
   const connections = useQuery({ queryKey: openAIConnectionsKey, queryFn: api.getOpenAIConnections })
   const [aliasName, setAliasName] = useState('')
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [aliasDialog, setAliasDialog] = useState<{ kind: 'new' } | { kind: 'edit'; route: ProxyRoute } | null>(null)
-  const catalogues = useQueries({ queries: (connections.data?.items ?? []).map((connection) => ({ queryKey: connectionModelsKey(connection.id), queryFn: () => api.getConnectionModels(connection.id, true), enabled: tab === 'models', retry: false, staleTime: 30_000 })) })
+  const modelChoices = useQuery({ queryKey: ['proxy-model-choices', aliasDialog?.kind === 'edit' ? aliasDialog.route.name : null], queryFn: () => api.getProxyModelChoices(aliasDialog?.kind === 'edit' ? aliasDialog.route.name : undefined), enabled: tab === 'models', retry: false, staleTime: 30_000 })
   const [dragTarget, setDragTarget] = useState<{ route: string; index: number } | null>(null)
   const [dragSource, setDragSource] = useState<{ route: string; index: number } | null>(null)
 
@@ -42,6 +41,7 @@ export function ProxyPage() {
   }
 
   const invalidateRoutes = () => {
+    void queryClient.invalidateQueries({ queryKey: ['proxy-model-choices'] })
     void queryClient.invalidateQueries({ queryKey: queryKeys.proxyRoutes })
     void queryClient.invalidateQueries({ queryKey: queryKeys.openAiModels })
   }
@@ -65,16 +65,13 @@ export function ProxyPage() {
     onSuccess: invalidateRoutes,
     onError: (error) => notify('error', error instanceof Error ? error.message : 'Алиас не удалён.'),
   })
-  const saveComfy = useMutation({
-    mutationFn: comfyApi.putConfig,
-    onSuccess: (data) => {
-      queryClient.setQueryData(comfyQueryKey, data)
-      void queryClient.resetQueries({ queryKey: ['proxy-comfy-workflows'] })
-      void queryClient.invalidateQueries({ queryKey: ['proxy-comfy-status'] })
-      invalidateRoutes()
-      notify('success', 'Конфигурация ComfyUI сохранена.')
-    },
-  })
+  function onComfySaved(data: ComfyConfig) {
+    queryClient.setQueryData(comfyQueryKey, data)
+    void queryClient.resetQueries({ queryKey: ['proxy-comfy-workflows'] })
+    void queryClient.invalidateQueries({ queryKey: ['proxy-comfy-status'] })
+    invalidateRoutes()
+    notify('success', 'Конфигурация ComfyUI сохранена.')
+  }
 
   const editingRoute = aliasDialog?.kind === 'edit' ? aliasDialog.route : null
   const manualRouteNames = useMemo(
@@ -90,14 +87,8 @@ export function ProxyPage() {
         : null
   const visibleRoutes = routes.data?.items.filter((route) => route.kind === 'alias' || (route.available && route.diagnostics.length === 0)) ?? []
 
-  const choices: CandidateChoice[] = (profiles.data?.items ?? []).map((profile) => ({ id: profile.profile_id ?? profile.name, title: profile.model_name, detail: profile.name, target: { profile_id: profile.profile_id ?? profile.name } }))
-  connections.data?.items.forEach((connection, index) => catalogues[index]?.data?.items.forEach((model) => choices.push({ id: `openai:${connection.id}/${model.id}`, title: model.id, detail: connection.name, target: { connection_id: connection.id, model: model.id } })))
-  editingRoute?.candidates.forEach((candidate) => {
-    const id = candidateId(candidate)
-    if (!choices.some((choice) => choice.id === id)) choices.push({ id, title: candidate.upstream_model ?? candidate.profile_name ?? id, detail: candidate.connection_name ?? candidate.profile_name ?? 'Недоступен', target: candidate.connection_id ? { connection_id: candidate.connection_id, model: candidate.upstream_model! } : { profile_id: candidate.profile_id! } })
-  })
-  choices.sort((a, b) => a.title.localeCompare(b.title) || a.detail.localeCompare(b.detail))
-  const candidatesLoading = profiles.isLoading || connections.isLoading || catalogues.some((query) => query.isFetching)
+  const choices = modelChoices.data?.items ?? []
+  const candidatesLoading = modelChoices.isFetching
   function toggleCandidate(id: string) {
     setSelectedIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id])
   }
@@ -154,26 +145,27 @@ export function ProxyPage() {
   }
 
   return <div>
-    <PageHeader title="Прокси" action={<div className="flex gap-2"><Button variant="secondary" size="sm" onClick={() => { void routes.refetch(); void profiles.refetch(); void comfy.refetch(); void connections.refetch(); void queryClient.invalidateQueries({ queryKey: ['openai-connection-models'] }); void queryClient.resetQueries({ queryKey: ['proxy-comfy-workflows'] }); void queryClient.invalidateQueries({ queryKey: ['proxy-comfy-status'] }) }}><RefreshCw className="size-3.5" />Обновить</Button>{tab === 'models' ? <Button variant="primary" size="sm" onClick={openNewAlias}><Plus className="size-3.5" />Новый алиас</Button> : null}</div>} />
+    <PageHeader title="Прокси" action={<div className="flex gap-2"><Button variant="secondary" size="sm" onClick={() => { void routes.refetch(); void comfy.refetch(); void connections.refetch(); void queryClient.invalidateQueries({ queryKey: ['proxy-model-choices'] }); void queryClient.invalidateQueries({ queryKey: ['openai-connection-models'] }); void queryClient.resetQueries({ queryKey: ['proxy-comfy-workflows'] }); void queryClient.invalidateQueries({ queryKey: ['proxy-comfy-status'] }) }}><RefreshCw className="size-3.5" />Обновить</Button>{tab === 'models' ? <Button variant="primary" size="sm" onClick={openNewAlias}><Plus className="size-3.5" />Новый алиас</Button> : null}</div>} />
     <RunTabs ariaLabel="Разделы прокси" compact panelId="proxy-config-panel" value={tab} onChange={(value) => setParams((current) => { current.set('tab', value); return current })} items={[{ value: 'models', title: 'Модели', subtitle: 'Текстовые профили и алиасы' }, { value: 'images', title: 'Изображения', subtitle: 'ComfyUI workflow' }, { value: 'video', title: 'Видео', subtitle: 'ComfyUI workflow' }]} />
     <Card id="proxy-config-panel" role="tabpanel" aria-labelledby={`proxy-config-panel-tab-${tab}`} className="mb-6 rounded-t-none border-t-0">
       <CardContent>
       {tab !== 'models' && comfy.isLoading && <QueryLoading label="Читаем конфигурацию ComfyUI" />}
       {tab !== 'models' && comfy.isError && !comfy.data && <QueryError error={comfy.error} retry={() => void comfy.refetch()} label="Конфигурация ComfyUI недоступна" />}
-      {tab !== 'models' && comfy.data && <ProxyComfyConfig key={tab} config={comfy.data} mediaType={tab === 'images' ? 'image' : 'video'} onSave={(next: ComfyConfig) => saveComfy.mutateAsync(next)} notify={notify} />}
+      {tab !== 'models' && comfy.data && <ProxyComfyConfig key={tab} config={comfy.data} mediaType={tab === 'images' ? 'image' : 'video'} onSaved={onComfySaved} notify={notify} />}
       {tab === 'models' && <>
-      <ProxyOpenAIConnections connections={connections.data?.items ?? []} onChanged={() => { void connections.refetch(); void queryClient.invalidateQueries({ queryKey: ['openai-connection-models'] }); invalidateRoutes() }} notify={notify} />
+      <ProxyOpenAIConnections connections={connections.data?.items ?? []} onChanged={() => { void connections.refetch(); void queryClient.invalidateQueries({ queryKey: ['proxy-model-choices'] }); void queryClient.invalidateQueries({ queryKey: ['openai-connection-models'] }); invalidateRoutes() }} notify={notify} />
       {connections.isError && <QueryError error={connections.error} retry={() => void connections.refetch()} label="Подключения недоступны" />}
       <h2 className="mb-3 text-sm font-medium">Модели и алиасы</h2>
       {routes.isLoading ? <QueryLoading label="Читаем маршруты" /> : routes.isError ? <QueryError error={routes.error} retry={() => void routes.refetch()} label="Маршруты недоступны" /> : visibleRoutes.length > 0 && <div className="space-y-3">{visibleRoutes.map((route) => <RouteCard key={`${route.kind}:${route.name}`} route={route} dragSource={dragSource} onDragSource={setDragSource} dragTarget={dragTarget} onDragTarget={setDragTarget} onDrop={drop} onDelete={() => deleteAlias.mutate(route.name)} onEdit={() => openEditAlias(route)} onRemove={(profileId) => updateRoute.mutate({ name: route.name, candidateIds: routeCandidateIds(route).filter((item) => item !== profileId) })} updating={updateRoute.isPending} deleting={deleteAlias.isPending && deleteAlias.variables === route.name} />)}</div>}
     <Dialog open={aliasDialog !== null} title={editingRoute ? 'Изменить алиас' : 'Новый алиас'} onOpenChange={(open) => { if (!open) closeAliasDialog() }}>
       <form className="space-y-5 p-4" onSubmit={(event) => { event.preventDefault(); submitAlias() }}>
         <div><Label htmlFor="proxy-alias-name" className="mb-1.5 block">Имя алиаса</Label><Input id="proxy-alias-name" autoFocus required value={aliasName} onChange={(event) => setAliasName(event.target.value)} placeholder="my-chat-model" aria-invalid={Boolean(aliasError)} />{aliasError && <p className="mt-1.5 text-[11px] text-[#d09b87]">{aliasError}</p>}</div>
+        {modelChoices.isError && <QueryError error={modelChoices.error} retry={() => void modelChoices.refetch()} label="Список моделей недоступен" />}
         <div><Label className="mb-1.5 block">Кандидаты</Label><div className="max-h-64 space-y-1 overflow-auto rounded-md border border-border bg-secondary p-2">
           {choices.map((choice) => <CandidateCheckbox key={choice.id} choice={choice} checked={selectedIds.includes(choice.id)} onChange={() => toggleCandidate(choice.id)} />)}
           {candidatesLoading ? <p className="px-2 py-3 text-xs text-muted-foreground">Загружаем модели…</p> : choices.length === 0 && <p className="px-2 py-3 text-xs text-muted-foreground">Нет доступных моделей.</p>}
         </div></div>
-        <div className="flex justify-end gap-2 border-t border-border pt-4"><Button variant="ghost" onClick={closeAliasDialog}>Отмена</Button><Button type="submit" variant="primary" disabled={!aliasName || Boolean(aliasError) || createAlias.isPending || updateAlias.isPending || updateRoute.isPending}>{editingRoute ? 'Сохранить' : createAlias.isPending ? 'Сохраняем…' : 'Добавить алиас'}</Button></div>
+        <div className="flex justify-end gap-2 border-t border-border pt-4"><Button variant="ghost" onClick={closeAliasDialog}>Отмена</Button><Button type="submit" variant="primary" disabled={!aliasName || Boolean(aliasError) || candidatesLoading || createAlias.isPending || updateAlias.isPending || updateRoute.isPending}>{editingRoute ? 'Сохранить' : createAlias.isPending ? 'Сохраняем…' : 'Добавить алиас'}</Button></div>
       </form>
     </Dialog>
       </>}
@@ -221,7 +213,7 @@ function RouteCard({ route, dragSource, onDragSource, dragTarget, onDragTarget, 
   </div>
 }
 
-type CandidateChoice = { id: string; title: string; detail: string; target: AliasCandidateTarget }
+type CandidateChoice = ProxyModelChoice
 function candidateId(candidate: ProxyRouteCandidate): string { return candidate.id ?? candidate.profile_id! }
 function routeCandidateIds(route: ProxyRoute): string[] { return route.candidate_ids ?? route.candidate_profile_ids }
 function CandidateCheckbox({ choice, checked, onChange }: { choice: CandidateChoice; checked: boolean; onChange: () => void }) {

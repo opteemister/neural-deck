@@ -32,6 +32,10 @@ class _Manager:
             port=1919,
             model_name=public,
             state="ready",
+            identity_verified=True,
+            types=["text"],
+            api_protocol="openai",
+            api_base_url="http://127.0.0.1:1919/v1",
             observed_at=datetime.now(UTC),
         )
         self.registry.register_instance(self.instance, upstream_models=[upstream])

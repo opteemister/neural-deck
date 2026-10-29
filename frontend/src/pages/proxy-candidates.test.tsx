@@ -14,7 +14,11 @@ afterEach(() => { cleanup(); vi.restoreAllMocks() })
 
 function setup(routes: ProxyRoute[] = [], connections = [connection]) {
   vi.spyOn(api, 'getProxyRoutes').mockResolvedValue({ items: routes })
-  vi.spyOn(api, 'getProfiles').mockResolvedValue({ items: [{ version: 1, name: 'local-profile', model_name: 'local-model', engine: { id: 'vllm', installation_id: 'local-install' }, command: 'serve', environment: {}, autostart: false }], issues: [] })
+  const choices = vi.spyOn(api, 'getProxyModelChoices').mockImplementation(async (name) => ({ items: [
+    { id: 'local-profile', title: 'local-model', detail: 'local-profile', target: { profile_id: 'local-profile' } },
+    ...connections.map((c) => ({ id: `openai:${c.id}/remote-model`, title: 'remote-model', detail: c.name, target: { connection_id: c.id, model: 'remote-model' } })),
+    ...(name ? [{ id: 'openai:server/old-model', title: 'old-model', detail: 'GPU server', target: { connection_id: 'server', model: 'old-model' } }] : []),
+  ], diagnostics: [] }))
   vi.spyOn(comfyApi, 'getConfig').mockResolvedValue({ sources: {}, models: {} })
   vi.spyOn(api, 'getOpenAIConnections').mockResolvedValue({ items: connections })
   const models = vi.spyOn(api, 'getConnectionModels').mockResolvedValue({ items: [{ id: 'remote-model', object: 'model' }] })
@@ -22,7 +26,7 @@ function setup(routes: ProxyRoute[] = [], connections = [connection]) {
   const update = vi.spyOn(api, 'updateProxyAlias').mockResolvedValue(saved)
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   render(<QueryClientProvider client={client}><MemoryRouter initialEntries={['/proxy?tab=models']}><ProxyPage /></MemoryRouter></QueryClientProvider>)
-  return { models, create, update }
+  return { models, choices, create, update }
 }
 
 describe('unified alias candidates', () => {
@@ -48,8 +52,9 @@ describe('unified alias candidates', () => {
   })
 
   it('preserves an already selected model when its connection catalogue is unavailable', async () => {
-    const { models, update } = setup([saved])
+    const { models, choices, update } = setup([saved])
     models.mockRejectedValue(new Error('offline'))
+    choices.mockResolvedValue({ items: [{ id: 'openai:server/old-model', title: 'old-model', detail: 'GPU server', target: { connection_id: 'server', model: 'old-model' } }], diagnostics: [{ connection_id: 'server', code: 'offline', message: 'offline' }] })
     fireEvent.click(await screen.findByRole('button', { name: 'Изменить алиас saved' }))
     const dialog = within(screen.getByRole('dialog'))
     expect(await dialog.findByRole('checkbox', { name: /old-model/ })).toBeChecked()

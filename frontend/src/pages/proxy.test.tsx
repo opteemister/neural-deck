@@ -20,7 +20,7 @@ afterEach(() => { cleanup(); vi.restoreAllMocks() })
 
 async function setup() {
   vi.spyOn(api, 'getProxyRoutes').mockResolvedValue({ items: [route] })
-  vi.spyOn(api, 'getProfiles').mockResolvedValue({ items: [], issues: [] })
+  vi.spyOn(api, 'getProxyModelChoices').mockResolvedValue({ items: route.candidates.map((candidate) => ({ id: candidate.profile_id!, title: candidate.profile_name!, detail: candidate.profile_name!, target: { profile_id: candidate.profile_id! } })), diagnostics: [] })
   vi.spyOn(api, 'getOpenAIConnections').mockResolvedValue({ items: [] })
   vi.spyOn(comfyApi, 'getConfig').mockResolvedValue({ sources: {}, models: {} })
   const update = vi.spyOn(api, 'updateProxyCandidates').mockResolvedValue(route)
@@ -95,6 +95,7 @@ it('renames an alias and sends its candidates in the same update', async () => {
   await setup()
   const update = vi.spyOn(api, 'updateProxyAlias').mockResolvedValue({ ...route, name: 'smart' })
   fireEvent.click(screen.getByRole('button', { name: 'Изменить алиас manual' }))
+  await screen.findByRole('checkbox', { name: /first/ })
   fireEvent.change(screen.getByLabelText('Имя алиаса'), { target: { value: 'smart' } })
   fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }))
   await waitFor(() => expect(update).toHaveBeenCalledWith('manual', {
@@ -104,7 +105,7 @@ it('renames an alias and sends its candidates in the same update', async () => {
 
 it('blocks renaming to an existing manual alias', async () => {
   vi.spyOn(api, 'getProxyRoutes').mockResolvedValue({ items: [route, { ...route, name: 'taken' }] })
-  vi.spyOn(api, 'getProfiles').mockResolvedValue({ items: [], issues: [] })
+  vi.spyOn(api, 'getProxyModelChoices').mockResolvedValue({ items: route.candidates.map((candidate) => ({ id: candidate.profile_id!, title: candidate.profile_name!, detail: candidate.profile_name!, target: { profile_id: candidate.profile_id! } })), diagnostics: [] })
   vi.spyOn(api, 'getOpenAIConnections').mockResolvedValue({ items: [] })
   vi.spyOn(comfyApi, 'getConfig').mockResolvedValue({ sources: {}, models: {} })
   const update = vi.spyOn(api, 'updateProxyAlias')

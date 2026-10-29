@@ -90,6 +90,7 @@ def main() -> None:
         "revision": plan["revision"],
         "local_dir": plan["destination"],
         "allow_patterns": patterns,
+        "force_download": plan.get("force", False),
     }
     preview = snapshot_download(**options, dry_run=True)
     cached_bytes = sum(item.file_size for item in preview if not item.will_download)

@@ -11,6 +11,15 @@ from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 
 
+@pytest.fixture(autouse=True)
+def capture_database_logger(caplog):
+    # Application integration tests configure their own non-propagating handlers.
+    logger = logging.getLogger("app.db")
+    logger.addHandler(caplog.handler)
+    yield
+    logger.removeHandler(caplog.handler)
+
+
 @pytest.mark.asyncio
 async def test_closed_idle_connection_is_replaced_before_query(tmp_path, caplog):
     engine = create_engine(tmp_path / "db.sqlite")

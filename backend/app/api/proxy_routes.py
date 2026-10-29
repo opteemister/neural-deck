@@ -25,6 +25,16 @@ async def list_routes(
     return success(request, await service.route_data())
 
 
+@router.get("/choices")
+async def model_choices(request: Request, route_name: str | None = None, refresh: bool = False, service: ProxyService = Depends(get_proxy_service)):
+    return success(request, await service.model_choices(route_name, refresh))
+
+
+@router.get("/details/{route_name:path}")
+async def get_route(request: Request, route_name: str, service: ProxyService = Depends(get_proxy_service)):
+    return success(request, await service.get_route(route_name))
+
+
 @router.post(
     "/aliases",
     response_model=SuccessEnvelope[dict[str, object]],

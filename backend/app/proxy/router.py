@@ -137,7 +137,7 @@ async def _forward(
     service: ProxyService,
     *,
     multipart_data: dict[str, Any] | None = None,
-    multipart_files: dict[str, Any] | None = None,
+    multipart_files: dict[str, Any] | list[tuple[str, Any]] | None = None,
 ) -> Response:
     headers = dict(request.headers)
     internal = request.url.path.startswith("/api/proxy/")

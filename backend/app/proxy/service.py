@@ -531,7 +531,8 @@ class ProxyService:
     async def _forward_remote(
         self, remote: RemoteTarget, route: str, model_name: str, payload: Mapping[str, Any],
         request_id: str, started: float, force_usage: bool,
-        multipart_data: Mapping[str, Any] | None, multipart_files: Mapping[str, Any] | None,
+        multipart_data: Mapping[str, Any] | None,
+        multipart_files: Mapping[str, Any] | list[tuple[str, Any]] | None,
     ) -> Any:
         operation = OPERATIONS.get(route)
         if operation is None or "openai" not in operation[1]:
@@ -744,7 +745,7 @@ class ProxyService:
         client_ip: str | None = None,
         force_usage: bool = False,
         multipart_data: Mapping[str, Any] | None = None,
-        multipart_files: Mapping[str, Any] | None = None,
+        multipart_files: Mapping[str, Any] | list[tuple[str, Any]] | None = None,
     ) -> httpx.Response | Any:
         tracking: dict[str, Any] = {
             "journal_id": f"journal_{uuid4().hex}",
@@ -801,7 +802,7 @@ class ProxyService:
         request_id: str,
         force_usage: bool,
         multipart_data: Mapping[str, Any] | None = None,
-        multipart_files: Mapping[str, Any] | None = None,
+        multipart_files: Mapping[str, Any] | list[tuple[str, Any]] | None = None,
     ) -> httpx.Response | Any:
         started = time.perf_counter()
         model_name = payload.get("model")
@@ -1191,7 +1192,7 @@ class ProxyService:
         self, client: httpx.AsyncClient, target: str, payload: Mapping[str, Any],
         headers: Mapping[str, str], route: str, model_name: str, registered: RegisteredModel,
         request_id: str, started: float, *, data: Mapping[str, Any] | None,
-        files: Mapping[str, Any] | None,
+        files: Mapping[str, Any] | list[tuple[str, Any]] | None,
     ) -> Any:
         # httpx's multipart encoder reads the spooled upload in fixed-size
         # chunks. Neither uploads nor binary/SSE replies are materialised here.

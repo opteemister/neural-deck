@@ -5,7 +5,7 @@ import warnings
 from types import SimpleNamespace
 from typing import Any
 
-from app.proxy.comfy_provider import ComfyProviderService
+import pytest
 from app.config import Settings
 from app.errors import (
     AppError,
@@ -15,6 +15,7 @@ from app.errors import (
     validation_error_handler,
 )
 from app.main import create_app
+from app.proxy.comfy_provider import ComfyProviderService
 from app.proxy.media_router import internal_router, management_router, router
 from fastapi import FastAPI, HTTPException
 from fastapi.exceptions import RequestValidationError
@@ -308,6 +309,73 @@ def test_image_multipart_edit_and_variation_keep_file_fields_and_select_operatio
     assert comfy.images.calls[0]["payload"]["n"] == 2
 
 
+@pytest.mark.parametrize("prefix", ["/v1", "/api/proxy"])
+@pytest.mark.parametrize("field", ["image", "image[]"])
+def test_edit_accepts_single_file_and_keeps_mask_separate(prefix: str, field: str) -> None:
+    comfy = FakeComfy({"sources": {}, "models": {"image": {"type": "image"}}})
+    client = TestClient(_media_app(_runtime(comfy), include_internal=True))
+    response = client.post(
+        f"{prefix}/images/edits",
+        data={"model": "image", "prompt": "edit"},
+        files=[
+            (field, ("input.png", b"source", "image/png")),
+            ("mask", ("mask.png", b"mask", "image/png")),
+        ],
+    )
+    assert response.status_code == 200
+    assert len(comfy.images.calls) == 1
+    call = comfy.images.calls[0]
+    assert call["operation"] == "edit_masked"
+    assert call["payload"]["image"] == b"source"
+    assert call["payload"]["mask"] == b"mask"
+    assert "image[]" not in call["payload"]
+
+
+@pytest.mark.parametrize("prefix", ["/v1", "/api/proxy"])
+def test_edit_rejects_multiple_sources_for_single_input_workflow(prefix: str) -> None:
+    comfy = FakeComfy({"sources": {}, "models": {"image": {"type": "image"}}})
+    client = TestClient(_media_app(_runtime(comfy), include_internal=True))
+    response = client.post(
+        f"{prefix}/images/edits",
+        data={"model": "image", "prompt": "combine"},
+        files=[
+            ("image[]", ("one.png", b"one", "image/png")),
+            ("image[]", ("two.png", b"two", "image/png")),
+            ("mask", ("mask.png", b"mask", "image/png")),
+        ],
+    )
+    assert response.status_code == 400
+    error = response.json()["error"]
+    assert error["param"] == "image[]"
+    assert "только одно исходное изображение" in error["message"]
+    assert "получено 2" in error["message"]
+    assert comfy.images.calls == []
+
+
+@pytest.mark.parametrize(
+    "fields", [("image", "image[]"), ("image", "image"), ("mask", "mask")]
+)
+def test_edit_rejects_ambiguous_or_duplicate_single_fields(fields: tuple[str, str]) -> None:
+    comfy = FakeComfy({"sources": {}, "models": {"image": {"type": "image"}}})
+    response = TestClient(_media_app(_runtime(comfy))).post(
+        "/v1/images/edits",
+        data={"model": "image", "prompt": "edit"},
+        files=[(name, ("input.png", b"source", "image/png")) for name in fields],
+    )
+    assert response.status_code == 400
+    assert comfy.images.calls == []
+
+
+def test_edit_requires_image_array_to_contain_files() -> None:
+    comfy = FakeComfy({"sources": {}, "models": {"image": {"type": "image"}}})
+    response = TestClient(_media_app(_runtime(comfy))).post(
+        "/v1/images/edits", data={"model": "image", "prompt": "edit", "image[]": "text"}
+    )
+    assert response.status_code == 400
+    assert response.json()["error"]["param"] == "image[]"
+    assert comfy.images.calls == []
+
+
 def test_video_create_status_and_content_routes_are_http_compatible() -> None:
     comfy = FakeComfy(
         {
@@ -366,6 +434,9 @@ def test_provider_openapi_contains_media_and_v2_routes_without_management_or_int
     edit_schema = paths["/v1/images/edits"]["post"]["requestBody"]["content"][
         "multipart/form-data"
     ]["schema"]
-    assert {"model", "prompt", "image", "mask"}.issubset(edit_schema["properties"])
+    assert {"model", "prompt", "image", "image[]", "mask"}.issubset(edit_schema["properties"])
     assert edit_schema["properties"]["image"]["format"] == "binary"
+    assert edit_schema["properties"]["image[]"]["items"]["format"] == "binary"
+    assert edit_schema["required"] == ["model", "prompt"]
+    assert edit_schema["oneOf"] == [{"required": ["image"]}, {"required": ["image[]"]}]
     assert "CohereEmbedRequest" in str(document["paths"]["/v2/embed"])

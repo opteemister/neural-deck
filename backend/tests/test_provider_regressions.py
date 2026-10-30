@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import httpx
 import pytest
 from app.process.registry import ModelRegistry
+from app.proxy.media_router import router as media_router
 from app.proxy.operations import upstream_url
 from app.proxy.service import ProxyService
 from app.schemas.instances import Instance, InstanceList
@@ -14,6 +16,8 @@ from app.schemas.provider import (
     ResponsesRequest,
     SpeechRequest,
 )
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
 
@@ -143,3 +147,54 @@ async def test_image_multipart_forward_preserves_fields_and_files(
     assert b' name="model"\r\n\r\nimage-model' in request_body
     for expected in expected_fields:
         assert expected in request_body
+
+
+@pytest.mark.parametrize("field, count", [("image", 1), ("image[]", 1), ("image[]", 3)])
+def test_edit_http_route_forwards_all_sources_in_order_and_separate_mask(
+    field: str, count: int
+) -> None:
+    instance = _instance(model_name="image-model", capability="image", base_url="http://image")
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200, headers={"content-type": "application/json"},
+            stream=_ResponseStream(b'{"created":1,"data":[]}'),
+        )
+
+    service = ProxyService(
+        _ProcessManager(instance),
+        client_factory=lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    app = FastAPI()
+    app.state.runtime = SimpleNamespace(
+        proxy_service=service,
+        comfy_service=SimpleNamespace(get_settings=lambda: {"models": {}}),
+    )
+
+    @app.middleware("http")
+    async def request_id(request, call_next):
+        request.state.request_id = "edit-array-regression"
+        return await call_next(request)
+
+    app.include_router(media_router)
+    response = TestClient(app).post(
+        "/v1/images/edits",
+        data={"model": "image-model", "prompt": "combine", "n": "1"},
+        files=[
+            (field, (f"source-{i}.png", f"source-{i}".encode(), "image/png"))
+            for i in range(count)
+        ] + [("mask", ("mask.png", b"mask-bytes", "image/png"))],
+    )
+    assert response.status_code == 200
+    assert len(requests) == 1
+    assert str(requests[0].url) == "http://image/v1/images/edits"
+    body = requests[0].content
+    assert body.count(f'name="{field}";'.encode()) == count
+    assert body.count(b'name="mask";') == 1
+    positions = [body.index(f"source-{i}".encode()) for i in range(count)]
+    assert positions == sorted(positions)
+    assert b"mask-bytes" in body
+    assert b'name="prompt"\r\n\r\ncombine' in body
+    assert b'name="n"\r\n\r\n1' in body

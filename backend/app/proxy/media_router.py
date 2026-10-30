@@ -214,13 +214,18 @@ async def image_generation(request: Request, payload: ImageRequest, runtime: Run
     return await _wire(run)
 
 
-def _multipart_schema(fields: dict[str, Any], required: list[str]) -> dict[str, Any]:
+def _multipart_schema(
+    fields: dict[str, Any], required: list[str], *, one_of: list[dict[str, Any]] | None = None
+) -> dict[str, Any]:
     return {
         "requestBody": {
             "required": True,
             "content": {
                 "multipart/form-data": {
-                    "schema": {"type": "object", "properties": fields, "required": required},
+                    "schema": {
+                        "type": "object", "properties": fields, "required": required,
+                        **({"oneOf": one_of} if one_of else {}),
+                    },
                 }
             },
         }
@@ -252,13 +257,21 @@ _VIDEO_FIELDS: dict[str, Any] = {
 }
 
 
-async def _form(request: Request) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+async def _form(
+    request: Request, *, image_array: bool = False
+) -> tuple[dict[str, Any], dict[str, Any], list[tuple[str, Any]]]:
     async with request.form() as form:
         body: dict[str, Any] = {}
         data: dict[str, Any] = {}
-        files: dict[str, Any] = {}
+        files: list[tuple[str, Any]] = []
         for name, value in form.multi_items():
-            if name in body:
+            is_image_array = image_array and name == "image[]"
+            if is_image_array and not isinstance(value, UploadFile):
+                raise AppError(
+                    "invalid_parameter", "image[] должен содержать файлы изображений",
+                    status_code=400, details={"field": name},
+                )
+            if name in body and not is_image_array:
                 raise AppError(
                     "unsupported_parameter",
                     "Повторяющееся поле не поддерживается",
@@ -274,8 +287,11 @@ async def _form(request: Request) -> tuple[dict[str, Any], dict[str, Any], dict[
                         status_code=400,
                         details={"field": name},
                     )
-                body[name] = content
-                files[name] = (value.filename or name, content, value.content_type)
+                if is_image_array:
+                    body.setdefault(name, []).append(content)
+                else:
+                    body[name] = content
+                files.append((name, (value.filename or name, content, value.content_type)))
             else:
                 data[name] = value
                 body[name] = value
@@ -283,9 +299,14 @@ async def _form(request: Request) -> tuple[dict[str, Any], dict[str, Any], dict[
 
 
 async def _image_form(request: Request, runtime: AppContainer, operation: str) -> Any:
-    body, data, files = await _form(request)
-    if not body.get("model") or not body.get("image"):
-        raise AppError("invalid_request", "Требуются model и image", status_code=400)
+    body, data, files = await _form(request, image_array=operation == "edits")
+    if "image" in body and "image[]" in body:
+        raise AppError(
+            "invalid_parameter", "Укажите image или image[], но не оба поля",
+            status_code=400, details={"field": "image[]"},
+        )
+    if not body.get("model") or not (body.get("image") or body.get("image[]")):
+        raise AppError("invalid_request", "Требуются model и image (или image[])", status_code=400)
     service = _service(runtime)
     model = service.get_settings()["models"].get(body["model"])
     if model is None:
@@ -299,6 +320,16 @@ async def _image_form(request: Request, runtime: AppContainer, operation: str) -
         )
     if model["type"] != "image":
         raise AppError("unsupported_operation", "Требуется image-модель", status_code=400)
+    if "image[]" in body:
+        images = body.pop("image[]")
+        if len(images) != 1:
+            raise AppError(
+                "unsupported_parameter",
+                f"Модель {body['model']} поддерживает только одно исходное изображение; "
+                f"получено {len(images)}",
+                status_code=400, details={"field": "image[]"},
+            )
+        body["image"] = images[0]
     if operation == "edits" and not body.get("prompt"):
         raise AppError(
             "invalid_request", "Требуется prompt", status_code=400, details={"field": "prompt"}
@@ -329,7 +360,21 @@ async def _image_form(request: Request, runtime: AppContainer, operation: str) -
 
 @router.post(
     "/images/edits",
-    openapi_extra=_multipart_schema(_IMAGE_FIELDS, ["model", "prompt", "image"]),
+    openapi_extra=_multipart_schema(
+        {
+            **_IMAGE_FIELDS,
+            "image[]": {
+                "type": "array", "minItems": 1,
+                "items": {"type": "string", "format": "binary"},
+                "description": (
+                    "Совместные исходники/референсы одной генерации; "
+                    "число зависит от модели."
+                ),
+            },
+        },
+        ["model", "prompt"],
+        one_of=[{"required": ["image"]}, {"required": ["image[]"]}],
+    ),
     responses=IMAGE_RESPONSES,
 )
 async def image_edit(request: Request, runtime: RuntimeDep) -> Any:
